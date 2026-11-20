@@ -33,15 +33,54 @@ def enabled() -> bool:
     return bool(SOURCE_CHAT_ID) and any(t.get("chat_id") for t in TARGETS.values())
 
 
-def parse_prices(text: str) -> dict:
-    """'silver 45.000 bronza 55.000' -> {'silver': '45.000', 'bronza': '55.000'}"""
+CURRENCY = getattr(config, "RELAY_CURRENCY", "so'm")
+_PRICE_RE = {
+    target: re.compile(
+        rf"(?:{'|'.join(re.escape(w) for w in words)})\w*[\s:=\-–—]*(\d[\d\s.,']*\d|\d)"
+        r"(?:\s*(?:so'?m|сум|sum|uzs))?",
+        re.IGNORECASE,
+    )
+    for target, words in KEYWORDS.items()
+}
+
+
+def parse_caption(text: str):
+    """'Probalik yangi Toplam\nsilver 45.000 bronza 55.000'
+    -> ({'silver': 45000, 'bronza': 55000}, 'Probalik yangi Toplam')"""
     prices = {}
-    for target, words in KEYWORDS.items():
-        alt = "|".join(re.escape(w) for w in words)
-        m = re.search(rf"(?:{alt})\w*[\s:=\-–—]*(\d[\d\s.,']*\d|\d)", text, re.IGNORECASE)
+    rest = text
+    for target, rx in _PRICE_RE.items():
+        m = rx.search(text)
         if m:
-            prices[target] = re.sub(r"\s+", " ", m.group(1)).strip()
-    return prices
+            digits = re.sub(r"\D", "", m.group(1))
+            if digits:
+                prices[target] = int(digits)
+            rest = rest.replace(m.group(0), " ")
+    # всё, что осталось кроме цен, — заголовок
+    lines = [re.sub(r"\s+", " ", ln).strip(" ,;:-–—|/") for ln in rest.splitlines()]
+    title = "\n".join(ln for ln in lines if ln)
+    return prices, title
+
+
+def parse_prices(text: str) -> dict:
+    return parse_caption(text)[0]
+
+
+def money(n: int) -> str:
+    return f"{n:,}".replace(",", ".") + f" {CURRENCY}"
+
+
+def build_caption(target: str, prices: dict, title: str) -> str:
+    s, b = prices.get("silver"), prices.get("bronza")
+    if target == "silver":
+        if b and b > s:
+            price_line = f"{money(b)}❌ {money(s)}✅ ({money(b - s)} foyda)"
+        else:
+            price_line = f"{money(s)}✅"
+    else:
+        price_line = f"{money(b)}✅"
+    parts = [title, price_line, (TARGETS.get(target) or {}).get("footer", "")]
+    return "\n\n".join(p.strip() for p in parts if p and p.strip())[:1024]
 
 
 def _is_source(update: Update) -> bool:
@@ -107,16 +146,16 @@ async def _send_with_retry(coro_factory):
 
 
 async def _send(album, context):
-    prices = parse_prices("\n".join(album["captions"]))
+    prices, title = parse_caption("\n".join(album["captions"]))
     if not prices:
         return  # подписи с ценами нет — это не товар, пропускаем
     items = [it for _, it in sorted(album["items"])]
     sent = []
-    for name, price in prices.items():
+    for name in prices:
         target = TARGETS.get(name) or {}
         if not target.get("chat_id"):
             continue
-        caption = target.get("template", "{price}").format(price=price)
+        caption = build_caption(name, prices, title)
         try:
             for start in range(0, len(items), 10):  # в альбоме Telegram максимум 10
                 chunk = items[start:start + 10]

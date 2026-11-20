@@ -56,25 +56,38 @@ EMPLOYEES = {
 
 
 # ============ ПЕРЕСЫЛКА ФОТО С ЦЕНАМИ ============
-# Фотограф скидывает в тему фото/видео с подписью "silver 45.000 bronza 55.000",
-# бот рассылает их в группу Silver и группу Bronza со своей ценой.
+# Фотограф скидывает в тему фото/видео с подписью, например:
+#     Probalik yangi Toplam
+#     silver 30.000 bronza 45.000
+# Бот рассылает альбом в группу Silver и группу Bronza.
+# Текст под фото: заголовок (всё кроме цен) + строка цены + footer.
+# В Silver, если бронза дороже: "45.000 so'm❌ 30.000 so'm✅ (15.000 so'm foyda)"
 # Бот должен быть администратором во всех этих группах.
 
-# Откуда брать: группа сотрудников и тема фотографа
+RELAY_CURRENCY = "so'm"
+
+# Откуда брать: группа фотографа (и тема, если нужна)
 RELAY_SOURCE_CHAT_ID = -1001867137670  # Фотограф (тест)
 RELAY_SOURCE_THREAD_ID = None
 
-# Куда отправлять. {price} — цена из подписи фотографа.
-# thread_id — если в группе нужно писать в определённую тему, иначе None
+# Куда отправлять. footer — текст в самом конце
 RELAY_TARGETS = {
     "silver": {
         "chat_id": -1003348113142,  # Silver (тест)
         "thread_id": None,
-        "template": "{price}",
+        "footer": (
+            "Zakaz faqat: @xupingSilver\n"
+            "Srochniy zakaz busa tel murojat 77-443-77-88☎️\n"
+            "\n"
+            "Talab/Taklif murojat: @xupingtaklif"
+        ),
     },
     "bronza": {
         "chat_id": -1004276884125,  # Bronza (тест)
         "thread_id": None,
-        "template": "{price}",
+        "footer": (
+            "Zakaz uchun: @xupinguzadmim\n"
+            "Tel: 93-537-20-00☎️"
+        ),
     },
 }
