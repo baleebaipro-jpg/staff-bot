@@ -40,15 +40,16 @@ BTN_OUT = "🚪 Ушёл"
 BTN_TASKS = "📋 Мои задачи"
 BTN_TEAM = "👥 Команда"
 BTN_CABINET = "🏠 Личный кабинет"
+BTN_INVEST = "💰 Инвестиции"
 
 
 def keyboard(uid: int) -> ReplyKeyboardMarkup:
     rows = []
     if core.employee(uid):
         rows.append([BTN_IN, BTN_OUT])
-        rows.append([BTN_TASKS])
+        rows.append([BTN_TASKS, BTN_INVEST])
     if core.is_admin(uid):
-        rows.append([BTN_TEAM])
+        rows.append([BTN_TEAM] + ([] if core.employee(uid) else [BTN_INVEST]))
     rows.append([KeyboardButton(BTN_CABINET, web_app=WebAppInfo(url=config.WEBAPP_URL))])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -312,6 +313,12 @@ async def bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logging.warning("Не удалось сообщить %s: %s", a, e)
 
 
+async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not known(update.effective_user.id):
+        return await deny(update)
+    await reply(update, "💰 Раздел «Инвестиции» скоро появится ⏳")
+
+
 async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
@@ -391,6 +398,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
     app.add_handler(MessageHandler(filters.Text([BTN_TEAM]), team))
+    app.add_handler(MessageHandler(filters.Text([BTN_INVEST]), invest))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.VIDEO), other_media_while_proof))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, other))

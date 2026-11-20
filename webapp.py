@@ -269,6 +269,11 @@ PAGE = r"""<!doctype html>
   .btn { border-radius: 14px; padding: 13px 16px; font-weight: 700; white-space: nowrap; }
   .btn-main { background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; }
   .btn-soft { background: var(--card2); }
+  .soon { display: flex; align-items: center; gap: 12px; opacity: .6; cursor: not-allowed; user-select: none;
+          background: linear-gradient(90deg, rgba(52,211,153,.12), rgba(124,92,255,.08)); }
+  .soon-ic { font-size: 28px; filter: grayscale(.3); }
+  .soon-pill { padding: 5px 11px; border-radius: 99px; font-size: 12.5px; font-weight: 700; white-space: nowrap;
+               background: var(--card2); border: 1px solid var(--line); color: var(--hint); }
   .btn-danger { background: linear-gradient(90deg, #ef4444, #f97316); color: #fff; }
   .pen { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
   .pen .tt { flex: 1; word-break: break-word; }
@@ -384,6 +389,8 @@ PAGE = r"""<!doctype html>
       <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span>текущее звание</span></div>
     </div>
 
+    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
+      <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
     <div class="card status">
       <div>
         <div id="st-text"></div>
@@ -428,6 +435,8 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
+    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
+      <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
     <div class="card">
       <h3>Новая задача</h3>
       <select id="t-user"></select>
