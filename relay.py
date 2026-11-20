@@ -173,6 +173,7 @@ async def _send(album, context):
         except Exception:
             logging.exception("Не удалось записать альбом в счётчик")
         _last_source["thread_id"] = album["first"].message_thread_id
+        await _praise(album["first"])
         try:
             await album["first"].set_reaction("👍")
         except Exception:
@@ -274,3 +275,21 @@ async def daily_check(bot) -> None:
         logging.info("Подколка отправлена (альбомов сегодня: %s)", count)
     except Exception as e:
         logging.error("Не удалось отправить подколку: %s", e)
+
+
+# ================= Похвала после каждого альбома =================
+
+PRAISE = getattr(config, "RELAY_PRAISE", None)
+
+
+async def _praise(first) -> None:
+    """Ответить на альбом, отметив отправителя."""
+    if not PRAISE:
+        return
+    user = first.from_user
+    mention = user.mention_html() if user and not user.is_bot else ""
+    text = PRAISE.format(mention=mention).strip()
+    try:
+        await _send_with_retry(lambda: first.reply_html(text))
+    except Exception as e:
+        logging.warning("Не удалось отправить похвалу: %s", e)
