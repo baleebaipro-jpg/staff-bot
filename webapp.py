@@ -520,7 +520,8 @@ function renderMe() {
     ? `<span class="dot" style="background:var(--green)"></span>На месте с ${p.since}`
     : `<span class="dot" style="background:var(--hint)"></span>Не на месте`;
   const can = p.on_site ? p.can_out : p.can_in;
-  $("st-sub").textContent = !p.workday ? `Сегодня выходной · график ${p.schedule}`
+  $("st-sub").textContent = !p.has_schedule ? (p.on_site ? "Свободный график · отметьте уход, когда закончите" : "Свободный график · отмечайтесь в любое время")
+    : !p.workday ? `Сегодня выходной · график ${p.schedule}`
     : p.on_site ? `Уход: ${p.out_window}`
     : p.came_today ? `Смена завершена · график ${p.schedule}`
     : `Приход: ${p.in_window}`;

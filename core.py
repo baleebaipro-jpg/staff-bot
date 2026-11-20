@@ -50,8 +50,17 @@ def name(uid: int) -> str:
     return e["name"] if e else str(uid)
 
 
+def has_schedule(emp) -> bool:
+    return bool(emp.get("start") and emp.get("end"))
+
+
+def schedule_text(emp) -> str:
+    return f"{emp['start']}–{emp['end']}" if has_schedule(emp) else "свободный график"
+
+
 def workday(emp, day) -> bool:
-    return day.weekday() in emp.get("days", range(7))
+    """Рабочий день по графику. Без графика — ограничений и штрафов нет."""
+    return has_schedule(emp) and day.weekday() in emp.get("days", range(7))
 
 
 WINDOW = getattr(config, "WINDOW_MINUTES", 15)
@@ -64,6 +73,8 @@ def window(emp, kind: str, day):
 
 
 def window_text(emp, kind: str, day) -> str:
+    if not has_schedule(emp):
+        return "в любое время"
     a, b = window(emp, kind, day)
     return f"{a:%H:%M}–{b:%H:%M}"
 
@@ -139,7 +150,10 @@ def _close_stale(c, uid):
         # сегодня: закрываем, только если окно ухода уже прошло
         if not emp or not workday(emp, t) or t <= window(emp, "out", t)[1]:
             return
-    end = at(cin.date(), emp["end"]) if emp else cin
+    if emp and has_schedule(emp):
+        end = at(cin.date(), emp["end"])
+    else:  # свободный график: считаем максимум 8 часов, но не позже конца дня
+        end = min(cin + timedelta(hours=8), at(cin.date(), "23:59"))
     if end <= cin:
         end = cin
     c.execute("UPDATE sessions SET check_out=?, auto_closed=1 WHERE id=?", (end.strftime(FMT), s["id"]))
@@ -178,7 +192,10 @@ def check_in(uid: int):
         else:
             notify_admins(c, f"✅ {emp['name']} пришёл(ла) в {t:%H:%M}")
     msg = f"✅ Приход отмечен в {t:%H:%M}."
-    msg += f"\n⚠️ Опоздание: {fmt_min(late)}" if late else "\nВы вовремя 👍"
+    if late:
+        msg += f"\n⚠️ Опоздание: {fmt_min(late)}"
+    elif workday(emp, t):
+        msg += "\nВы вовремя 👍"
     return True, msg
 
 
@@ -268,7 +285,8 @@ def profile(uid: int) -> dict:
             "name": emp["name"],
             "role": emp.get("role", "Сотрудник"),
             "streak": _streak(c, uid, emp),
-            "schedule": f"{emp['start']}–{emp['end']}",
+            "schedule": schedule_text(emp),
+            "has_schedule": has_schedule(emp),
             "days": ", ".join(WEEKDAYS[d] for d in emp.get("days", range(7))),
             "goal": config.GOAL_HOURS,
             "total_hours": round(total, 1),
@@ -463,6 +481,8 @@ def team() -> list:
                 status, icon = f"на месте с {s['check_in'][11:16]}", "🟢"
             elif first:
                 status, icon = f"ушёл(ла) в {last['check_out'][11:16]}", "⚪️"
+            elif not has_schedule(emp):
+                status, icon = "сегодня не отмечался(ась)", "⚪️"
             elif workday(emp, t):
                 status, icon = "не пришёл(ла)", "🔴"
             else:
@@ -474,7 +494,7 @@ def team() -> list:
                 "id": uid,
                 "name": emp["name"],
                 "role": emp.get("role", "Сотрудник"),
-                "schedule": f"{emp['start']}–{emp['end']}",
+                "schedule": schedule_text(emp),
                 "icon": icon,
                 "status": status,
                 "late": fmt_min(first["late_min"]) if first and first["late_min"] else None,
