@@ -97,7 +97,7 @@ RELAY_TARGETS = {
     "silver": {
         "chats": [
             {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None},
-            {"title": "Xuping silver channel", "chat_id": None, "thread_id": None},
+            {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None},
         ],
         "footer": (
             "Zakaz faqat: @xupingSilver\n"
