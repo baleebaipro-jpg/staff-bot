@@ -119,6 +119,13 @@ def api_me(uid, data):
 @app.post("/api/checkin")
 @need_user()
 def api_checkin(uid, data):
+    if core.PROOF_REQUIRED:
+        ok, msg = core.start_proof(uid)
+        if not ok:
+            return jsonify(ok=False, msg=msg)
+        with core.db() as c:
+            core.notify(c, uid, msg)  # бот пришлёт просьбу о кружке в чат
+        return jsonify(ok=True, close=True, msg="📹 Запишите кружок в чате с ботом — это подтвердит приход")
     ok, msg = core.check_in(uid)
     return jsonify(ok=ok, msg=msg)
 
@@ -542,6 +549,7 @@ async function api(path, body = {}) {
 }
 async function action(path, body) {
   try { const r = await api(path, body); toast(r.msg);
+    if (r.close) { setTimeout(() => tg.close(), 1800); }
     if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
     await load();
   } catch (e) { toast(e.message); }

@@ -136,9 +136,48 @@ async def came(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not core.employee(uid):
         return await deny(update)
+    if core.PROOF_REQUIRED:
+        _, msg = core.start_proof(uid)  # ждём кружок
+        await reply(update, msg)
+        return
     _, msg = core.check_in(uid)
     await reply(update, msg)
     await save_avatar(context.bot, uid)
+
+
+PROOF_CHAT_ID = getattr(config, "PROOF_CHAT_ID", None)
+PROOF_THREAD_ID = getattr(config, "PROOF_THREAD_ID", None)
+
+
+async def got_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кружок от сотрудника — подтверждение прихода."""
+    uid = update.effective_user.id
+    if not core.employee(uid):
+        return
+    ok, msg = core.take_proof(uid)
+    await reply(update, msg)
+    if not ok:
+        return
+    await save_avatar(context.bot, uid)
+    note = f"📹 {core.name(uid)}: {msg.splitlines()[0].replace('✅ ', '')}"
+    if len(msg.splitlines()) > 1 and "Опоздание" in msg:
+        note += "\n" + msg.splitlines()[1]
+    targets = [(PROOF_CHAT_ID, PROOF_THREAD_ID)] if PROOF_CHAT_ID else [(a, None) for a in config.ADMINS]
+    for chat_id, thread in targets:
+        try:
+            copied = await context.bot.copy_message(chat_id, uid, update.message.message_id, message_thread_id=thread)
+            await context.bot.send_message(chat_id, note, message_thread_id=thread,
+                                           reply_to_message_id=copied.message_id)
+        except TelegramError as e:
+            logging.warning("Кружок не переслан в %s: %s", chat_id, e)
+
+
+async def other_media_while_proof(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if core.proof_pending(uid):
+        await reply(update, "Нужен именно кружок 📹 (круглое видео), не фото и не обычное видео.")
+    else:
+        await other(update, context)
 
 
 async def left(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -250,6 +289,11 @@ async def outbox_loop(app: Application) -> None:
         except Exception:
             logging.exception("Ошибка при проверке штрафов")
         try:
+            for uid in core.expired_proofs():
+                await app.bot.send_message(uid, "⌛ Время на кружок вышло, приход не засчитан.\nНажмите «✅ Пришёл» ещё раз.")
+        except Exception:
+            logging.exception("Ошибка при проверке кружков")
+        try:
             await relay.daily_check(app.bot)
         except Exception:
             logging.exception("Ошибка при проверке альбомов фотографа")
@@ -295,6 +339,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
     app.add_handler(MessageHandler(filters.Text([BTN_TEAM]), team))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.VIDEO), other_media_while_proof))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, other))
     app.add_error_handler(on_error)
     print("Бот запущен. Остановить: Ctrl+C")

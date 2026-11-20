@@ -226,6 +226,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS emp_shift(user_id INTEGER PRIMARY KEY, shift TEXT);
             CREATE TABLE IF NOT EXISTS emp_week(user_id INTEGER, weekday INTEGER, shift TEXT,
                 PRIMARY KEY(user_id, weekday));
+            CREATE TABLE IF NOT EXISTS proof_pending(
+                user_id INTEGER PRIMARY KEY, pressed_at TEXT, expires_at TEXT);
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
@@ -277,11 +279,13 @@ def _close_stale(c, uid):
     )
 
 
-def check_in(uid: int):
+def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: bool = True):
+    """Отметить приход. dry_run — только проверить, можно ли.
+    t — время прихода (например, время нажатия кнопки, если ждали кружок)."""
     emp = employee(uid)
     if not emp:
         return False, "Вы не в списке сотрудников."
-    t = now()
+    t = t or now()
     with db() as c:
         _close_stale(c, uid)
         s = _open_session(c, uid)
@@ -292,16 +296,20 @@ def check_in(uid: int):
             return False, "Сегодня смена уже завершена."
         if not in_window(emp, "in", t):
             a, b = window(emp, "in", t)
-            if t > b:
+            if t > b and not dry_run:
                 notify_admins(c, f"⛔ {emp['name']} пытался(ась) отметить приход в {t:%H:%M} — окно закрыто ({a:%H:%M}–{b:%H:%M})")
             return False, f"⏰ Отметить приход можно только с {a:%H:%M} до {b:%H:%M}.\nСейчас {t:%H:%M}."
+        if dry_run:
+            return True, ""
         late = 0
         if workday(emp, t):
             diff = int((t - at(t, shift_start(emp, t))).total_seconds() // 60)
             if diff > config.GRACE_MINUTES:
                 late = diff
         c.execute("INSERT INTO sessions(user_id, check_in, late_min) VALUES(?, ?, ?)", (uid, t.strftime(FMT), late))
-        if late:
+        if not notify_boss:
+            pass
+        elif late:
             notify_admins(c, f"⚠️ {emp['name']} пришёл(ла) в {t:%H:%M} — опоздание {fmt_min(late)} (по графику {shift_start(emp, t)})")
         else:
             notify_admins(c, f"✅ {emp['name']} пришёл(ла) в {t:%H:%M}")
@@ -468,6 +476,8 @@ def check_penalties():
             ).fetchone()
             if came:
                 continue
+            if c.execute("SELECT 1 FROM proof_pending WHERE user_id=?", (uid,)).fetchone():
+                continue  # нажал «Пришёл», ждём кружок — штраф пока не выписываем
             reason = f"не отметил(а) приход до {window(emp, 'in', t)[1]:%H:%M} (график {shift_start(emp, t)})"
             cur = c.execute(
                 "INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
@@ -658,3 +668,55 @@ def flag_once(name: str) -> bool:
     with db() as c:
         cur = c.execute("INSERT OR IGNORE INTO flags(name, value) VALUES(?, ?)", (name, now().strftime(FMT)))
         return cur.rowcount == 1
+
+
+# ---------- подтверждение прихода кружком ----------
+
+PROOF_REQUIRED = getattr(config, "PROOF_REQUIRED", False)
+PROOF_MINUTES = getattr(config, "PROOF_MINUTES", 3)
+PROOF_PROMPT = (
+    "📹 Запишите кружок, чтобы подтвердить приход.\n\n"
+    "Нажмите на 🎤 справа внизу — значок станет 📷. Затем зажмите его и запишите короткое видео.\n"
+    "⏳ У вас {minutes} мин."
+)
+
+
+def start_proof(uid: int):
+    """Нажата кнопка «Пришёл»: проверяем, можно ли, и ждём кружок."""
+    ok, msg = check_in(uid, dry_run=True)
+    if not ok:
+        return False, msg
+    t = now()
+    with db() as c:
+        c.execute("INSERT INTO proof_pending(user_id, pressed_at, expires_at) VALUES(?, ?, ?) "
+                  "ON CONFLICT(user_id) DO UPDATE SET pressed_at=excluded.pressed_at, expires_at=excluded.expires_at",
+                  (uid, t.strftime(FMT), (t + timedelta(minutes=PROOF_MINUTES)).strftime(FMT)))
+    return True, PROOF_PROMPT.format(minutes=PROOF_MINUTES)
+
+
+def proof_pending(uid: int) -> bool:
+    with db() as c:
+        r = c.execute("SELECT expires_at FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
+    return bool(r) and parse(r[0]) >= now()
+
+
+def take_proof(uid: int):
+    """Пришёл кружок: засчитываем приход по времени нажатия кнопки."""
+    with db() as c:
+        r = c.execute("SELECT pressed_at, expires_at FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
+        if r:
+            c.execute("DELETE FROM proof_pending WHERE user_id=?", (uid,))
+    if not r:
+        return False, "Сначала нажмите «✅ Пришёл», потом запишите кружок."
+    if parse(r[1]) < now():
+        return False, "⌛ Время на кружок вышло. Нажмите «✅ Пришёл» ещё раз."
+    return check_in(uid, t=parse(r[0]), notify_boss=False)
+
+
+def expired_proofs() -> list:
+    """Кто нажал «Пришёл», но не прислал кружок вовремя (удаляем и возвращаем ID)."""
+    t = now().strftime(FMT)
+    with db() as c:
+        ids = [r[0] for r in c.execute("SELECT user_id FROM proof_pending WHERE expires_at < ?", (t,))]
+        c.execute("DELETE FROM proof_pending WHERE expires_at < ?", (t,))
+    return ids
