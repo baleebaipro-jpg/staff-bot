@@ -4,7 +4,16 @@ import os
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.error import BadRequest, NetworkError, TelegramError
-from telegram.ext import Application, ChatMemberHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    ChatMemberHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 import config
 import core
@@ -62,6 +71,19 @@ async def save_avatar(bot, uid: int) -> None:
         await file.download_to_drive(os.path.join(AVATAR_DIR, f"{uid}.jpg"))
     except TelegramError as e:
         logging.warning("Аватар %s не скачан: %s", uid, e)
+
+
+ALLOWED_USERS = set(getattr(config, "BOT_ALLOWED_USERS", []) or [])
+
+
+async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """В личке бот отвечает только тем, кто в BOT_ALLOWED_USERS. Остальным — тишина."""
+    chat = update.effective_chat
+    if not ALLOWED_USERS or not chat or chat.type != "private":
+        return
+    user = update.effective_user
+    if not user or user.id not in ALLOWED_USERS:
+        raise ApplicationHandlerStop
 
 
 def known(uid: int) -> bool:
@@ -260,6 +282,7 @@ def main() -> None:
         (filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.StatusUpdate.ALL & ~filters.COMMAND,
         relay.on_group_message,
     ))
+    app.add_handler(TypeHandler(Update, gate), group=-1)
     app.add_handler(ChatMemberHandler(bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
