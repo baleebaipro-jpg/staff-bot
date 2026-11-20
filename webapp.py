@@ -100,6 +100,7 @@ def api_avatar(uid, data):
 @need_user()
 def api_me(uid, data):
     res = {"is_admin": core.is_admin(uid), "is_employee": bool(core.employee(uid)), "goal": config.GOAL_HOURS,
+           "ranks": getattr(config, "RANKS", None),
            "today_wd": core.now().weekday()}
     if res["is_employee"]:
         res["profile"] = core.profile(uid)
@@ -312,6 +313,7 @@ PAGE = r"""<!doctype html>
   .member .ava { width: 52px; height: 52px; padding: 2px; box-shadow: none; }
   .member .ava > div, .member .ava > img { font-size: 20px; border-width: 2px; }
   .mini-bar { height: 7px; margin-top: 8px; }
+  .rank-sm svg { width: 20px; height: 20px; vertical-align: -5px; }
   .week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 8px; }
   .week div { background: var(--card2); border-radius: 9px; padding: 5px 2px; text-align: center; font-size: 11px; line-height: 1.25; }
   .week div b { display: block; font-size: 11px; color: var(--hint); font-weight: 600; }
@@ -356,13 +358,13 @@ PAGE = r"""<!doctype html>
     </div>
 
     <div class="goal"><span id="g-have"></span> <small>/ <span id="g-goal"></span> ч</small></div>
-    <div class="hint">до профессионала</div>
+    <div class="hint" id="g-to">до высшего звания</div>
     <div class="bar-row"><div class="bar"><div id="g-bar" style="width:0"></div></div><div class="pct" id="g-pct"></div></div>
 
     <div class="stats">
       <div class="stat s1"><div class="ic">📅</div><b id="s-month"></b><span>за месяц</span></div>
       <div class="stat s2"><div class="ic">🔥</div><b id="s-streak"></b><span>подряд</span></div>
-      <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span>текущий уровень</span></div>
+      <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span>текущее звание</span></div>
     </div>
 
     <div class="card status">
@@ -379,7 +381,7 @@ PAGE = r"""<!doctype html>
     <div class="card" id="pen-card"></div>
 
     <div class="card">
-      <h3>Уровни и бейджи</h3>
+      <h3>Звания</h3>
       <div class="levels" id="levels"></div>
     </div>
 
@@ -451,31 +453,54 @@ const num = n => Number(n).toLocaleString("ru-RU", {maximumFractionDigits: 1});
 const plural = (n, a, b, c) => { n = Math.abs(n) % 100; const d = n % 10;
   return n > 10 && n < 20 ? c : d > 1 && d < 5 ? b : d === 1 ? a : c; };
 
-/* ---------- бейджи ---------- */
-function hexBadge(id, c1, c2, c3) {
-  return `<svg viewBox="0 0 64 64"><defs>
-    <linearGradient id="g${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>
-    <polygon points="32,3 57,17.5 57,46.5 32,61 7,46.5 7,17.5" fill="url(#g${id})" stroke="${c3}" stroke-width="2"/>
-    <polygon points="32,10 51,21 51,43 32,54 13,43 13,21" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
-    <polygon points="32,18 35.8,27.6 46,28.2 38.1,34.7 40.7,44.6 32,39 23.3,44.6 25.9,34.7 18,28.2 28.2,27.6" fill="${c3}" stroke="rgba(255,255,255,.6)" stroke-width="1"/></svg>`;
+/* ---------- звания (бейджи) ---------- */
+function starPts(cx, cy, R) {
+  const pts = [];
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? R * 0.45 : R, a = Math.PI / 2 * -1 + i * Math.PI / 5;
+    pts.push((cx + r * Math.cos(a)).toFixed(1) + "," + (cy + r * Math.sin(a)).toFixed(1));
+  }
+  return pts.join(" ");
 }
-function diamond() {
-  return `<svg viewBox="0 0 64 64"><defs>
-    <linearGradient id="gd" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9fe2ff"/><stop offset="1" stop-color="#2d6bff"/></linearGradient></defs>
-    <polygon points="14,10 50,10 60,24 32,58 4,24" fill="url(#gd)" stroke="#cdeeff" stroke-width="1.5"/>
-    <polyline points="4,24 60,24" stroke="#e6f7ff" stroke-width="1.2" fill="none"/>
-    <polyline points="14,10 22,24 32,58 42,24 50,10" stroke="#e6f7ff" stroke-width="1.2" fill="none" opacity=".8"/>
-    <polyline points="22,24 32,10 42,24" stroke="#e6f7ff" stroke-width="1.2" fill="none" opacity=".8"/></svg>`;
+const grad = (id, c1, c2) => `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>`;
+const SHIELD = "M32 4 L56 12 V31 C56 46 45 56 32 61 C19 56 8 46 8 31 V12 Z";
+const BOARD = '<rect x="15" y="3" width="34" height="58" rx="9"';
+function chevrons(n) {
+  return Array.from({length: n}, (_, i) => `<polyline points="18,${44 - i * 9} 32,${34 - i * 9} 46,${44 - i * 9}"
+    fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".92"/>`).join("");
 }
+const RANK_ICONS = [
+  // 0 Солдат: щит, одна лычка
+  () => `<svg viewBox="0 0 64 64">${grad("r0", "#c9a66b", "#6b5330")}
+    <path d="${SHIELD}" fill="url(#r0)" stroke="#e9d3a4" stroke-width="2"/>${chevrons(1)}</svg>`,
+  // 1 Сержант: щит, три лычки
+  () => `<svg viewBox="0 0 64 64">${grad("r1", "#dfe4ee", "#6f7a8c")}
+    <path d="${SHIELD}" fill="url(#r1)" stroke="#f4f6fb" stroke-width="2"/>${chevrons(3)}</svg>`,
+  // 2 Лейтенант: погон, две звезды
+  () => `<svg viewBox="0 0 64 64">${grad("r2", "#3a4a7a", "#1c2547")}
+    ${BOARD} fill="url(#r2)" stroke="#8fa2d8" stroke-width="2"/>
+    <line x1="32" y1="6" x2="32" y2="58" stroke="#ffd35c" stroke-width="2.5"/>
+    <polygon points="${starPts(23, 40, 7)}" fill="#ffd35c"/><polygon points="${starPts(41, 40, 7)}" fill="#ffd35c"/></svg>`,
+  // 3 Полковник: погон с двумя просветами, три звезды
+  () => `<svg viewBox="0 0 64 64">${grad("r3", "#4b2f86", "#241447")}
+    ${BOARD} fill="url(#r3)" stroke="#b49cff" stroke-width="2"/>
+    <line x1="26" y1="6" x2="26" y2="58" stroke="#ffd35c" stroke-width="2.5"/>
+    <line x1="38" y1="6" x2="38" y2="58" stroke="#ffd35c" stroke-width="2.5"/>
+    <polygon points="${starPts(32, 18, 7)}" fill="#ffe08a"/><polygon points="${starPts(22, 36, 7)}" fill="#ffe08a"/>
+    <polygon points="${starPts(42, 36, 7)}" fill="#ffe08a"/></svg>`,
+  // 4 Генерал: золотой погон с большой звездой
+  () => `<svg viewBox="0 0 64 64">${grad("r4", "#ffe58a", "#c98a12")}
+    ${BOARD} fill="url(#r4)" stroke="#fff3c4" stroke-width="2"/>
+    <path d="M18 12 L24 18 L30 12 L36 18 L42 12 L46 16" fill="none" stroke="#a8700c" stroke-width="2" opacity=".6"/>
+    <polygon points="${starPts(32, 38, 14)}" fill="#fff6d6" stroke="#a8700c" stroke-width="1.5"/></svg>`,
+];
+const DEFAULT_RANKS = ["Солдат", "Сержант", "Лейтенант", "Полковник", "Генерал"];
 function levels(goal) {
+  const names = (data && data.ranks) || DEFAULT_RANKS;
   const q = goal / 4;
-  return [
-    {name: "Новичок",      from: 0,     to: q - 1,     icon: () => hexBadge("b", "#e0955c", "#8a4a22", "#f4b183")},
-    {name: "Опытный",      from: q,     to: 2*q - 1,   icon: () => hexBadge("s", "#e4e8f0", "#7d8597", "#f6f8fc")},
-    {name: "Мастер",       from: 2*q,   to: 3*q - 1,   icon: () => hexBadge("g", "#ffd35c", "#c9851a", "#fff1b8")},
-    {name: "Эксперт",      from: 3*q,   to: goal - 1,  icon: () => hexBadge("e", "#6cc4ff", "#1f5fb8", "#c9ecff")},
-    {name: "Профессионал", from: goal,  to: null,      icon: diamond},
-  ];
+  const bounds = [[0, q - 1], [q, 2 * q - 1], [2 * q, 3 * q - 1], [3 * q, goal - 1], [goal, null]];
+  return bounds.map(([from, to], i) => ({name: names[i] || DEFAULT_RANKS[i], from, to, icon: RANK_ICONS[i]}));
 }
 const levelOf = (h, goal) => { const L = levels(goal); let i = 0; L.forEach((l, k) => { if (h >= l.from) i = k; }); return [L[i], i, L]; };
 
@@ -602,9 +627,11 @@ function renderMe() {
     : `<div class="empty">Посещений пока нет</div>`;
 
   const next = L[idx + 1];
-  $("m-title").textContent = next ? "Продолжайте в том же духе!" : "Вы — профессионал! 🏆";
-  $("m-sub").textContent = next ? `До уровня «${next.name}» осталось ${num(Math.max(0, next.from - p.total_hours))} ч 💪`
-                                : "Цель 10 000 часов достигнута";
+  const top = L[L.length - 1];
+  $("g-to").textContent = `до звания «${top.name}»`;
+  $("m-title").textContent = next ? "Продолжайте в том же духе!" : `Вы — ${top.name}! 🏆`;
+  $("m-sub").textContent = next ? `До звания «${next.name}» осталось ${num(Math.max(0, next.from - p.total_hours))} ч 💪`
+                                : `Цель ${num(p.goal)} часов достигнута`;
 }
 
 function weekCells(week, todayWd) {
@@ -665,7 +692,7 @@ function renderTeam() {
         </div></div>
       ${weekChips(e.week, data.today_wd)}
       <div class="bar mini-bar"><div style="width:${pct}%"></div></div>
-      <div class="hint" style="font-size:13px;margin-top:6px">${num(e.total_hours)} / ${num(data.goal)} ч · ${lvl.name}</div>
+      <div class="hint" style="font-size:13px;margin-top:6px"><span class="rank-sm">${lvl.icon()}</span> ${esc(lvl.name)} · ${num(e.total_hours)} / ${num(data.goal)} ч</div>
       <div style="font-size:13px;margin-top:4px;color:${e.penalties_total ? "var(--red)" : "var(--hint)"}">🔴 Штрафов: всего ${e.penalties_total} · за месяц ${e.penalties_month}</div>
       ${e.penalties.map(x => `<div class="pen"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
         <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div>`).join("")}
