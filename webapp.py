@@ -188,6 +188,13 @@ def api_set_shift(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+@app.post("/api/task_review")
+@need_user(admin=True)
+def api_task_review(uid, data):
+    ok, msg = core.review_task(int(data.get("id", 0)), bool(data.get("approve")))
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/delete_task")
 @need_user(admin=True)
 def api_delete_task(uid, data):
@@ -599,7 +606,8 @@ function renderMe() {
     ? `<span class="dot" style="background:var(--green)"></span>На месте с ${p.since}`
     : `<span class="dot" style="background:var(--hint)"></span>Не на месте`;
   const can = p.on_site ? p.can_out : p.can_in;
-  $("st-sub").textContent = !p.has_schedule ? (p.on_site ? "Свободный график · отметьте уход, когда закончите" : "Свободный график · отмечайтесь в любое время")
+  $("st-sub").textContent = p.on_site && p.unfinished ? `⛔ Сначала закройте задачи (${p.unfinished})`
+    : !p.has_schedule ? (p.on_site ? "Свободный график · отметьте уход, когда закончите" : "Свободный график · отмечайтесь в любое время")
     : !p.workday ? `Сегодня выходной`
     : p.on_site ? `Уход: ${p.out_window}`
     : p.came_today ? `Смена завершена · график ${p.schedule}`
@@ -625,7 +633,8 @@ function renderMe() {
   const open = data.tasks.filter(t => !t.done), done = data.tasks.filter(t => t.done).slice(0, 3);
   $("tasks").innerHTML = (open.length || done.length) ? [...open, ...done].map(t => `
     <div class="task ${t.done ? "done" : ""}"><div class="tt">${esc(t.title)}<div class="hint" style="font-size:12px">${t.created}</div></div>
-    ${t.done ? "✔️" : `<button class="btn btn-main btn-sm" data-done="${t.id}">Готово</button>`}</div>`).join("")
+    ${t.done ? "✔️" : t.status === "review" ? `<span class="hint" style="font-size:13px;white-space:nowrap">⏳ на проверке</span>`
+      : `<button class="btn btn-main btn-sm" data-done="${t.id}">Готово</button>`}</div>`).join("")
     : `<div class="empty">Задач нет 🎉</div>`;
   document.querySelectorAll("[data-done]").forEach(b => b.onclick = () => action("/api/task_done", {id: +b.dataset.done}));
 
@@ -704,10 +713,15 @@ function renderTeam() {
       <div style="font-size:13px;margin-top:4px;color:${e.penalties_total ? "var(--red)" : "var(--hint)"}">🔴 Штрафов: всего ${e.penalties_total} · за месяц ${e.penalties_month}</div>
       ${e.penalties.map(x => `<div class="pen"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
         <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div>`).join("")}
-      ${e.tasks.map(t => `<div class="task"><div class="tt">📌 ${esc(t.title)}</div>
-        <button class="btn btn-soft btn-sm" data-del="${t.id}">✕</button></div>`).join("")}
+      ${e.tasks.map(t => `<div class="task"><div class="tt">📌 ${esc(t.title)}${t.status === "review"
+          ? `<div style="font-size:12px;color:var(--orange)">⏳ ждёт вашей проверки</div>` : ""}</div>
+        ${t.status === "review" ? `<button class="btn btn-main btn-sm" data-review="${t.id}" data-ok="1">✅</button>
+        <button class="btn btn-soft btn-sm" data-review="${t.id}" data-ok="">↩️</button>`
+        : `<button class="btn btn-soft btn-sm" data-del="${t.id}">✕</button>`}</div>`).join("")}
     </div>`; }).join("");
   document.querySelectorAll("[data-week]").forEach(b => b.onclick = () => openWeek(+b.dataset.week));
+  document.querySelectorAll("[data-review]").forEach(b => b.onclick = () =>
+    action("/api/task_review", {id: +b.dataset.review, approve: !!b.dataset.ok}));
   document.querySelectorAll("[data-delpen]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить штраф?", ok => ok && action("/api/delete_penalty", {id: +b.dataset.delpen})));
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = () =>

@@ -2,11 +2,21 @@ import asyncio
 import logging
 import os
 
-from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
+import json
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+    WebAppInfo,
+)
 from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
+    CallbackQueryHandler,
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
@@ -201,8 +211,33 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     open_tasks = [t for t in core.tasks(uid) if not t["done"]]
     if not open_tasks:
         return await reply(update, "У вас нет открытых задач 🎉")
-    lines = [f"{i}. {t['title']}" for i, t in enumerate(open_tasks, 1)]
-    await reply(update, "📋 Ваши задачи:\n\n" + "\n".join(lines) + "\n\nОтметить выполнение — в личном кабинете.")
+    lines, buttons = [], []
+    for i, t in enumerate(open_tasks, 1):
+        if t["status"] == "review":
+            lines.append(f"{i}. {t['title']} — ⏳ на проверке")
+        else:
+            lines.append(f"{i}. {t['title']}")
+            buttons.append([InlineKeyboardButton(f"✅ Готово: {t['title'][:40]}", callback_data=f"done:{t['id']}")])
+    await reply(update, "📋 Ваши задачи:\n\n" + "\n".join(lines),
+                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+
+
+async def task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кнопки под сообщениями: «Готово» (сотрудник), «Принять/Вернуть» (руководитель)."""
+    q = update.callback_query
+    uid = q.from_user.id
+    parts = q.data.split(":")
+    if parts[0] == "done":
+        ok, msg = core.complete_task(int(parts[1]), uid)
+    elif parts[0] == "task" and core.is_admin(uid):
+        ok, msg = core.review_task(int(parts[2]), parts[1] == "ok")
+    else:
+        ok, msg = False, "Нет доступа."
+    await q.answer(msg[:190], show_alert=not ok)
+    try:
+        await q.edit_message_text(q.message.text + "\n\n" + msg)
+    except TelegramError:
+        pass
 
 
 async def team(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -310,7 +345,12 @@ async def outbox_loop(app: Application) -> None:
                     text, mode = m["text"], None
                     if text.startswith("HTML:"):
                         text, mode = text[5:], "HTML"
-                    await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode)
+                    markup = None
+                    if m.get("markup"):
+                        markup = InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in row]
+                                                       for row in json.loads(m["markup"])])
+                    await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode,
+                                               reply_markup=markup)
                     core.mark_sent(m["id"])
                 except BadRequest as e:
                     logging.warning("Сообщение отклонено %s: %s", m["chat_id"], e)
@@ -344,6 +384,7 @@ def main() -> None:
     app.add_handler(CommandHandler("chatid", chat_id))
     app.add_handler(CommandHandler("task", task_cmd))
     app.add_handler(CommandHandler("fine", fine_cmd))
+    app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))

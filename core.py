@@ -194,6 +194,8 @@ def in_window(emp, kind: str, t: datetime) -> bool:
     if not workday(emp, t):
         return True  # в выходной — без ограничений
     a, b = window(emp, kind, t)
+    if kind == "out":
+        return a <= t  # уйти можно с начала окна (задержаться — можно)
     return a <= t <= b
 
 
@@ -234,6 +236,11 @@ def init_db():
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
         )
+        if "status" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
+            c.execute("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'open'")
+            c.execute("UPDATE tasks SET status='done' WHERE done_at IS NOT NULL")
+        if "markup" not in {r[1] for r in c.execute("PRAGMA table_info(outbox)")}:
+            c.execute("ALTER TABLE outbox ADD COLUMN markup TEXT")
         if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
             c.execute("ALTER TABLE proof_pending ADD COLUMN code TEXT")
         cols = {r[1] for r in c.execute("PRAGMA table_info(penalties)")}
@@ -241,9 +248,12 @@ def init_db():
             c.execute("ALTER TABLE penalties ADD COLUMN note TEXT")
 
 
-def notify_admins(c, text: str):
+def notify_admins(c, text: str, buttons=None):
+    """buttons — [[("Текст", "callback_data"), ...], ...] — кнопки под сообщением."""
+    import json
+    markup = json.dumps(buttons, ensure_ascii=False) if buttons else None
     for a in config.ADMINS:
-        c.execute("INSERT INTO outbox(chat_id, text) VALUES(?, ?)", (a, text))
+        c.execute("INSERT INTO outbox(chat_id, text, markup) VALUES(?, ?, ?)", (a, text, markup))
 
 
 def notify(c, uid: int, text: str):
@@ -267,9 +277,7 @@ def _close_stale(c, uid):
     emp = employee(uid)
     t = now()
     if cin.date() >= t.date():
-        # сегодня: закрываем, только если окно ухода уже прошло
-        if not emp or not workday(emp, t) or t <= window(emp, "out", t)[1]:
-            return
+        return  # сегодняшнюю смену не закрываем: сотрудник может задержаться
     if emp and workday(emp, cin):
         end = at(cin.date(), shift_end(emp, cin))
     else:  # свободный график: считаем максимум 8 часов, но не позже конца дня
@@ -337,7 +345,12 @@ def check_out(uid: int):
             return False, "Сегодня вы ещё не отмечали приход."
         if not in_window(emp, "out", t):
             a, b = window(emp, "out", t)
-            return False, f"⏰ Отметить уход можно только с {a:%H:%M} до {b:%H:%M}.\nСейчас {t:%H:%M}."
+            return False, f"⏰ Уйти можно не раньше {a:%H:%M}.\nСейчас {t:%H:%M}."
+        left = _unfinished(c, uid)
+        if left:
+            lines = "\n".join(f"• {r['title']}" + (" — ⏳ на проверке" if r["status"] == "review" else "") for r in left)
+            return False, ("⛔ Уходить нельзя — есть незакрытые задачи:\n" + lines +
+                           "\n\nНажмите «Готово» и дождитесь, пока руководитель примет задачу.")
         cin = parse(s["check_in"])
         worked = int((t - cin).total_seconds() // 60)
         early = 0
@@ -431,7 +444,8 @@ def profile(uid: int) -> dict:
             "in_window": window_text(emp, "in", t),
             "out_window": window_text(emp, "out", t),
             "can_in": in_window(emp, "in", t) and not s and not (today and workday(emp, t)),
-            "can_out": bool(s) and in_window(emp, "out", t),
+            "unfinished": len(_unfinished(c, uid)),
+            "can_out": bool(s) and in_window(emp, "out", t) and not _unfinished(c, uid),
         }
     return res
 
@@ -562,28 +576,56 @@ def add_task(uid: int, title: str) -> int:
         return cur.lastrowid
 
 
+def _unfinished(c, uid) -> list:
+    return c.execute("SELECT id, title, status FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
+                     "ORDER BY id", (uid,)).fetchall()
+
+
 def tasks(uid: int) -> list:
     with db() as c:
         rows = c.execute(
-            "SELECT * FROM tasks WHERE user_id=? ORDER BY done_at IS NOT NULL, id DESC LIMIT 50", (uid,)
+            "SELECT * FROM tasks WHERE user_id=? ORDER BY status='done', id DESC LIMIT 50", (uid,)
         ).fetchall()
     return [
         {"id": r["id"], "title": r["title"], "created": parse(r["created_at"]).strftime("%d.%m %H:%M"),
-         "done": bool(r["done_at"])}
+         "status": r["status"], "done": r["status"] == "done"}
         for r in rows
     ]
 
 
 def complete_task(task_id: int, uid: int):
+    """Сотрудник нажал «Готово» — задача уходит руководителю на проверку."""
     with db() as c:
         r = c.execute("SELECT * FROM tasks WHERE id=? AND user_id=?", (task_id, uid)).fetchone()
         if not r:
             return False, "Задача не найдена."
-        if r["done_at"]:
-            return False, "Задача уже выполнена."
-        c.execute("UPDATE tasks SET done_at=? WHERE id=?", (now().strftime(FMT), task_id))
-        notify_admins(c, f"✔️ {name(uid)} выполнил(а) задачу:\n{r['title']}")
-    return True, "Задача выполнена 👍"
+        if r["status"] == "done":
+            return False, "Задача уже принята."
+        if r["status"] == "review":
+            return False, "Задача уже на проверке ⏳"
+        c.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
+        notify_admins(c, f"📝 {name(uid)} выполнил(а) задачу — проверьте:\n{r['title']}",
+                      [[("✅ Принять", f"task:ok:{task_id}"), ("↩️ Вернуть", f"task:back:{task_id}")]])
+    return True, "Отправлено руководителю на проверку ⏳"
+
+
+def review_task(task_id: int, approve: bool):
+    """Руководитель принимает задачу или возвращает на доработку."""
+    with db() as c:
+        r = c.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not r:
+            return False, "Задача не найдена (возможно, удалена)."
+        if r["status"] == "done":
+            return False, "Задача уже принята."
+        if approve:
+            c.execute("UPDATE tasks SET status='done', done_at=? WHERE id=?", (now().strftime(FMT), task_id))
+            left = len(_unfinished(c, r["user_id"]))
+            extra = "\nВсе задачи закрыты — можно уходить 👋" if not left else f"\nОсталось задач: {left}"
+            notify(c, r["user_id"], f"✅ Задача принята:\n{r['title']}{extra}")
+            return True, f"✅ Принято: {r['title']}"
+        c.execute("UPDATE tasks SET status='open' WHERE id=?", (task_id,))
+        notify(c, r["user_id"], f"↩️ Задачу вернули на доработку:\n{r['title']}")
+        return True, f"↩️ Возвращено: {r['title']}"
 
 
 def delete_task(task_id: int):
@@ -620,9 +662,7 @@ def team() -> list:
                 status, icon = "не пришёл(ла)", "🔴"
             else:
                 status, icon = "выходной", "🌙"
-            open_tasks = c.execute(
-                "SELECT id, title FROM tasks WHERE user_id=? AND done_at IS NULL ORDER BY id DESC", (uid,)
-            ).fetchall()
+            open_tasks = _unfinished(c, uid)
             out.append({
                 "id": uid,
                 "name": emp["name"],
@@ -636,7 +676,7 @@ def team() -> list:
                 "penalties": penalties_list(c, uid),
                 "penalties_total": penalties_total(c, uid),
                 "total_hours": round(_hours(c, uid) + emp.get("hours_before", 0), 1),
-                "tasks": [{"id": r["id"], "title": r["title"]} for r in open_tasks],
+                "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in open_tasks],
             })
     return out
 
