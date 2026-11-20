@@ -106,6 +106,7 @@ def api_me(uid, data):
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
     if res["is_admin"]:
+        res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
         res["team"] = core.team()
         for e in res["team"]:
             e["ava_v"] = ava_version(e["id"])
@@ -159,6 +160,13 @@ def api_add_penalty(uid, data):
 @need_user(admin=True)
 def api_delete_penalty(uid, data):
     ok, msg = core.delete_penalty(int(data.get("id", 0)))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/set_shift")
+@need_user(admin=True)
+def api_set_shift(uid, data):
+    ok, msg = core.set_shift(int(data.get("user_id", 0)), str(data.get("shift", "")))
     return jsonify(ok=ok, msg=msg)
 
 
@@ -294,6 +302,7 @@ PAGE = r"""<!doctype html>
   .member .ava { width: 52px; height: 52px; padding: 2px; box-shadow: none; }
   .member .ava > div, .member .ava > img { font-size: 20px; border-width: 2px; }
   .mini-bar { height: 7px; margin-top: 8px; }
+  .shift-sel { margin: 6px 0 0; padding: 7px 10px; font-size: 13px; border-radius: 10px; width: auto; max-width: 100%; }
   select, input { width: 100%; font: inherit; color: var(--text); background: var(--card2); border: 1px solid var(--line);
                   border-radius: 12px; padding: 12px; margin-bottom: 10px; outline: none; }
 
@@ -570,7 +579,10 @@ function renderTeam() {
       <div class="member"><div class="ava">${avatar(e.id, e.name, e.ava_v)}</div>
         <div style="flex:1;min-width:0">
           <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(e.name)}</b><span>${e.icon}</span></div>
-          <div class="hint" style="font-size:13px">${esc(e.role)} · ${e.schedule}</div>
+          <div class="hint" style="font-size:13px">${esc(e.role)}</div>
+          <select class="shift-sel" data-shift="${e.id}">${Object.entries(data.shifts || {}).map(([k, t]) =>
+            `<option value="${k}" ${k === e.shift ? "selected" : ""}>🕘 ${esc(t)}</option>`).join("")}
+            ${e.shift ? "" : `<option selected disabled>🕘 ${esc(e.schedule)}</option>`}</select>
           <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div>
 
         </div></div>
@@ -582,6 +594,8 @@ function renderTeam() {
       ${e.tasks.map(t => `<div class="task"><div class="tt">📌 ${esc(t.title)}</div>
         <button class="btn btn-soft btn-sm" data-del="${t.id}">✕</button></div>`).join("")}
     </div>`; }).join("");
+  document.querySelectorAll("[data-shift]").forEach(s => s.onchange = () =>
+    action("/api/set_shift", {user_id: +s.dataset.shift, shift: s.value}));
   document.querySelectorAll("[data-delpen]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить штраф?", ok => ok && action("/api/delete_penalty", {id: +b.dataset.delpen})));
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = () =>

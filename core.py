@@ -37,8 +37,47 @@ def fmt_min(minutes: int) -> str:
     return f"{h} ч" if h else f"{m} мин"
 
 
+SHIFTS = getattr(config, "SHIFTS", {})
+_shift_cache = {"t": 0.0, "data": {}}
+
+
+def _shift_overrides() -> dict:
+    """Графики, выбранные руководителем в кабинете (хранятся в базе)."""
+    import time
+    if time.time() - _shift_cache["t"] > 30:
+        try:
+            with db() as c:
+                _shift_cache["data"] = {r[0]: r[1] for r in c.execute("SELECT user_id, shift FROM emp_shift")}
+        except sqlite3.Error:
+            pass
+        _shift_cache["t"] = time.time()
+    return _shift_cache["data"]
+
+
 def employee(uid: int):
-    return config.EMPLOYEES.get(uid)
+    base = config.EMPLOYEES.get(uid)
+    if not base:
+        return None
+    e = dict(base)
+    shift = _shift_overrides().get(uid) or e.get("shift")
+    if shift in SHIFTS:
+        e["shift"] = shift
+        e["start"] = SHIFTS[shift].get("start")
+        e["end"] = SHIFTS[shift].get("end")
+    return e
+
+
+def set_shift(uid: int, shift: str):
+    if not config.EMPLOYEES.get(uid):
+        return False, "Сотрудник не найден."
+    if shift not in SHIFTS:
+        return False, "Такого графика нет."
+    with db() as c:
+        c.execute("INSERT INTO emp_shift(user_id, shift) VALUES(?, ?) "
+                  "ON CONFLICT(user_id) DO UPDATE SET shift=excluded.shift", (uid, shift))
+        notify(c, uid, f"🕘 Ваш график изменён: {SHIFTS[shift]['title']}")
+    _shift_cache["data"][uid] = shift
+    return True, f"{name(uid)}: {SHIFTS[shift]['title']}"
 
 
 def is_admin(uid: int) -> bool:
@@ -55,7 +94,9 @@ def has_schedule(emp) -> bool:
 
 
 def schedule_text(emp) -> str:
-    return f"{emp['start']}–{emp['end']}" if has_schedule(emp) else "свободный график"
+    if emp.get("shift") in SHIFTS:
+        return SHIFTS[emp["shift"]]["title"]
+    return f"{emp['start']}–{emp['end']}" if has_schedule(emp) else "Свободный график"
 
 
 def workday(emp, day) -> bool:
@@ -112,6 +153,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS relay_posts(
                 id INTEGER PRIMARY KEY, day TEXT, created_at TEXT, items INTEGER);
             CREATE TABLE IF NOT EXISTS flags(name TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS emp_shift(user_id INTEGER PRIMARY KEY, shift TEXT);
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
@@ -344,7 +386,8 @@ def check_penalties():
     t = now()
     today = t.strftime("%Y-%m-%d")
     with db() as c:
-        for uid, emp in config.EMPLOYEES.items():
+        for uid in config.EMPLOYEES:
+            emp = employee(uid)
             if not workday(emp, t) or t <= window(emp, "in", t)[1]:
                 continue
             came = c.execute(
@@ -468,7 +511,8 @@ def team() -> list:
     today = t.strftime("%Y-%m-%d")
     out = []
     with db() as c:
-        for uid, emp in config.EMPLOYEES.items():
+        for uid in config.EMPLOYEES:
+            emp = employee(uid)
             _close_stale(c, uid)
             s = _open_session(c, uid)
             first = c.execute(
@@ -495,6 +539,7 @@ def team() -> list:
                 "name": emp["name"],
                 "role": emp.get("role", "Сотрудник"),
                 "schedule": schedule_text(emp),
+                "shift": emp.get("shift"),
                 "icon": icon,
                 "status": status,
                 "late": fmt_min(first["late_min"]) if first and first["late_min"] else None,
