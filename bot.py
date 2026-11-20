@@ -213,7 +213,9 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return await reply(update, "У вас нет открытых задач 🎉")
     lines, buttons = [], []
     for i, t in enumerate(open_tasks, 1):
-        if t["status"] == "review":
+        if t["due"]:
+            lines.append(f"{i}. {t['title']} — 📅 на {t['due']}")
+        elif t["status"] == "review":
             lines.append(f"{i}. {t['title']} — ⏳ на проверке")
         else:
             lines.append(f"{i}. {t['title']}")
@@ -230,7 +232,7 @@ async def task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if parts[0] == "done":
         ok, msg = core.complete_task(int(parts[1]), uid)
     elif parts[0] == "task" and core.is_admin(uid):
-        ok, msg = core.review_task(int(parts[2]), parts[1] == "ok")
+        ok, msg = core.review_task(int(parts[2]), parts[1])
     else:
         ok, msg = False, "Нет доступа."
     await q.answer(msg[:190], show_alert=not ok)

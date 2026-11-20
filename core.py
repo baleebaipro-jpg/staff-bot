@@ -239,6 +239,8 @@ def init_db():
         if "status" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'open'")
             c.execute("UPDATE tasks SET status='done' WHERE done_at IS NOT NULL")
+        if "due_date" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
+            c.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
         if "markup" not in {r[1] for r in c.execute("PRAGMA table_info(outbox)")}:
             c.execute("ALTER TABLE outbox ADD COLUMN markup TEXT")
         if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
@@ -326,6 +328,10 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
         else:
             notify_admins(c, f"✅ {emp['name']} пришёл(ла) в {t:%H:%M}")
     msg = f"✅ Приход отмечен в {t:%H:%M}."
+    with db() as c:
+        today_tasks = _unfinished(c, uid)
+    if today_tasks:
+        msg += f"\n📋 Задач на сегодня: {len(today_tasks)} — загляните в «Мои задачи»."
     if late:
         msg += f"\n⚠️ Опоздание: {fmt_min(late)}"
     elif workday(emp, t):
@@ -577,8 +583,34 @@ def add_task(uid: int, title: str) -> int:
 
 
 def _unfinished(c, uid) -> list:
-    return c.execute("SELECT id, title, status FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
-                     "ORDER BY id", (uid,)).fetchall()
+    """Незакрытые задачи на сегодня (перенесённые на будущее не считаются)."""
+    return c.execute("SELECT id, title, status, due_date FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
+                     "AND (due_date IS NULL OR due_date <= ?) ORDER BY id", (uid, now().strftime("%Y-%m-%d"))).fetchall()
+
+
+def _all_open(c, uid) -> list:
+    """Все незакрытые задачи, включая перенесённые на будущие дни."""
+    return c.execute("SELECT id, title, status, due_date FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
+                     "ORDER BY due_date IS NOT NULL, due_date, id", (uid,)).fetchall()
+
+
+def _due_label(due: str):
+    """'2026-11-24' -> 'Вт 24.11', если дата в будущем; иначе None."""
+    if not due or due <= now().strftime("%Y-%m-%d"):
+        return None
+    d = datetime.strptime(due, "%Y-%m-%d")
+    return f"{WEEKDAYS[d.weekday()]} {d:%d.%m}"
+
+
+def next_workday(uid: int) -> datetime:
+    """Следующий рабочий день сотрудника по его графику (выходные пропускаются)."""
+    emp = employee(uid)
+    d = now() + timedelta(days=1)
+    for _ in range(14):
+        if not emp or day_shift(emp, d) is not None:
+            return d
+        d += timedelta(days=1)
+    return now() + timedelta(days=1)
 
 
 def tasks(uid: int) -> list:
@@ -588,7 +620,7 @@ def tasks(uid: int) -> list:
         ).fetchall()
     return [
         {"id": r["id"], "title": r["title"], "created": parse(r["created_at"]).strftime("%d.%m %H:%M"),
-         "status": r["status"], "done": r["status"] == "done"}
+         "status": r["status"], "done": r["status"] == "done", "due": _due_label(r["due_date"])}
         for r in rows
     ]
 
@@ -605,19 +637,33 @@ def complete_task(task_id: int, uid: int):
             return False, "Задача уже на проверке ⏳"
         c.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
         notify_admins(c, f"📝 {name(uid)} выполнил(а) задачу — проверьте:\n{r['title']}",
-                      [[("✅ Принять", f"task:ok:{task_id}"), ("↩️ Вернуть", f"task:back:{task_id}")]])
+                      [[("✅ Принять", f"task:ok:{task_id}"), ("↩️ Вернуть", f"task:back:{task_id}")],
+                       [("📅 Оставить на завтра", f"task:later:{task_id}")]])
     return True, "Отправлено руководителю на проверку ⏳"
 
 
-def review_task(task_id: int, approve: bool):
-    """Руководитель принимает задачу или возвращает на доработку."""
+def review_task(task_id: int, action):
+    """Руководитель: action = "ok" (принять), "back" (вернуть) или "later" (на завтра).
+    Для совместимости True/False = принять/вернуть."""
+    if action is True:
+        action = "ok"
+    elif action is False:
+        action = "back"
     with db() as c:
         r = c.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not r:
             return False, "Задача не найдена (возможно, удалена)."
         if r["status"] == "done":
             return False, "Задача уже принята."
-        if approve:
+        if action == "later":
+            d = next_workday(r["user_id"])
+            label = f"{WEEKDAYS[d.weekday()]} {d:%d.%m}"
+            c.execute("UPDATE tasks SET status='open', due_date=? WHERE id=?", (d.strftime("%Y-%m-%d"), task_id))
+            left = len(_unfinished(c, r["user_id"]))
+            extra = "\nНа сегодня задач больше нет — можно уходить 👋" if not left else f"\nНа сегодня осталось задач: {left}"
+            notify(c, r["user_id"], f"📅 Задачу перенесли на {label}:\n{r['title']}{extra}")
+            return True, f"📅 Перенесено на {label}: {r['title']}"
+        if action == "ok":
             c.execute("UPDATE tasks SET status='done', done_at=? WHERE id=?", (now().strftime(FMT), task_id))
             left = len(_unfinished(c, r["user_id"]))
             extra = "\nВсе задачи закрыты — можно уходить 👋" if not left else f"\nОсталось задач: {left}"
@@ -662,7 +708,7 @@ def team() -> list:
                 status, icon = "не пришёл(ла)", "🔴"
             else:
                 status, icon = "выходной", "🌙"
-            open_tasks = _unfinished(c, uid)
+            open_tasks = _all_open(c, uid)
             out.append({
                 "id": uid,
                 "name": emp["name"],
@@ -676,7 +722,8 @@ def team() -> list:
                 "penalties": penalties_list(c, uid),
                 "penalties_total": penalties_total(c, uid),
                 "total_hours": round(_hours(c, uid) + emp.get("hours_before", 0), 1),
-                "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in open_tasks],
+                "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"],
+                           "due": _due_label(r["due_date"])} for r in open_tasks],
             })
     return out
 
