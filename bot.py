@@ -208,6 +208,10 @@ async def outbox_loop(app: Application) -> None:
         except Exception:
             logging.exception("Ошибка при проверке штрафов")
         try:
+            await relay.daily_check(app.bot)
+        except Exception:
+            logging.exception("Ошибка при проверке альбомов фотографа")
+        try:
             for m in core.pending_outbox():
                 try:
                     thread = PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID else None

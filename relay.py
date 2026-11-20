@@ -14,6 +14,7 @@ from telegram.error import BadRequest, NetworkError, RetryAfter
 from telegram.ext import ContextTypes
 
 import config
+import core
 
 SOURCE_CHAT_ID = getattr(config, "RELAY_SOURCE_CHAT_ID", None)
 SOURCE_THREAD_ID = getattr(config, "RELAY_SOURCE_THREAD_ID", None)
@@ -168,6 +169,11 @@ async def _send(album, context):
     if sent:
         logging.info("Переслано %s фото/видео в: %s", len(items), ", ".join(sent))
         try:
+            core.log_relay_post(len(items))
+        except Exception:
+            logging.exception("Не удалось записать альбом в счётчик")
+        _last_source["thread_id"] = album["first"].message_thread_id
+        try:
             await album["first"].set_reaction("👍")
         except Exception:
             pass
@@ -238,3 +244,33 @@ async def _copy(ids, first, context):
             await first.set_reaction("👍")
         except Exception:
             pass
+
+
+# ================= Подколка фотографа, если альбомов мало =================
+
+TEASE = getattr(config, "RELAY_TEASE", None)
+_last_source = {"thread_id": None}
+
+
+async def daily_check(bot) -> None:
+    """Вызывается ботом каждые ~10 секунд. Один раз в день в TEASE['time']
+    проверяет, сколько альбомов с ценами разослано, и подкалывает фотографа."""
+    if not TEASE or not SOURCE_CHAT_ID:
+        return
+    t = core.now()
+    if t.weekday() not in TEASE.get("days", range(7)):
+        return
+    if t < core.at(t, TEASE.get("time", "18:00")):
+        return
+    count = core.relay_posts_today()
+    if count >= TEASE.get("min_albums", 3):
+        return
+    if not core.flag_once(f"tease:{t:%Y-%m-%d}"):
+        return  # сегодня уже подкалывали
+    thread = TEASE.get("thread_id") or SOURCE_THREAD_ID or _last_source["thread_id"]
+    text = TEASE["text"].format(count=count, min=TEASE.get("min_albums", 3))
+    try:
+        await bot.send_message(TEASE.get("chat_id") or SOURCE_CHAT_ID, text, message_thread_id=thread)
+        logging.info("Подколка отправлена (альбомов сегодня: %s)", count)
+    except Exception as e:
+        logging.error("Не удалось отправить подколку: %s", e)

@@ -75,6 +75,18 @@ RELAY_SOURCE_THREAD_ID = None
 RELAY_COPY_CHAT_ID = -1001867137670
 RELAY_COPY_THREAD_ID = 35740
 
+# Подколка фотографа: если к указанному времени альбомов с ценами
+# за день меньше min_albums — бот пишет text в группу фотографа.
+# В тексте можно использовать {count} — сколько альбомов было сегодня.
+RELAY_TEASE = {
+    "min_albums": 3,
+    "time": "18:00",
+    "days": [0, 1, 2, 3, 4, 5],  # Пн–Сб
+    "text": "Hmm Nilufaropa Bo'ldimi? Kuchiz tugadimi?😆 @nilufarradico",
+    "chat_id": None,    # None — группа фотографа (RELAY_SOURCE_CHAT_ID)
+    "thread_id": None,  # None — тема, где были последние альбомы с ценами
+}
+
 # Куда отправлять. footer — текст в самом конце
 RELAY_TARGETS = {
     "silver": {

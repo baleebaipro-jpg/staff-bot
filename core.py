@@ -98,6 +98,9 @@ def init_db():
             CREATE TABLE IF NOT EXISTS penalties(
                 id INTEGER PRIMARY KEY, user_id INTEGER, day TEXT, reason TEXT, amount TEXT,
                 UNIQUE(user_id, day, reason));
+            CREATE TABLE IF NOT EXISTS relay_posts(
+                id INTEGER PRIMARY KEY, day TEXT, created_at TEXT, items INTEGER);
+            CREATE TABLE IF NOT EXISTS flags(name TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
@@ -494,3 +497,24 @@ def pending_outbox(limit: int = 20) -> list:
 def mark_sent(msg_id: int):
     with db() as c:
         c.execute("UPDATE outbox SET sent=1 WHERE id=?", (msg_id,))
+
+
+# ---------- счётчик альбомов фотографа ----------
+
+def log_relay_post(items: int):
+    t = now()
+    with db() as c:
+        c.execute("INSERT INTO relay_posts(day, created_at, items) VALUES(?, ?, ?)",
+                  (t.strftime("%Y-%m-%d"), t.strftime(FMT), items))
+
+
+def relay_posts_today() -> int:
+    with db() as c:
+        return c.execute("SELECT COUNT(*) FROM relay_posts WHERE day=?", (now().strftime("%Y-%m-%d"),)).fetchone()[0]
+
+
+def flag_once(name: str) -> bool:
+    """True только в первый раз для этого имени (например 'tease:2026-11-21')."""
+    with db() as c:
+        cur = c.execute("INSERT OR IGNORE INTO flags(name, value) VALUES(?, ?)", (name, now().strftime(FMT)))
+        return cur.rowcount == 1
