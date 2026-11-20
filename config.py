@@ -53,3 +53,28 @@ ADMINS = [
 EMPLOYEES = {
     9211646422: {"name": "Silver manager", "role": "Менеджер", "start": "09:00", "end": "18:00", "days": [0, 1, 2, 3, 4], "hours_before": 0},
 }
+
+
+# ============ ПЕРЕСЫЛКА ФОТО С ЦЕНАМИ ============
+# Фотограф скидывает в тему фото/видео с подписью "silver 45.000 bronza 55.000",
+# бот рассылает их в группу Silver и группу Bronza со своей ценой.
+# Бот должен быть администратором во всех этих группах.
+
+# Откуда брать: группа сотрудников и тема фотографа
+RELAY_SOURCE_CHAT_ID = None
+RELAY_SOURCE_THREAD_ID = None
+
+# Куда отправлять. {price} — цена из подписи фотографа.
+# thread_id — если в группе нужно писать в определённую тему, иначе None
+RELAY_TARGETS = {
+    "silver": {
+        "chat_id": None,
+        "thread_id": None,
+        "template": "💍 Silver\n💰 Narxi: {price} so'm",
+    },
+    "bronza": {
+        "chat_id": None,
+        "thread_id": None,
+        "template": "💍 Bronza\n💰 Narxi: {price} so'm",
+    },
+}

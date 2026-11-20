@@ -8,6 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 import config
 import core
+import relay
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
 PENALTY_THREAD_ID = getattr(config, "PENALTY_THREAD_ID", None)
@@ -233,6 +234,7 @@ async def post_init(app: Application) -> None:
 def main() -> None:
     core.init_db()
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(MessageHandler((filters.PHOTO | filters.VIDEO) & filters.ChatType.GROUPS, relay.collect))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("chatid", chat_id))
