@@ -61,6 +61,8 @@ async def reply(update: Update, text: str, **kwargs) -> None:
 
 async def save_avatar(bot, uid: int) -> None:
     """Скачать аватарку пользователя из Telegram для личного кабинета."""
+    if os.path.exists(os.path.join(AVATAR_DIR, f"{uid}.custom")):
+        return  # сотрудник сам загрузил фото в кабинете — не трогаем
     try:
         photos = await bot.get_user_profile_photos(uid, limit=1)
         if not photos.total_count:

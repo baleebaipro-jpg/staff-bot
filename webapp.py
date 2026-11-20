@@ -1,4 +1,5 @@
 """Мини-апп: личный кабинет сотрудника и панель руководителя."""
+import base64
 import hashlib
 import hmac
 import json
@@ -62,7 +63,37 @@ def avatar(uid):
     path = os.path.join(AVATAR_DIR, f"{uid}.jpg")
     if not os.path.exists(path):
         abort(404)
-    return send_file(path, max_age=3600)
+    return send_file(path, max_age=86400)
+
+
+def ava_version(uid) -> int:
+    path = os.path.join(AVATAR_DIR, f"{uid}.jpg")
+    return int(os.path.getmtime(path)) if os.path.exists(path) else 0
+
+
+@app.post("/api/avatar")
+@need_user()
+def api_avatar(uid, data):
+    """Сотрудник загружает своё фото (уже сжатое в браузере до JPEG)."""
+    raw = str(data.get("image", ""))
+    if "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        img = base64.b64decode(raw, validate=True)
+    except Exception:
+        return jsonify(ok=False, msg="Не удалось прочитать фото.")
+    if len(img) > 2_000_000:
+        return jsonify(ok=False, msg="Фото слишком большое.")
+    if not img.startswith(b"\xff\xd8\xff"):
+        return jsonify(ok=False, msg="Нужна картинка в формате JPEG.")
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    tmp = os.path.join(AVATAR_DIR, f"{uid}.tmp")
+    with open(tmp, "wb") as f:
+        f.write(img)
+    os.replace(tmp, os.path.join(AVATAR_DIR, f"{uid}.jpg"))
+    # отметка, что фото своё — бот не будет заменять его фото из Telegram
+    open(os.path.join(AVATAR_DIR, f"{uid}.custom"), "w").close()
+    return jsonify(ok=True, msg="Фото обновлено 📸")
 
 
 @app.post("/api/me")
@@ -71,10 +102,13 @@ def api_me(uid, data):
     res = {"is_admin": core.is_admin(uid), "is_employee": bool(core.employee(uid)), "goal": config.GOAL_HOURS}
     if res["is_employee"]:
         res["profile"] = core.profile(uid)
+        res["profile"]["ava_v"] = ava_version(uid)
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
     if res["is_admin"]:
         res["team"] = core.team()
+        for e in res["team"]:
+            e["ava_v"] = ava_version(e["id"])
     return jsonify(res)
 
 
@@ -163,9 +197,9 @@ PAGE = r"""<!doctype html>
 
   /* профиль */
   .profile { display: flex; gap: 16px; align-items: center; margin: 4px 0 18px; position: relative; }
-  .ava { width: 96px; height: 96px; border-radius: 50%; flex: none; padding: 3px;
+  .ava { position: relative; width: 96px; height: 96px; border-radius: 50%; flex: none; padding: 3px;
          background: linear-gradient(135deg, var(--accent), var(--accent2)); box-shadow: 0 0 24px rgba(124,92,255,.45); }
-  .ava > div, .ava > img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background: var(--card2);
+  .ava > div, .ava > img, #me-ava > div, #me-ava > img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background: var(--card2);
          display: flex; align-items: center; justify-content: center; font-size: 34px; font-weight: 700; border: 3px solid var(--bg); }
   .pname { font-size: 22px; font-weight: 800; line-height: 1.15; }
   .prole { color: var(--hint); margin: 2px 0 8px; }
@@ -254,6 +288,9 @@ PAGE = r"""<!doctype html>
   .seg button { flex: 1; background: none; padding: 9px; border-radius: 10px; font-weight: 600; color: var(--hint); }
   .seg button.on { background: var(--card2); color: var(--text); }
   .member { display: flex; gap: 12px; align-items: center; }
+  .ava-edit { position: absolute; right: 0; bottom: 0; width: 32px; height: 32px; border-radius: 50%;
+              background: var(--accent); border: 3px solid var(--bg); display: flex; align-items: center;
+              justify-content: center; font-size: 15px; cursor: pointer; }
   .member .ava { width: 52px; height: 52px; padding: 2px; box-shadow: none; }
   .member .ava > div, .member .ava > img { font-size: 20px; border-width: 2px; }
   .mini-bar { height: 7px; margin-top: 8px; }
@@ -277,7 +314,11 @@ PAGE = r"""<!doctype html>
   <!-- ЛИЧНЫЙ КАБИНЕТ -->
   <div id="view-me" class="hidden">
     <div class="profile">
-      <div class="ava" id="me-ava"></div>
+      <label class="ava" title="Изменить фото">
+        <span id="me-ava" style="display:contents"></span>
+        <span class="ava-edit">📷</span>
+        <input type="file" id="ava-file" accept="image/*" hidden>
+      </label>
       <div style="min-width:0">
         <div class="pname" id="p-name"></div>
         <div class="prole" id="p-role"></div>
@@ -396,9 +437,26 @@ const levelOf = (h, goal) => { const L = levels(goal); let i = 0; L.forEach((l, 
 /* ---------- иконки и аватар ---------- */
 const icCal = `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/></svg>`;
 const icClock = `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
-function avatar(uid, name) {
+function avatar(uid, name, v) {
   const init = esc((name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase());
-  return `<img src="/avatar/${uid}.jpg" onerror="this.outerHTML='<div>${init}</div>'">`;
+  if (!v) return `<div>${init}</div>`;
+  return `<img src="/avatar/${uid}.jpg?v=${v}" onerror="this.outerHTML='<div>${init}</div>'">`;
+}
+
+/* Сжать фото в квадрат 512×512 JPEG прямо на телефоне */
+function squareJpeg(file) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(img.width, img.height), size = Math.min(512, s);
+      const c = document.createElement("canvas"); c.width = c.height = size;
+      c.getContext("2d").drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+      URL.revokeObjectURL(img.src);
+      ok(c.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => fail(new Error("Не удалось открыть фото"));
+    img.src = URL.createObjectURL(file);
+  });
 }
 
 /* ---------- запросы ---------- */
@@ -445,7 +503,7 @@ function visitRow(h, full) {
 function renderMe() {
   const p = data.profile;
   const [lvl, idx, L] = levelOf(p.total_hours, p.goal);
-  $("me-ava").innerHTML = avatar(p.id, p.name);
+  $("me-ava").innerHTML = avatar(p.id, p.name, p.ava_v);
   $("p-name").textContent = p.name;
   $("p-role").textContent = p.role;
   $("p-lvl").innerHTML = lvl.icon() + esc(lvl.name);
@@ -508,7 +566,7 @@ function renderTeam() {
     const [lvl] = levelOf(e.total_hours, data.goal);
     const pct = Math.min(100, e.total_hours / data.goal * 100);
     return `<div class="card">
-      <div class="member"><div class="ava">${avatar(e.id, e.name)}</div>
+      <div class="member"><div class="ava">${avatar(e.id, e.name, e.ava_v)}</div>
         <div style="flex:1;min-width:0">
           <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(e.name)}</b><span>${e.icon}</span></div>
           <div class="hint" style="font-size:13px">${esc(e.role)} · ${e.schedule}</div>
@@ -547,6 +605,15 @@ async function load() {
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
+$("ava-file").onchange = async (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  try {
+    toast("Загружаю фото…");
+    await action("/api/avatar", {image: await squareJpeg(file)});
+  } catch (e) { toast(e.message); }
+};
 $("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin");
 $("t-add").onclick = () => {
   const title = $("t-title").value.trim();
