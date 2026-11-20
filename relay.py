@@ -30,8 +30,14 @@ WAIT_SECONDS = 3  # сколько ждать остальные фото аль
 _albums: dict = {}
 
 
+def destinations(target: dict) -> list:
+    """Куда слать: список чатов из "chats" (или старый формат с одним chat_id)."""
+    chats = target.get("chats") or [target]
+    return [c for c in chats if c.get("chat_id")]
+
+
 def enabled() -> bool:
-    return bool(SOURCE_CHAT_ID) and any(t.get("chat_id") for t in TARGETS.values())
+    return bool(SOURCE_CHAT_ID) and any(destinations(t) for t in TARGETS.values())
 
 
 CURRENCY = getattr(config, "RELAY_CURRENCY", "so'm")
@@ -154,18 +160,18 @@ async def _send(album, context):
     sent = []
     for name in prices:
         target = TARGETS.get(name) or {}
-        if not target.get("chat_id"):
-            continue
         caption = build_caption(name, prices, title)
-        try:
-            for start in range(0, len(items), 10):  # в альбоме Telegram максимум 10
-                chunk = items[start:start + 10]
-                media = _media(chunk, caption if start == 0 else None)
-                await _send_with_retry(lambda m=media: context.bot.send_media_group(
-                    target["chat_id"], m, message_thread_id=target.get("thread_id")))
-            sent.append(name)
-        except Exception as e:
-            logging.error("Не удалось переслать в %s: %s", name, e)
+        for dest in destinations(target):
+            label = dest.get("title") or name
+            try:
+                for start in range(0, len(items), 10):  # в альбоме Telegram максимум 10
+                    chunk = items[start:start + 10]
+                    media = _media(chunk, caption if start == 0 else None)
+                    await _send_with_retry(lambda m=media, d=dest: context.bot.send_media_group(
+                        d["chat_id"], m, message_thread_id=d.get("thread_id")))
+                sent.append(label)
+            except Exception as e:
+                logging.error("Не удалось переслать в %s: %s", label, e)
     if sent:
         logging.info("Переслано %s фото/видео в: %s", len(items), ", ".join(sent))
         try:
@@ -231,14 +237,14 @@ async def _copy_later(key, context):
 async def _copy(ids, first, context):
     sent = []
     for name, target in TARGETS.items():
-        if not target.get("chat_id"):
-            continue
-        try:
-            await _send_with_retry(lambda t=target: context.bot.copy_messages(
-                t["chat_id"], first.chat_id, ids, message_thread_id=t.get("thread_id")))
-            sent.append(name)
-        except Exception as e:
-            logging.error("Не удалось скопировать в %s: %s", name, e)
+        for dest in destinations(target):
+            label = dest.get("title") or name
+            try:
+                await _send_with_retry(lambda d=dest: context.bot.copy_messages(
+                    d["chat_id"], first.chat_id, ids, message_thread_id=d.get("thread_id")))
+                sent.append(label)
+            except Exception as e:
+                logging.error("Не удалось скопировать в %s: %s", label, e)
     if sent:
         logging.info("Скопировано %s сообщ. в: %s", len(ids), ", ".join(sent))
         try:

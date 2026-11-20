@@ -4,7 +4,7 @@ import os
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.error import BadRequest, NetworkError, TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ChatMemberHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import config
 import core
@@ -188,6 +188,24 @@ async def fine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, f"🔴 Штраф выписан: {core.name(target)}")
 
 
+async def bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Когда бота добавляют в группу или канал — сообщить руководителям ID чата."""
+    m = update.my_chat_member
+    if not m or m.new_chat_member.status not in ("administrator", "member"):
+        return
+    if m.new_chat_member.status == m.old_chat_member.status:
+        return
+    chat = m.chat
+    kind = {"channel": "канал", "group": "группа", "supergroup": "группа"}.get(chat.type, chat.type)
+    role = "администратор ✅" if m.new_chat_member.status == "administrator" else "участник (сделайте админом!)"
+    text = f"🔔 Меня добавили: {chat.title}\nТип: {kind}\nРоль: {role}\nID: {chat.id}"
+    for a in config.ADMINS:
+        try:
+            await context.bot.send_message(a, text)
+        except TelegramError as e:
+            logging.warning("Не удалось сообщить %s: %s", a, e)
+
+
 async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
@@ -242,6 +260,7 @@ def main() -> None:
         (filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.StatusUpdate.ALL & ~filters.COMMAND,
         relay.on_group_message,
     ))
+    app.add_handler(ChatMemberHandler(bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("chatid", chat_id))

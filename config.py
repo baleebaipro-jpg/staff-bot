@@ -91,11 +91,14 @@ RELAY_TEASE = {
     "thread_id": None,  # None — тема, где были последние альбомы с ценами
 }
 
-# Куда отправлять. footer — текст в самом конце
+# Куда отправлять. В "chats" можно указать несколько групп/каналов.
+# footer — текст в самом конце. Бот должен быть админом везде.
 RELAY_TARGETS = {
     "silver": {
-        "chat_id": -1003348113142,  # Silver (тест)
-        "thread_id": None,
+        "chats": [
+            {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None},
+            {"title": "Xuping silver channel", "chat_id": None, "thread_id": None},
+        ],
         "footer": (
             "Zakaz faqat: @xupingSilver\n"
             "Srochniy zakaz busa tel murojat 77-443-77-88☎️\n"
@@ -104,8 +107,9 @@ RELAY_TARGETS = {
         ),
     },
     "bronza": {
-        "chat_id": -1004276884125,  # Bronza (тест)
-        "thread_id": None,
+        "chats": [
+            {"title": "Xuping bronza channel", "chat_id": None, "thread_id": None},
+        ],
         "footer": (
             "Zakaz uchun: @xupinguzadmim\n"
             "Tel: 93-537-20-00☎️"
