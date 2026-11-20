@@ -70,6 +70,11 @@ RELAY_CURRENCY = "so'm"
 RELAY_SOURCE_CHAT_ID = -1001867137670  # Фотограф (тест)
 RELAY_SOURCE_THREAD_ID = None
 
+# Простая переотправка: всё из этой темы копируется в группы Silver и Bronza
+# без изменений и без «Переслано от …»
+RELAY_COPY_CHAT_ID = -1001867137670
+RELAY_COPY_THREAD_ID = 35740
+
 # Куда отправлять. footer — текст в самом конце
 RELAY_TARGETS = {
     "silver": {

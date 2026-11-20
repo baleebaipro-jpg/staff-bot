@@ -171,3 +171,70 @@ async def _send(album, context):
             await album["first"].set_reaction("👍")
         except Exception:
             pass
+
+
+# ================= Простая переотправка из отдельной темы =================
+# Всё из этой темы копируется в группы без изменений.
+# Копия не показывает «Переслано от …» — источник скрыт.
+
+COPY_CHAT_ID = getattr(config, "RELAY_COPY_CHAT_ID", None)
+COPY_THREAD_ID = getattr(config, "RELAY_COPY_THREAD_ID", None)
+
+_copy_albums: dict = {}
+
+
+def _is_copy_source(msg) -> bool:
+    return bool(COPY_CHAT_ID) and msg.chat_id == COPY_CHAT_ID and (
+        not COPY_THREAD_ID or msg.message_thread_id == COPY_THREAD_ID
+    )
+
+
+async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Все сообщения из групп: либо простая копия, либо фото с ценами."""
+    msg = update.effective_message
+    if not msg:
+        return
+    if _is_copy_source(msg):
+        await _collect_copy(msg, context)
+    elif msg.photo or msg.video:
+        await collect(update, context)
+
+
+async def _collect_copy(msg, context):
+    if not msg.media_group_id:
+        await _copy([msg.message_id], msg, context)
+        return
+    album = _copy_albums.setdefault(msg.media_group_id, {"ids": [], "first": msg, "task": None})
+    album["ids"].append(msg.message_id)
+    if album["task"]:
+        album["task"].cancel()
+    album["task"] = asyncio.create_task(_copy_later(msg.media_group_id, context))
+
+
+async def _copy_later(key, context):
+    try:
+        await asyncio.sleep(WAIT_SECONDS)
+    except asyncio.CancelledError:
+        return
+    album = _copy_albums.pop(key, None)
+    if album:
+        await _copy(sorted(album["ids"]), album["first"], context)
+
+
+async def _copy(ids, first, context):
+    sent = []
+    for name, target in TARGETS.items():
+        if not target.get("chat_id"):
+            continue
+        try:
+            await _send_with_retry(lambda t=target: context.bot.copy_messages(
+                t["chat_id"], first.chat_id, ids, message_thread_id=t.get("thread_id")))
+            sent.append(name)
+        except Exception as e:
+            logging.error("Не удалось скопировать в %s: %s", name, e)
+    if sent:
+        logging.info("Скопировано %s сообщ. в: %s", len(ids), ", ".join(sent))
+        try:
+            await first.set_reaction("👍")
+        except Exception:
+            pass
