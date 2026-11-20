@@ -108,7 +108,7 @@ RELAY_TARGETS = {
     },
     "bronza": {
         "chats": [
-            {"title": "Xuping bronza channel", "chat_id": None, "thread_id": None},
+            {"title": "Xuping (Bronza) OPTOM", "chat_id": -1001214388881, "thread_id": None},
         ],
         "footer": (
             "Zakaz uchun: @xupinguzadmim\n"
