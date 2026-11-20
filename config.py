@@ -106,8 +106,10 @@ RELAY_TEASE = {
 
 # Куда отправлять. В "chats" можно указать несколько групп/каналов.
 # footer — текст в самом конце. Бот должен быть админом везде.
+# delay_seconds — через сколько секунд отправлять (0 — сразу).
 RELAY_TARGETS = {
     "silver": {
+        "delay_seconds": 0,  # сразу
         "chats": [
             {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None},
             {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None},
@@ -120,6 +122,7 @@ RELAY_TARGETS = {
         ),
     },
     "bronza": {
+        "delay_seconds": 60,  # Bronza — через 1 минуту после Silver
         "chats": [
             {"title": "Xuping (Bronza) OPTOM", "chat_id": -1001214388881, "thread_id": None},
         ],

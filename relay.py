@@ -152,28 +152,53 @@ async def _send_with_retry(coro_factory):
     raise RuntimeError("не удалось отправить после 5 попыток")
 
 
+_background: set = set()
+
+
+def _later(delay: float, coro) -> None:
+    """Запустить отправку через delay секунд, не задерживая остальное."""
+    async def run():
+        await asyncio.sleep(delay)
+        await coro
+    task = asyncio.create_task(run())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def _deliver_album(dest, label, items, caption, context) -> bool:
+    try:
+        for start in range(0, len(items), 10):  # в альбоме Telegram максимум 10
+            chunk = items[start:start + 10]
+            media = _media(chunk, caption if start == 0 else None)
+            await _send_with_retry(lambda m=media: context.bot.send_media_group(
+                dest["chat_id"], m, message_thread_id=dest.get("thread_id")))
+        logging.info("Альбом (%s шт.) отправлен в %s", len(items), label)
+        return True
+    except Exception as e:
+        logging.error("Не удалось переслать в %s: %s", label, e)
+        return False
+
+
 async def _send(album, context):
     prices, title = parse_caption("\n".join(album["captions"]))
     if not prices:
         return  # подписи с ценами нет — это не товар, пропускаем
     items = [it for _, it in sorted(album["items"])]
-    sent = []
+    sent, scheduled = [], []
     for name in prices:
         target = TARGETS.get(name) or {}
         caption = build_caption(name, prices, title)
+        delay = target.get("delay_seconds", 0)
         for dest in destinations(target):
             label = dest.get("title") or name
-            try:
-                for start in range(0, len(items), 10):  # в альбоме Telegram максимум 10
-                    chunk = items[start:start + 10]
-                    media = _media(chunk, caption if start == 0 else None)
-                    await _send_with_retry(lambda m=media, d=dest: context.bot.send_media_group(
-                        d["chat_id"], m, message_thread_id=d.get("thread_id")))
+            if delay:
+                _later(delay, _deliver_album(dest, label, items, caption, context))
+                scheduled.append(label)
+            elif await _deliver_album(dest, label, items, caption, context):
                 sent.append(label)
-            except Exception as e:
-                logging.error("Не удалось переслать в %s: %s", label, e)
-    if sent:
-        logging.info("Переслано %s фото/видео в: %s", len(items), ", ".join(sent))
+    if sent or scheduled:
+        if scheduled:
+            logging.info("Запланировано позже: %s", ", ".join(scheduled))
         try:
             core.log_relay_post(len(items))
         except Exception:
@@ -236,21 +261,29 @@ async def _copy_later(key, context):
         await _copy(sorted(album["ids"]), album["first"], context)
 
 
+async def _deliver_copy(dest, label, ids, first, context) -> bool:
+    try:
+        await _send_with_retry(lambda: context.bot.copy_messages(
+            dest["chat_id"], first.chat_id, ids, message_thread_id=dest.get("thread_id")))
+        logging.info("Скопировано %s сообщ. в %s", len(ids), label)
+        return True
+    except Exception as e:
+        logging.error("Не удалось скопировать в %s: %s", label, e)
+        return False
+
+
 async def _copy(ids, first, context):
-    sent = []
-    all_dests = [(name, d) for name, t in TARGETS.items() for d in destinations(t)]
-    all_dests += [("copy", d) for d in COPY_ONLY_CHATS if d.get("chat_id")]
-    for name, dest in all_dests:
-        if True:
-            label = dest.get("title") or name
-            try:
-                await _send_with_retry(lambda d=dest: context.bot.copy_messages(
-                    d["chat_id"], first.chat_id, ids, message_thread_id=d.get("thread_id")))
-                sent.append(label)
-            except Exception as e:
-                logging.error("Не удалось скопировать в %s: %s", label, e)
-    if sent:
-        logging.info("Скопировано %s сообщ. в: %s", len(ids), ", ".join(sent))
+    all_dests = [(t.get("delay_seconds", 0), name, d) for name, t in TARGETS.items() for d in destinations(t)]
+    all_dests += [(d.get("delay_seconds", 0), "copy", d) for d in COPY_ONLY_CHATS if d.get("chat_id")]
+    ok = False
+    for delay, name, dest in all_dests:
+        label = dest.get("title") or name
+        if delay:
+            _later(delay, _deliver_copy(dest, label, ids, first, context))
+            ok = True
+        elif await _deliver_copy(dest, label, ids, first, context):
+            ok = True
+    if ok:
         try:
             await first.set_reaction("👍")
         except Exception:
