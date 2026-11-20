@@ -137,8 +137,8 @@ async def came(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not core.employee(uid):
         return await deny(update)
     if core.PROOF_REQUIRED:
-        _, msg = core.start_proof(uid)  # ждём кружок
-        await reply(update, msg)
+        ok, msg = core.start_proof(uid)  # ждём кружок
+        await reply(update, msg, parse_mode="HTML" if ok else None)
         return
     _, msg = core.check_in(uid)
     await reply(update, msg)
@@ -154,12 +154,18 @@ async def got_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     uid = update.effective_user.id
     if not core.employee(uid):
         return
-    ok, msg = core.take_proof(uid)
+    m = update.message
+    ok, msg, code = core.take_proof(
+        uid,
+        file_unique_id=m.video_note.file_unique_id,
+        duration=m.video_note.duration or 0,
+        forwarded=bool(m.forward_origin),
+    )
     await reply(update, msg)
     if not ok:
         return
     await save_avatar(context.bot, uid)
-    note = f"📹 {core.name(uid)}: {msg.splitlines()[0].replace('✅ ', '')}"
+    note = f"📹 {core.name(uid)}: {msg.splitlines()[0].replace('✅ ', '')}\n🔢 Код: {code} — проверьте, что назвал(а) его"
     if len(msg.splitlines()) > 1 and "Опоздание" in msg:
         note += "\n" + msg.splitlines()[1]
     targets = [(PROOF_CHAT_ID, PROOF_THREAD_ID)] if PROOF_CHAT_ID else [(a, None) for a in config.ADMINS]
@@ -301,7 +307,10 @@ async def outbox_loop(app: Application) -> None:
             for m in core.pending_outbox():
                 try:
                     thread = PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID else None
-                    await app.bot.send_message(m["chat_id"], m["text"], message_thread_id=thread)
+                    text, mode = m["text"], None
+                    if text.startswith("HTML:"):
+                        text, mode = text[5:], "HTML"
+                    await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode)
                     core.mark_sent(m["id"])
                 except BadRequest as e:
                     logging.warning("Сообщение отклонено %s: %s", m["chat_id"], e)

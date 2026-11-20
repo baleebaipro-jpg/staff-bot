@@ -124,7 +124,7 @@ def api_checkin(uid, data):
         if not ok:
             return jsonify(ok=False, msg=msg)
         with core.db() as c:
-            core.notify(c, uid, msg)  # бот пришлёт просьбу о кружке в чат
+            core.notify(c, uid, "HTML:" + msg)  # бот пришлёт просьбу о кружке в чат
         return jsonify(ok=True, close=True, msg="📹 Запишите кружок в чате с ботом — это подтвердит приход")
     ok, msg = core.check_in(uid)
     return jsonify(ok=ok, msg=msg)

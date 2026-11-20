@@ -29,6 +29,7 @@ GRACE_MINUTES = 5
 # После «Пришёл» бот просит кружок; приход засчитывается только с ним.
 PROOF_REQUIRED = True
 PROOF_MINUTES = 3        # сколько минут ждать кружок
+PROOF_MIN_SECONDS = 3    # минимальная длина кружка
 PROOF_CHAT_ID = None     # куда пересылать кружки (None — руководителям в личку)
 PROOF_THREAD_ID = None   # тема в группе, если нужно
 

@@ -228,10 +228,14 @@ def init_db():
                 PRIMARY KEY(user_id, weekday));
             CREATE TABLE IF NOT EXISTS proof_pending(
                 user_id INTEGER PRIMARY KEY, pressed_at TEXT, expires_at TEXT);
+            CREATE TABLE IF NOT EXISTS proof_used(
+                file_unique_id TEXT PRIMARY KEY, user_id INTEGER, used_at TEXT);
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
         )
+        if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
+            c.execute("ALTER TABLE proof_pending ADD COLUMN code TEXT")
         cols = {r[1] for r in c.execute("PRAGMA table_info(penalties)")}
         if "note" not in cols:
             c.execute("ALTER TABLE penalties ADD COLUMN note TEXT")
@@ -674,9 +678,12 @@ def flag_once(name: str) -> bool:
 
 PROOF_REQUIRED = getattr(config, "PROOF_REQUIRED", False)
 PROOF_MINUTES = getattr(config, "PROOF_MINUTES", 3)
+PROOF_MIN_SECONDS = getattr(config, "PROOF_MIN_SECONDS", 3)
 PROOF_PROMPT = (
     "📹 Запишите кружок, чтобы подтвердить приход.\n\n"
-    "Нажмите на 🎤 справа внизу — значок станет 📷. Затем зажмите его и запишите короткое видео.\n"
+    "🔢 Скажите в кружке вслух число: <b>{code}</b>\n\n"
+    "Нажмите на 🎤 справа внизу — значок станет 📷. Затем зажмите его и запишите видео "
+    "(не короче {min_sec} сек).\n"
     "⏳ У вас {minutes} мин."
 )
 
@@ -686,12 +693,15 @@ def start_proof(uid: int):
     ok, msg = check_in(uid, dry_run=True)
     if not ok:
         return False, msg
+    import secrets
     t = now()
+    code = str(secrets.randbelow(90) + 10)  # случайное число 10–99
     with db() as c:
-        c.execute("INSERT INTO proof_pending(user_id, pressed_at, expires_at) VALUES(?, ?, ?) "
-                  "ON CONFLICT(user_id) DO UPDATE SET pressed_at=excluded.pressed_at, expires_at=excluded.expires_at",
-                  (uid, t.strftime(FMT), (t + timedelta(minutes=PROOF_MINUTES)).strftime(FMT)))
-    return True, PROOF_PROMPT.format(minutes=PROOF_MINUTES)
+        c.execute("INSERT INTO proof_pending(user_id, pressed_at, expires_at, code) VALUES(?, ?, ?, ?) "
+                  "ON CONFLICT(user_id) DO UPDATE SET pressed_at=excluded.pressed_at, "
+                  "expires_at=excluded.expires_at, code=excluded.code",
+                  (uid, t.strftime(FMT), (t + timedelta(minutes=PROOF_MINUTES)).strftime(FMT), code))
+    return True, PROOF_PROMPT.format(minutes=PROOF_MINUTES, code=code, min_sec=PROOF_MIN_SECONDS)
 
 
 def proof_pending(uid: int) -> bool:
@@ -700,17 +710,30 @@ def proof_pending(uid: int) -> bool:
     return bool(r) and parse(r[0]) >= now()
 
 
-def take_proof(uid: int):
-    """Пришёл кружок: засчитываем приход по времени нажатия кнопки."""
+def take_proof(uid: int, file_unique_id: str = "", duration: int = 0, forwarded: bool = False):
+    """Пришёл кружок: проверяем и засчитываем приход по времени нажатия кнопки.
+    Возвращает (ok, сообщение, код)."""
     with db() as c:
-        r = c.execute("SELECT pressed_at, expires_at FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
-        if r:
+        r = c.execute("SELECT pressed_at, expires_at, code FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
+        if not r:
+            return False, "Сначала нажмите «✅ Пришёл», потом запишите кружок.", None
+        if parse(r[1]) < now():
             c.execute("DELETE FROM proof_pending WHERE user_id=?", (uid,))
-    if not r:
-        return False, "Сначала нажмите «✅ Пришёл», потом запишите кружок."
-    if parse(r[1]) < now():
-        return False, "⌛ Время на кружок вышло. Нажмите «✅ Пришёл» ещё раз."
-    return check_in(uid, t=parse(r[0]), notify_boss=False)
+            return False, "⌛ Время на кружок вышло. Нажмите «✅ Пришёл» ещё раз.", None
+        # дальше — ошибки, которые можно исправить, пока время не вышло (запрос не удаляем)
+        if forwarded:
+            return False, "❌ Пересланный кружок не подходит. Запишите новый.", None
+        if duration < PROOF_MIN_SECONDS:
+            return False, f"❌ Слишком короткий кружок. Запишите не короче {PROOF_MIN_SECONDS} сек.", None
+        if file_unique_id and c.execute("SELECT 1 FROM proof_used WHERE file_unique_id=?", (file_unique_id,)).fetchone():
+            notify_admins(c, f"🚨 {name(uid)} отправил(а) кружок, который уже присылался раньше. Приход не засчитан.")
+            return False, "❌ Этот кружок уже отправлялся раньше. Запишите новый.", None
+        c.execute("DELETE FROM proof_pending WHERE user_id=?", (uid,))
+        if file_unique_id:
+            c.execute("INSERT OR IGNORE INTO proof_used(file_unique_id, user_id, used_at) VALUES(?, ?, ?)",
+                      (file_unique_id, uid, now().strftime(FMT)))
+    ok, msg = check_in(uid, t=parse(r[0]), notify_boss=False)
+    return ok, msg, r[2]
 
 
 def expired_proofs() -> list:
