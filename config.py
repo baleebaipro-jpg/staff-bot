@@ -75,6 +75,12 @@ RELAY_SOURCE_THREAD_ID = None
 RELAY_COPY_CHAT_ID = -1001867137670
 RELAY_COPY_THREAD_ID = 35740
 
+# Куда идёт ТОЛЬКО простая переотправка из темы выше
+# (фото с ценами туда НЕ отправляются)
+RELAY_COPY_ONLY_CHATS = [
+    {"title": "Xuping Uzbekistan", "chat_id": -1002645398648, "thread_id": None},
+]
+
 # Похвала: после каждого альбома с ценами бот отвечает отправителю.
 # {mention} — отметка того, кто отправил. None — выключить.
 RELAY_PRAISE = "{mention} Siz to'g'ri yo'ldasiz, bosing jigarr💫❤️"

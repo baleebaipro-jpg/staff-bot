@@ -192,6 +192,8 @@ async def _send(album, context):
 
 COPY_CHAT_ID = getattr(config, "RELAY_COPY_CHAT_ID", None)
 COPY_THREAD_ID = getattr(config, "RELAY_COPY_THREAD_ID", None)
+# Чаты, куда идёт ТОЛЬКО простая переотправка (без фото с ценами)
+COPY_ONLY_CHATS = getattr(config, "RELAY_COPY_ONLY_CHATS", [])
 
 _copy_albums: dict = {}
 
@@ -236,8 +238,10 @@ async def _copy_later(key, context):
 
 async def _copy(ids, first, context):
     sent = []
-    for name, target in TARGETS.items():
-        for dest in destinations(target):
+    all_dests = [(name, d) for name, t in TARGETS.items() for d in destinations(t)]
+    all_dests += [("copy", d) for d in COPY_ONLY_CHATS if d.get("chat_id")]
+    for name, dest in all_dests:
+        if True:
             label = dest.get("title") or name
             try:
                 await _send_with_retry(lambda d=dest: context.bot.copy_messages(
