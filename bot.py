@@ -3,7 +3,7 @@ import logging
 import os
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
-from telegram.error import NetworkError, TelegramError
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import config
@@ -38,6 +38,10 @@ async def reply(update: Update, text: str, **kwargs) -> None:
     for attempt in range(5):
         try:
             await update.message.reply_text(text, **kwargs)
+            return
+        except BadRequest as e:
+            # ошибка в самом сообщении — повтор не поможет
+            logging.error("Telegram отклонил сообщение: %s", e)
             return
         except NetworkError as e:
             logging.warning("Сбой сети (%s), пробую ещё раз...", e)
@@ -207,6 +211,9 @@ async def outbox_loop(app: Application) -> None:
                 try:
                     thread = PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID else None
                     await app.bot.send_message(m["chat_id"], m["text"], message_thread_id=thread)
+                    core.mark_sent(m["id"])
+                except BadRequest as e:
+                    logging.warning("Сообщение отклонено %s: %s", m["chat_id"], e)
                     core.mark_sent(m["id"])
                 except NetworkError:
                     break  # сеть сбоит — попробуем позже

@@ -5,7 +5,9 @@ import os
 #   BOT_TOKEN   — токен от @BotFather
 #   WEBAPP_URL  — адрес сервиса, например https://staff-bot-production.up.railway.app
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://abdullohbe.pythonanywhere.com")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://abdullohbe.pythonanywhere.com").strip().rstrip("/")
+if not WEBAPP_URL.startswith("https://"):
+    WEBAPP_URL = "https://" + WEBAPP_URL.removeprefix("http://")
 
 # Где хранить базу и аватарки (на Railway — подключённый Volume /data)
 DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
