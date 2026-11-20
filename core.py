@@ -38,20 +38,25 @@ def fmt_min(minutes: int) -> str:
 
 
 SHIFTS = getattr(config, "SHIFTS", {})
-_shift_cache = {"t": 0.0, "data": {}}
+OFF = "off"  # выходной
+_cache = {"t": 0.0, "shift": {}, "week": {}}
 
 
-def _shift_overrides() -> dict:
+def _overrides() -> dict:
     """Графики, выбранные руководителем в кабинете (хранятся в базе)."""
     import time
-    if time.time() - _shift_cache["t"] > 30:
+    if time.time() - _cache["t"] > 30:
         try:
             with db() as c:
-                _shift_cache["data"] = {r[0]: r[1] for r in c.execute("SELECT user_id, shift FROM emp_shift")}
+                _cache["shift"] = {r[0]: r[1] for r in c.execute("SELECT user_id, shift FROM emp_shift")}
+                week = {}
+                for uid, wd, key in c.execute("SELECT user_id, weekday, shift FROM emp_week"):
+                    week.setdefault(uid, {})[wd] = key
+                _cache["week"] = week
         except sqlite3.Error:
             pass
-        _shift_cache["t"] = time.time()
-    return _shift_cache["data"]
+        _cache["t"] = time.time()
+    return _cache
 
 
 def employee(uid: int):
@@ -59,25 +64,105 @@ def employee(uid: int):
     if not base:
         return None
     e = dict(base)
-    shift = _shift_overrides().get(uid) or e.get("shift")
-    if shift in SHIFTS:
-        e["shift"] = shift
-        e["start"] = SHIFTS[shift].get("start")
-        e["end"] = SHIFTS[shift].get("end")
+    e["id"] = uid
+    shift = _overrides()["shift"].get(uid) or e.get("shift")
+    e["shift"] = shift if shift in SHIFTS else None
     return e
 
 
-def set_shift(uid: int, shift: str):
+def week_plan(emp) -> dict:
+    """{0: '9-18', 1: '9-18', ..., 6: 'off'} — график на каждый день недели."""
+    custom = _overrides()["week"].get(emp["id"], {})
+    days = emp.get("days", range(7))
+    base = emp.get("shift") or "custom"
+    return {d: custom.get(d, base if d in days else OFF) for d in range(7)}
+
+
+def day_shift(emp, day):
+    """График на конкретный день: dict со start/end/title или None (выходной)."""
+    key = week_plan(emp)[day.weekday()]
+    if key == OFF:
+        return None
+    if key in SHIFTS:
+        return SHIFTS[key]
+    # старый формат: start/end прямо у сотрудника
+    if emp.get("start") and emp.get("end"):
+        return {"title": f"{emp['start']}–{emp['end']}", "short": f"{emp['start']}–{emp['end']}",
+                "start": emp["start"], "end": emp["end"]}
+    return {"title": "Свободный график", "short": "своб.", "start": None, "end": None}
+
+
+def shift_start(emp, day) -> str:
+    return day_shift(emp, day)["start"]
+
+
+def shift_end(emp, day) -> str:
+    return day_shift(emp, day)["end"]
+
+
+def workday(emp, day) -> bool:
+    """Рабочий день с точным временем. Выходной или свободный график — без окон и штрафов."""
+    sh = day_shift(emp, day)
+    return bool(sh and sh.get("start") and sh.get("end"))
+
+
+def is_free_day(emp, day) -> bool:
+    sh = day_shift(emp, day)
+    return bool(sh) and not (sh.get("start") and sh.get("end"))
+
+
+def has_schedule(emp, day=None) -> bool:
+    return workday(emp, day or now())
+
+
+def schedule_text(emp, day=None) -> str:
+    sh = day_shift(emp, day or now())
+    return "Выходной" if sh is None else sh["title"]
+
+
+def week_list(emp) -> list:
+    """Для кабинета: [{'day': 'Пн', 'key': '9-18', 'short': '9–18'}, ...]"""
+    out = []
+    for d, key in week_plan(emp).items():
+        if key == OFF:
+            short = "—"
+        elif key in SHIFTS:
+            short = SHIFTS[key].get("short", SHIFTS[key]["title"])
+        else:
+            short = (day_shift(emp, now() + timedelta(days=(d - now().weekday()) % 7)) or {}).get("short", "")
+        out.append({"day": WEEKDAYS[d], "key": key, "short": short})
+    return out
+
+
+def set_week(uid: int, plan: dict):
+    """Руководитель задаёт график на каждый день недели."""
     if not config.EMPLOYEES.get(uid):
         return False, "Сотрудник не найден."
+    clean = {}
+    for d in range(7):
+        key = str(plan.get(str(d), plan.get(d, "")))
+        if key != OFF and key not in SHIFTS:
+            return False, f"Не выбран график на {WEEKDAYS[d]}."
+        clean[d] = key
+    with db() as c:
+        c.execute("DELETE FROM emp_week WHERE user_id=?", (uid,))
+        c.executemany("INSERT INTO emp_week(user_id, weekday, shift) VALUES(?, ?, ?)",
+                      [(uid, d, k) for d, k in clean.items()])
+        lines = [f"{WEEKDAYS[d]} — {'Выходной' if k == OFF else SHIFTS[k]['title']}" for d, k in clean.items()]
+        notify(c, uid, "🗓 Ваш график на неделю обновлён:\n" + "\n".join(lines))
+    _cache["week"][uid] = clean
+    return True, f"График сохранён: {name(uid)}"
+
+
+def set_shift(uid: int, shift: str):
+    """Один график на все рабочие дни (старый способ)."""
     if shift not in SHIFTS:
         return False, "Такого графика нет."
-    with db() as c:
-        c.execute("INSERT INTO emp_shift(user_id, shift) VALUES(?, ?) "
-                  "ON CONFLICT(user_id) DO UPDATE SET shift=excluded.shift", (uid, shift))
-        notify(c, uid, f"🕘 Ваш график изменён: {SHIFTS[shift]['title']}")
-    _shift_cache["data"][uid] = shift
-    return True, f"{name(uid)}: {SHIFTS[shift]['title']}"
+    emp = employee(uid)
+    if not emp:
+        return False, "Сотрудник не найден."
+    plan = {d: (shift if k != OFF else OFF) for d, k in week_plan(emp).items()}
+    return set_week(uid, plan)
 
 
 def is_admin(uid: int) -> bool:
@@ -85,23 +170,8 @@ def is_admin(uid: int) -> bool:
 
 
 def name(uid: int) -> str:
-    e = employee(uid)
+    e = config.EMPLOYEES.get(uid)
     return e["name"] if e else str(uid)
-
-
-def has_schedule(emp) -> bool:
-    return bool(emp.get("start") and emp.get("end"))
-
-
-def schedule_text(emp) -> str:
-    if emp.get("shift") in SHIFTS:
-        return SHIFTS[emp["shift"]]["title"]
-    return f"{emp['start']}–{emp['end']}" if has_schedule(emp) else "Свободный график"
-
-
-def workday(emp, day) -> bool:
-    """Рабочий день по графику. Без графика — ограничений и штрафов нет."""
-    return has_schedule(emp) and day.weekday() in emp.get("days", range(7))
 
 
 WINDOW = getattr(config, "WINDOW_MINUTES", 15)
@@ -109,12 +179,12 @@ WINDOW = getattr(config, "WINDOW_MINUTES", 15)
 
 def window(emp, kind: str, day):
     """Окно, когда можно отметить приход (kind="in") или уход ("out")."""
-    base = at(day, emp["start"] if kind == "in" else emp["end"])
+    base = at(day, shift_start(emp, day) if kind == "in" else shift_end(emp, day))
     return base - timedelta(minutes=WINDOW), base + timedelta(minutes=WINDOW)
 
 
 def window_text(emp, kind: str, day) -> str:
-    if not has_schedule(emp):
+    if not workday(emp, day):
         return "в любое время"
     a, b = window(emp, kind, day)
     return f"{a:%H:%M}–{b:%H:%M}"
@@ -154,6 +224,8 @@ def init_db():
                 id INTEGER PRIMARY KEY, day TEXT, created_at TEXT, items INTEGER);
             CREATE TABLE IF NOT EXISTS flags(name TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS emp_shift(user_id INTEGER PRIMARY KEY, shift TEXT);
+            CREATE TABLE IF NOT EXISTS emp_week(user_id INTEGER, weekday INTEGER, shift TEXT,
+                PRIMARY KEY(user_id, weekday));
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
@@ -192,8 +264,8 @@ def _close_stale(c, uid):
         # сегодня: закрываем, только если окно ухода уже прошло
         if not emp or not workday(emp, t) or t <= window(emp, "out", t)[1]:
             return
-    if emp and has_schedule(emp):
-        end = at(cin.date(), emp["end"])
+    if emp and workday(emp, cin):
+        end = at(cin.date(), shift_end(emp, cin))
     else:  # свободный график: считаем максимум 8 часов, но не позже конца дня
         end = min(cin + timedelta(hours=8), at(cin.date(), "23:59"))
     if end <= cin:
@@ -225,12 +297,12 @@ def check_in(uid: int):
             return False, f"⏰ Отметить приход можно только с {a:%H:%M} до {b:%H:%M}.\nСейчас {t:%H:%M}."
         late = 0
         if workday(emp, t):
-            diff = int((t - at(t, emp["start"])).total_seconds() // 60)
+            diff = int((t - at(t, shift_start(emp, t))).total_seconds() // 60)
             if diff > config.GRACE_MINUTES:
                 late = diff
         c.execute("INSERT INTO sessions(user_id, check_in, late_min) VALUES(?, ?, ?)", (uid, t.strftime(FMT), late))
         if late:
-            notify_admins(c, f"⚠️ {emp['name']} пришёл(ла) в {t:%H:%M} — опоздание {fmt_min(late)} (по графику {emp['start']})")
+            notify_admins(c, f"⚠️ {emp['name']} пришёл(ла) в {t:%H:%M} — опоздание {fmt_min(late)} (по графику {shift_start(emp, t)})")
         else:
             notify_admins(c, f"✅ {emp['name']} пришёл(ла) в {t:%H:%M}")
     msg = f"✅ Приход отмечен в {t:%H:%M}."
@@ -258,13 +330,13 @@ def check_out(uid: int):
         worked = int((t - cin).total_seconds() // 60)
         early = 0
         if workday(emp, t):
-            diff = int((at(t, emp["end"]) - t).total_seconds() // 60)
+            diff = int((at(t, shift_end(emp, t)) - t).total_seconds() // 60)
             if diff > 0:
                 early = diff
         c.execute("UPDATE sessions SET check_out=?, early_min=? WHERE id=?", (t.strftime(FMT), early, s["id"]))
         text = f"🚪 {emp['name']} ушёл(ла) в {t:%H:%M}, отработал(а) {fmt_min(worked)}"
         if early:
-            text += f"\n⚠️ Ранний уход: на {fmt_min(early)} раньше графика ({emp['end']})"
+            text += f"\n⚠️ Ранний уход: на {fmt_min(early)} раньше графика ({shift_end(emp, t)})"
         notify_admins(c, text)
     msg = f"🚪 Уход отмечен в {t:%H:%M}.\nСегодня отработано: {fmt_min(worked)}"
     if early:
@@ -327,9 +399,10 @@ def profile(uid: int) -> dict:
             "name": emp["name"],
             "role": emp.get("role", "Сотрудник"),
             "streak": _streak(c, uid, emp),
-            "schedule": schedule_text(emp),
-            "has_schedule": has_schedule(emp),
-            "days": ", ".join(WEEKDAYS[d] for d in emp.get("days", range(7))),
+            "schedule": schedule_text(emp, t),
+            "has_schedule": not is_free_day(emp, t),
+            "week": week_list(emp),
+            "today_wd": t.weekday(),
             "goal": config.GOAL_HOURS,
             "total_hours": round(total, 1),
             "today_hours": round(_hours(c, uid, t.strftime("%Y-%m-%d")), 2),
@@ -395,7 +468,7 @@ def check_penalties():
             ).fetchone()
             if came:
                 continue
-            reason = f"не отметил(а) приход до {window(emp, 'in', t)[1]:%H:%M} (график {emp['start']})"
+            reason = f"не отметил(а) приход до {window(emp, 'in', t)[1]:%H:%M} (график {shift_start(emp, t)})"
             cur = c.execute(
                 "INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
                 (uid, today, PENALTY_AMOUNT, reason),
@@ -525,8 +598,10 @@ def team() -> list:
                 status, icon = f"на месте с {s['check_in'][11:16]}", "🟢"
             elif first:
                 status, icon = f"ушёл(ла) в {last['check_out'][11:16]}", "⚪️"
-            elif not has_schedule(emp):
+            elif is_free_day(emp, t):
                 status, icon = "сегодня не отмечался(ась)", "⚪️"
+            elif workday(emp, t) and t <= window(emp, "in", t)[1]:
+                status, icon = f"смена с {shift_start(emp, t)}", "🕘"
             elif workday(emp, t):
                 status, icon = "не пришёл(ла)", "🔴"
             else:
@@ -538,8 +613,8 @@ def team() -> list:
                 "id": uid,
                 "name": emp["name"],
                 "role": emp.get("role", "Сотрудник"),
-                "schedule": schedule_text(emp),
-                "shift": emp.get("shift"),
+                "schedule": schedule_text(emp, t),
+                "week": week_list(emp),
                 "icon": icon,
                 "status": status,
                 "late": fmt_min(first["late_min"]) if first and first["late_min"] else None,

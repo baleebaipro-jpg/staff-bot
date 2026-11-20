@@ -99,7 +99,8 @@ def api_avatar(uid, data):
 @app.post("/api/me")
 @need_user()
 def api_me(uid, data):
-    res = {"is_admin": core.is_admin(uid), "is_employee": bool(core.employee(uid)), "goal": config.GOAL_HOURS}
+    res = {"is_admin": core.is_admin(uid), "is_employee": bool(core.employee(uid)), "goal": config.GOAL_HOURS,
+           "today_wd": core.now().weekday()}
     if res["is_employee"]:
         res["profile"] = core.profile(uid)
         res["profile"]["ava_v"] = ava_version(uid)
@@ -107,6 +108,7 @@ def api_me(uid, data):
         res["history"] = core.history(uid)
     if res["is_admin"]:
         res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
+        res["shifts"][core.OFF] = "Выходной"
         res["team"] = core.team()
         for e in res["team"]:
             e["ava_v"] = ava_version(e["id"])
@@ -160,6 +162,14 @@ def api_add_penalty(uid, data):
 @need_user(admin=True)
 def api_delete_penalty(uid, data):
     ok, msg = core.delete_penalty(int(data.get("id", 0)))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/set_week")
+@need_user(admin=True)
+def api_set_week(uid, data):
+    week = data.get("week") or {}
+    ok, msg = core.set_week(int(data.get("user_id", 0)), {str(k): v for k, v in week.items()})
     return jsonify(ok=ok, msg=msg)
 
 
@@ -302,7 +312,17 @@ PAGE = r"""<!doctype html>
   .member .ava { width: 52px; height: 52px; padding: 2px; box-shadow: none; }
   .member .ava > div, .member .ava > img { font-size: 20px; border-width: 2px; }
   .mini-bar { height: 7px; margin-top: 8px; }
-  .shift-sel { margin: 6px 0 0; padding: 7px 10px; font-size: 13px; border-radius: 10px; width: auto; max-width: 100%; }
+  .week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 8px; }
+  .week div { background: var(--card2); border-radius: 9px; padding: 5px 2px; text-align: center; font-size: 11px; line-height: 1.25; }
+  .week div b { display: block; font-size: 11px; color: var(--hint); font-weight: 600; }
+  .week div.today { outline: 1.5px solid var(--accent); }
+  .week div.off { opacity: .45; }
+  .name-btn { background: none; padding: 0; font-weight: 700; text-align: left; color: var(--text); text-decoration: underline dotted rgba(255,255,255,.35); text-underline-offset: 4px; }
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 20; display: flex; align-items: flex-end; }
+  .sheet { background: var(--card); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0; width: 100%;
+           max-width: 560px; margin: 0 auto; padding: 18px 16px 24px; max-height: 92vh; overflow-y: auto; }
+  .sheet .row-day { display: grid; grid-template-columns: 40px 1fr; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .sheet .row-day select { margin: 0; }
   select, input { width: 100%; font: inherit; color: var(--text); background: var(--card2); border: 1px solid var(--line);
                   border-radius: 12px; padding: 12px; margin-bottom: 10px; outline: none; }
 
@@ -352,6 +372,10 @@ PAGE = r"""<!doctype html>
       </div>
       <button class="btn btn-main" id="btn-mark"></button>
     </div>
+    <div class="card" style="padding:12px 14px">
+      <div class="hint" style="font-size:13px">🗓 Мой график на неделю</div>
+      <div class="week" id="my-week"></div>
+    </div>
     <div class="card" id="pen-card"></div>
 
     <div class="card">
@@ -399,6 +423,18 @@ PAGE = r"""<!doctype html>
       <button class="btn btn-danger" style="width:100%" id="f-add">Выписать штраф</button>
     </div>
     <div id="team"></div>
+  </div>
+</div>
+<div class="sheet-bg hidden" id="sheet-bg">
+  <div class="sheet">
+    <h3 id="sheet-title">График</h3>
+    <div class="hint" style="font-size:13px;margin:-8px 0 12px">Выберите график на каждый день недели</div>
+    <div class="row-day"><b style="font-size:13px">Все</b><select id="sheet-all"><option value="">Заполнить все дни…</option></select></div>
+    <div id="sheet-days"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+      <button class="btn btn-soft" id="sheet-cancel">Отмена</button>
+      <button class="btn btn-main" id="sheet-save">Сохранить</button>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -525,12 +561,13 @@ function renderMe() {
   $("s-streak").textContent = p.streak + " " + plural(p.streak, "день", "дня", "дней");
   $("s-level").textContent = lvl.name;
 
+  $("my-week").innerHTML = weekCells(p.week, p.today_wd);
   $("st-text").innerHTML = p.on_site
     ? `<span class="dot" style="background:var(--green)"></span>На месте с ${p.since}`
     : `<span class="dot" style="background:var(--hint)"></span>Не на месте`;
   const can = p.on_site ? p.can_out : p.can_in;
   $("st-sub").textContent = !p.has_schedule ? (p.on_site ? "Свободный график · отметьте уход, когда закончите" : "Свободный график · отмечайтесь в любое время")
-    : !p.workday ? `Сегодня выходной · график ${p.schedule}`
+    : !p.workday ? `Сегодня выходной`
     : p.on_site ? `Уход: ${p.out_window}`
     : p.came_today ? `Смена завершена · график ${p.schedule}`
     : `Приход: ${p.in_window}`;
@@ -570,6 +607,49 @@ function renderMe() {
                                 : "Цель 10 000 часов достигнута";
 }
 
+function weekCells(week, todayWd) {
+  const t = todayWd ?? data.today_wd;
+  return (week || []).map((d, i) =>
+    `<div class="${d.key === "off" ? "off" : ""} ${i === t ? "today" : ""}"><b>${d.day}</b>${esc(d.short)}</div>`).join("");
+}
+function weekChips(week, todayWd) {
+  return week ? `<div class="week">${weekCells(week, todayWd)}</div>` : "";
+}
+
+let sheetUser = null;
+function openWeek(uid) {
+  const e = data.team.find(x => x.id === uid);
+  if (!e) return;
+  sheetUser = uid;
+  const opts = Object.entries(data.shifts || {});
+  $("sheet-title").textContent = "🗓 " + e.name;
+  $("sheet-all").innerHTML = `<option value="">Заполнить все дни…</option>` +
+    opts.map(([k, t]) => `<option value="${k}">${esc(t)}</option>`).join("");
+  $("sheet-days").innerHTML = e.week.map((d, i) => `
+    <div class="row-day"><b>${d.day}</b><select data-day="${i}">${opts.map(([k, t]) =>
+      `<option value="${k}" ${k === d.key ? "selected" : ""}>${esc(t)}</option>`).join("")}
+      ${opts.some(([k]) => k === d.key) ? "" : `<option value="" selected disabled>${esc(d.short)}</option>`}</select></div>`).join("");
+  $("sheet-bg").classList.remove("hidden");
+}
+function closeWeek() { $("sheet-bg").classList.add("hidden"); sheetUser = null; }
+$("sheet-cancel").onclick = closeWeek;
+$("sheet-bg").onclick = ev => { if (ev.target.id === "sheet-bg") closeWeek(); };
+$("sheet-all").onchange = ev => {
+  if (!ev.target.value) return;
+  document.querySelectorAll("#sheet-days select").forEach(s => s.value = ev.target.value);
+  ev.target.value = "";
+};
+$("sheet-save").onclick = async () => {
+  const week = {};
+  for (const s of document.querySelectorAll("#sheet-days select")) {
+    if (!s.value) return toast(`Выберите график на ${s.closest(".row-day").querySelector("b").textContent}`);
+    week[s.dataset.day] = s.value;
+  }
+  const uid = sheetUser;
+  closeWeek();
+  await action("/api/set_week", {user_id: uid, week});
+};
+
 function renderTeam() {
   $("t-user").innerHTML = $("f-user").innerHTML = data.team.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
   $("team").innerHTML = data.team.map(e => {
@@ -578,14 +658,12 @@ function renderTeam() {
     return `<div class="card">
       <div class="member"><div class="ava">${avatar(e.id, e.name, e.ava_v)}</div>
         <div style="flex:1;min-width:0">
-          <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(e.name)}</b><span>${e.icon}</span></div>
-          <div class="hint" style="font-size:13px">${esc(e.role)}</div>
-          <select class="shift-sel" data-shift="${e.id}">${Object.entries(data.shifts || {}).map(([k, t]) =>
-            `<option value="${k}" ${k === e.shift ? "selected" : ""}>🕘 ${esc(t)}</option>`).join("")}
-            ${e.shift ? "" : `<option selected disabled>🕘 ${esc(e.schedule)}</option>`}</select>
+          <div style="display:flex;justify-content:space-between;gap:8px"><button class="name-btn" data-week="${e.id}">${esc(e.name)} ✏️</button><span>${e.icon}</span></div>
+          <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
           <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div>
 
         </div></div>
+      ${weekChips(e.week, data.today_wd)}
       <div class="bar mini-bar"><div style="width:${pct}%"></div></div>
       <div class="hint" style="font-size:13px;margin-top:6px">${num(e.total_hours)} / ${num(data.goal)} ч · ${lvl.name}</div>
       <div style="font-size:13px;margin-top:4px;color:${e.penalties_total ? "var(--red)" : "var(--hint)"}">🔴 Штрафов: всего ${e.penalties_total} · за месяц ${e.penalties_month}</div>
@@ -594,8 +672,7 @@ function renderTeam() {
       ${e.tasks.map(t => `<div class="task"><div class="tt">📌 ${esc(t.title)}</div>
         <button class="btn btn-soft btn-sm" data-del="${t.id}">✕</button></div>`).join("")}
     </div>`; }).join("");
-  document.querySelectorAll("[data-shift]").forEach(s => s.onchange = () =>
-    action("/api/set_shift", {user_id: +s.dataset.shift, shift: s.value}));
+  document.querySelectorAll("[data-week]").forEach(b => b.onclick = () => openWeek(+b.dataset.week));
   document.querySelectorAll("[data-delpen]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить штраф?", ok => ok && action("/api/delete_penalty", {id: +b.dataset.delpen})));
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = () =>
