@@ -72,6 +72,17 @@ def index():
     return PAGE
 
 
+@app.after_request
+def no_cache(resp):
+    """Telegram запоминает страницу мини-приложения — без этого после обновления бота
+    у людей может открываться старая версия кабинета (например, без бонусов)."""
+    if request.path == "/" or request.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
+
+
 @app.route("/avatar/<int:uid>.jpg")
 def avatar(uid):
     path = os.path.join(AVATAR_DIR, f"{uid}.jpg")
