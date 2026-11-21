@@ -5,6 +5,11 @@ import os
 #   BOT_TOKEN   — токен от @BotFather
 #   WEBAPP_URL  — адрес сервиса, например https://staff-bot-production.up.railway.app
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+# Отдельный бот для клиентов (необязательно). Если задан CLIENT_BOT_TOKEN в Railway:
+#   BOT_TOKEN        — бот сотрудников и руководителя (+ группы: цены, штрафы, инвестиции)
+#   CLIENT_BOT_TOKEN — бот клиентов (язык, номер, покупки и бонусы BILLZ, новости, кабинет клиента)
+# Без него всё работает в одном боте, как раньше.
+CLIENT_BOT_TOKEN = os.getenv("CLIENT_BOT_TOKEN", "").strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://abdullohbe.pythonanywhere.com").strip().rstrip("/")
 if not WEBAPP_URL.startswith("https://"):
     WEBAPP_URL = "https://" + WEBAPP_URL.removeprefix("http://")

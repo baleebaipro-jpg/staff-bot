@@ -121,8 +121,33 @@ def known(uid: int) -> bool:
     return bool(core.employee(uid)) or core.is_admin(uid)
 
 
+# ---------- два бота: сотрудники (BOT_TOKEN) и клиенты (CLIENT_BOT_TOKEN, необязательно) ----------
+
+CLIENT_BOT = {"username": None}
+
+
+def client_bot_on() -> bool:
+    return bool(getattr(config, "CLIENT_BOT_TOKEN", ""))
+
+
+def in_client_bot(context) -> bool:
+    """Обновление пришло в бота клиентов (там все — клиенты, даже сотрудники)."""
+    return bool(context and context.bot_data.get("role") == "client")
+
+
+async def to_client_bot(update: Update) -> None:
+    """Клиент написал боту сотрудников — направляем в бота клиентов."""
+    u = CLIENT_BOT["username"]
+    text = ("👋 Bu — xodimlar uchun bot.\nMijozlar uchun bot: @{u}\n\n"
+            "👋 Это бот для сотрудников.\nДля клиентов — @{u}").format(u=u or "…")
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton(f"➡️ @{u}", url=f"https://t.me/{u}")]]) if u else None
+    await reply(update, text, reply_markup=markup)
+
+
 async def deny(update: Update) -> None:
-    """Клиент нажал что-то для сотрудников — показываем меню клиента."""
+    """Клиент нажал что-то для сотрудников — показываем меню клиента (или ведём в бота клиентов)."""
+    if client_bot_on():
+        return await to_client_bot(update)
     await client_menu(update)
 
 
@@ -191,7 +216,7 @@ async def client_logout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     q = update.callback_query
     uid = q.from_user.id
     lang = (core.get_client(uid) or {}).get("lang")
-    if known(uid):
+    if known(uid) and not in_client_bot(context):
         return await q.answer()
     if q.data.endswith(":no"):
         await q.answer()
@@ -218,8 +243,10 @@ async def got_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if contact.user_id != u.id:
         return await reply(update, i18n.t(lang, "wrong_contact"), reply_markup=client_keyboard(u.id))
     core.save_client(u.id, phone=contact.phone_number, first_name=u.first_name or "", username=u.username or "")
-    if known(u.id):
+    if known(u.id) and not in_client_bot(context):
         return await reply(update, st.s(core.staff_lang(u.id), "phone_saved"), reply_markup=keyboard(u.id))
+    if not known(u.id) and client_bot_on() and not in_client_bot(context):
+        return await to_client_bot(update)
     if cl.get("step") == "done":
         return await client_menu(update)
     await after_phone(update)
@@ -325,6 +352,8 @@ async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
+        if client_bot_on():
+            return await to_client_bot(update)
         return await client_menu(update, greet=True)
     await save_avatar(context.bot, uid)
     if core.employee(uid) and not core.staff_lang_chosen(uid):
@@ -570,7 +599,7 @@ async def bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
-        return await client_text(update, context)
+        return await (to_client_bot(update) if client_bot_on() else client_text(update, context))
     if not invest_mod.ENABLED:
         return await reply(update, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "invest_soon"),
                            reply_markup=keyboard(uid))
@@ -723,7 +752,7 @@ async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
-        return await client_text(update, context)
+        return await (to_client_bot(update) if client_bot_on() else client_text(update, context))
     await reply(update, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "use_buttons"), reply_markup=keyboard(uid))
 
 
@@ -733,7 +762,18 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---------- отправка уведомлений из очереди ----------
 
-async def outbox_loop(app: Application) -> None:
+def _bot_for(m, app, client_app):
+    """Через какого бота отправить сообщение из очереди: клиентам — через бота клиентов
+    (если он подключён), сотрудникам, руководителю и в группы — через бота сотрудников."""
+    if client_app is None:
+        return app.bot
+    chat = m["chat_id"]
+    if m.get("markup") == "client_kb" or (chat > 0 and not known(chat) and m.get("markup") != "staff_kb"):
+        return client_app.bot
+    return app.bot
+
+
+async def outbox_loop(app: Application, client_app: Application = None) -> None:
     while True:
         try:
             core.check_penalties()
@@ -779,18 +819,22 @@ async def outbox_loop(app: Application) -> None:
                         markup = InlineKeyboardMarkup([[
                             InlineKeyboardButton(t, url=d[4:]) if d.startswith("url:") else InlineKeyboardButton(t, callback_data=d)
                             for t, d in row] for row in json.loads(m["markup"])])
+                    sender = _bot_for(m, app, client_app)
                     if m.get("photo"):
                         p = m["photo"]
+                        # file_id из бота сотрудников действует только в нём — такие фото отправляет он
+                        if p.startswith("tg:"):
+                            sender = app.bot
                         src = p[3:] if p.startswith("tg:") else open(p, "rb")
                         try:
-                            await app.bot.send_photo(m["chat_id"], src, caption=text[:1024], message_thread_id=thread,
+                            await sender.send_photo(m["chat_id"], src, caption=text[:1024], message_thread_id=thread,
                                                      parse_mode=mode, reply_markup=markup)
                         finally:
                             if not isinstance(src, str):
                                 src.close()
                     else:
-                        await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode,
-                                                   reply_markup=markup)
+                        await sender.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode,
+                                                  reply_markup=markup)
                     core.mark_sent(m["id"])
                 except RetryAfter as e:
                     await asyncio.sleep(float(getattr(e, "retry_after", 5)) + 1)  # Telegram просит подождать
@@ -814,9 +858,56 @@ async def post_init(app: Application) -> None:
     app.bot_data["outbox"] = asyncio.create_task(outbox_loop(app))
 
 
+async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await client_menu(update, greet=True)
+
+
+async def client_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await client_menu(update)
+
+
+def build_client_app() -> Application:
+    """Бот клиентов: только клиентская часть (язык, номер, BILLZ, новости, кабинет, «Выйти»)."""
+    capp = Application.builder().token(config.CLIENT_BOT_TOKEN).build()
+    capp.bot_data["role"] = "client"
+    capp.add_handler(TypeHandler(Update, gate), group=-1)
+    capp.add_handler(CommandHandler("start", client_start))
+    capp.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
+    capp.add_handler(CallbackQueryHandler(client_logout, pattern=r"^clogout:(yes|no)$"))
+    capp.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
+    capp.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, client_text))
+    capp.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.TEXT & ~filters.CONTACT & ~filters.COMMAND,
+                                    client_other))
+    capp.add_error_handler(on_error)
+    return capp
+
+
+async def _run_both(app: Application, capp: Application) -> None:
+    """Запустить оба бота в одной программе (общая база, кабинет и очередь сообщений)."""
+    async with app, capp:  # initialize … shutdown
+        CLIENT_BOT["username"] = capp.bot.username
+        await app.start()
+        await capp.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        outbox = asyncio.create_task(outbox_loop(app, capp))
+        print(f"Боты запущены: сотрудники @{app.bot.username}, клиенты @{capp.bot.username}")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            outbox.cancel()
+            await app.updater.stop()
+            await capp.updater.stop()
+            await app.stop()
+            await capp.stop()
+
+
 def main() -> None:
     core.init_db()
-    app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
+    two_bots = client_bot_on()
+    builder = Application.builder().token(config.BOT_TOKEN)
+    app = (builder if two_bots else builder.post_init(post_init)).build()
+    app.bot_data["role"] = "staff"
     app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & _WaitingReport(), invest_report_photo))
     app.add_handler(MessageHandler(
         (filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.StatusUpdate.ALL & ~filters.COMMAND,
@@ -849,6 +940,9 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.VIDEO), other_media_while_proof))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, other))
     app.add_error_handler(on_error)
+    if two_bots:
+        asyncio.run(_run_both(app, build_client_app()))
+        return
     print("Бот запущен. Остановить: Ctrl+C")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
