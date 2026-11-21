@@ -4,7 +4,7 @@
 необязательное фото, необязательная кнопка-ссылка.
 Каждый получатель получает пост на своём языке:
   клиенты — на языке, который выбрали при входе в бота;
-  сотрудники — на русском;
+  сотрудники — на языке, который выбрали в боте (uz / ru);
   группы и каналы — на языке из POST_CHATS (по умолчанию узбекский).
 Если перевода на нужный язык нет — на заполненном (uz → ru → en).
 
@@ -23,7 +23,6 @@ import i18n
 
 DIR = os.path.join(core._DATA_DIR, "posts")
 TEXT_MAX, CAPTION_MAX = 4000, 1024
-STAFF_LANG = "ru"
 
 
 def chats() -> list:
@@ -64,7 +63,7 @@ def _recipients(audience: list) -> list:
                     add(r["user_id"], None, i18n.lang_of(r["lang"]))
     if "staff" in audience:
         for uid in config.EMPLOYEES:
-            add(uid, None, STAFF_LANG)
+            add(uid, None, core.staff_lang(uid))
     known = {ch["id"]: ch for ch in chats()}
     for a in audience:
         if a.startswith("chat:"):
