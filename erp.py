@@ -8,7 +8,7 @@
     POST /v1/auth/login           секретный ключ → access_token (живёт 15 суток)
     GET  /v1/client?phone_number= поиск клиента по телефону: имя, дата рождения,
                                   balance (кешбэк-бонусы), карты
-    GET  /v1/customer/{id}        карточка клиента: purchase_amount (сумма покупок)
+    GET  /v1/customer/{id}        карточка клиента: purchase_amount (сумма покупок), balance (кешбэк)
     POST /v1/client               создать клиента (если включено BILLZ_CREATE_CLIENTS)
 """
 import json
@@ -196,7 +196,9 @@ def sync_client(uid: int, force: bool = False) -> dict:
                     raise
                 info = {}  # клиент только что заведён — покупок ещё нет
             purchases = float((info or {}).get("purchase_amount") or 0)
-            if balance is None:
+            if (info or {}).get("balance") is not None:  # кешбэк-баланс есть прямо в карточке клиента
+                balance = float(info["balance"] or 0)
+            if balance is None:  # запасной путь — поиск по номеру
                 for p in _phone_variants(cl.get("phone")):
                     found = (_api("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 1}) or {}).get("clients")
                     if found:
