@@ -34,6 +34,7 @@ import invest as invest_mod
 import posts
 import projects
 import relay
+import staff_text as st
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
 PENALTY_THREAD_ID = getattr(config, "PENALTY_THREAD_ID", None)
@@ -50,14 +51,24 @@ BTN_INVEST = "💰 Инвестиции"
 
 
 def keyboard(uid: int) -> ReplyKeyboardMarkup:
+    """Кнопки сотрудника — на его языке (uz / ru); кнопки руководителя — по-русски."""
     rows = []
     if core.employee(uid):
-        rows.append([BTN_IN, BTN_OUT])
-        rows.append([BTN_TASKS, BTN_INVEST])
+        L = core.staff_lang(uid)
+        rows.append([st.s(L, "btn_in"), st.s(L, "btn_out")])
+        rows.append([st.s(L, "btn_tasks"), st.s(L, "btn_invest")])
+        rows.append([KeyboardButton(st.s(L, "btn_cabinet"), web_app=WebAppInfo(url=config.WEBAPP_URL)),
+                     st.s(L, "btn_lang")])
     if core.is_admin(uid):
         rows.append([BTN_TEAM] + ([] if core.employee(uid) else [BTN_INVEST]))
-    rows.append([KeyboardButton(BTN_CABINET, web_app=WebAppInfo(url=config.WEBAPP_URL))])
+        if not core.employee(uid):
+            rows.append([KeyboardButton(BTN_CABINET, web_app=WebAppInfo(url=config.WEBAPP_URL))])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def staff_lang_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(title, callback_data=f"slang:{code}")]
+                                 for code, title in st.LANGS.items()])
 
 
 async def reply(update: Update, text: str, **kwargs) -> None:
@@ -182,7 +193,7 @@ async def got_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await reply(update, i18n.t(lang, "wrong_contact"), reply_markup=client_keyboard(u.id))
     core.save_client(u.id, phone=contact.phone_number, first_name=u.first_name or "", username=u.username or "")
     if known(u.id):
-        return await reply(update, "Номер сохранён ✅", reply_markup=keyboard(u.id))
+        return await reply(update, st.s(core.staff_lang(u.id), "phone_saved"), reply_markup=keyboard(u.id))
     if cl.get("step") == "done":
         return await client_menu(update)
     await after_phone(update)
@@ -265,12 +276,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not known(uid):
         return await client_menu(update, greet=True)
     await save_avatar(context.bot, uid)
-    text = f"Здравствуйте, {core.name(uid) if core.employee(uid) else update.effective_user.first_name}! 👋\n\n"
+    if core.employee(uid) and not core.staff_lang_chosen(uid):
+        # сотрудник впервые — сначала выбор языка
+        return await reply(update, st.s(None, "choose_lang"), reply_markup=staff_lang_buttons())
+    L = core.staff_lang(uid) if core.employee(uid) else "ru"
+    text = st.s(L, "hello", name=core.name(uid) if core.employee(uid) else update.effective_user.first_name) + "\n\n"
     if core.employee(uid):
-        text += (
-            f"{BTN_IN} / {BTN_OUT} — отметить приход и уход\n"
-            f"{BTN_TASKS} — ваши задачи\n"
-        )
+        text += st.s(L, "help_staff", btn_in=st.s(L, "btn_in"), btn_out=st.s(L, "btn_out"), btn_tasks=st.s(L, "btn_tasks"))
     if core.is_admin(uid):
         text += (
             f"{BTN_TEAM} — кто на месте\n"
@@ -278,12 +290,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/fine ID сумма причина — выписать штраф\n"
             "/news текст — новость для клиентов\n"
         )
-    text += f"{BTN_CABINET} — часы, история, задачи"
+    text += st.s(L, "help_cabinet", btn=st.s(L, "btn_cabinet"))
     await reply(update, text, reply_markup=keyboard(uid))
 
 
+async def choose_staff_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сотрудник выбрал язык (uz / ru)."""
+    q = update.callback_query
+    uid = q.from_user.id
+    if not core.employee(uid):
+        return await q.answer()
+    L = core.set_staff_lang(uid, q.data.split(":", 1)[1])
+    await q.answer(st.s(L, "lang_set"))
+    try:
+        await q.edit_message_text(st.s(L, "lang_set"))
+    except TelegramError:
+        pass
+    await start(update, context)
+
+
+async def staff_lang_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кнопка «🌐 Til / Язык» у сотрудника."""
+    if not core.employee(update.effective_user.id):
+        return await other(update, context)
+    await reply(update, st.s(None, "choose_lang"), reply_markup=staff_lang_buttons())
+
+
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await reply(update, f"Ваш ID: {update.effective_user.id}")
+    uid = update.effective_user.id
+    await reply(update, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "your_id", id=uid))
 
 
 async def chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -327,9 +362,10 @@ async def got_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not ok:
         return
     await save_avatar(context.bot, uid)
-    note = f"📹 {core.name(uid)}: {msg.splitlines()[0].replace('✅ ', '')}\n🔢 Код: {code} — проверьте, что назвал(а) его"
-    if len(msg.splitlines()) > 1 and "Опоздание" in msg:
-        note += "\n" + msg.splitlines()[1]
+    cin, late = core.last_checkin(uid)  # для руководителя — по-русски, независимо от языка сотрудника
+    note = f"📹 {core.name(uid)}: приход отмечен в {cin}\n🔢 Код: {code} — проверьте, что назвал(а) его"
+    if late:
+        note += f"\n⚠️ Опоздание: {core.fmt_min(late)}"
     targets = [(PROOF_CHAT_ID, PROOF_THREAD_ID)] if PROOF_CHAT_ID else [(a, None) for a in config.ADMINS]
     for chat_id, thread in targets:
         try:
@@ -343,7 +379,7 @@ async def got_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def other_media_while_proof(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if core.proof_pending(uid):
-        await reply(update, "Нужен именно кружок 📹 (круглое видео), не фото и не обычное видео.")
+        await reply(update, st.s(core.staff_lang(uid), "need_circle"))
     else:
         await other(update, context)
 
@@ -360,19 +396,20 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not core.employee(uid):
         return await deny(update)
+    L = core.staff_lang(uid)
     open_tasks = [t for t in core.tasks(uid) if not t["done"]]
     if not open_tasks:
-        return await reply(update, "У вас нет открытых задач 🎉")
+        return await reply(update, st.s(L, "no_tasks"))
     lines, buttons = [], []
     for i, t in enumerate(open_tasks, 1):
         if t["due"]:
-            lines.append(f"{i}. {t['title']} — 📅 на {t['due']}")
+            lines.append(f"{i}. {t['title']} — {st.s(L, 'task_due', d=t['due'])}")
         elif t["status"] == "review":
-            lines.append(f"{i}. {t['title']} — ⏳ на проверке")
+            lines.append(f"{i}. {t['title']} — {st.s(L, 'task_review')}")
         else:
             lines.append(f"{i}. {t['title']}")
-            buttons.append([InlineKeyboardButton(f"✅ Готово: {t['title'][:40]}", callback_data=f"done:{t['id']}")])
-    await reply(update, "📋 Ваши задачи:\n\n" + "\n".join(lines),
+            buttons.append([InlineKeyboardButton(st.s(L, "btn_done", t=t["title"][:40]), callback_data=f"done:{t['id']}")])
+    await reply(update, st.s(L, "tasks_title") + "\n\n" + "\n".join(lines),
                 reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
 
 
@@ -386,7 +423,7 @@ async def task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif parts[0] == "task" and core.is_admin(uid):
         ok, msg = core.review_task(int(parts[2]), parts[1])
     else:
-        ok, msg = False, "Нет доступа."
+        ok, msg = False, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "no_access")
     await q.answer(msg[:190], show_alert=not ok)
     try:
         await q.edit_message_text(q.message.text + "\n\n" + msg)
@@ -469,7 +506,8 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not known(uid):
         return await client_text(update, context)
     if not invest_mod.ENABLED:
-        return await reply(update, invest_mod.SOON_TEXT, reply_markup=keyboard(uid))
+        return await reply(update, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "invest_soon"),
+                           reply_markup=keyboard(uid))
     M = invest_mod.money
     lines = []
     if invest_mod.can_invest(uid):
@@ -620,7 +658,7 @@ async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
         return await client_text(update, context)
-    await reply(update, "Пользуйтесь кнопками внизу 👇", reply_markup=keyboard(uid))
+    await reply(update, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "use_buttons"), reply_markup=keyboard(uid))
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -637,7 +675,8 @@ async def outbox_loop(app: Application) -> None:
             logging.exception("Ошибка при проверке штрафов")
         try:
             for uid in core.expired_proofs():
-                await app.bot.send_message(uid, "⌛ Время на кружок вышло, приход не засчитан.\nНажмите «✅ Пришёл» ещё раз.")
+                L = core.staff_lang(uid)
+                await app.bot.send_message(uid, st.s(L, "proof_expired_bot", btn=st.s(L, "btn_in")))
         except Exception:
             logging.exception("Ошибка при проверке кружков")
         try:
@@ -723,12 +762,15 @@ def main() -> None:
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
+    app.add_handler(CallbackQueryHandler(choose_staff_lang, pattern=r"^slang:(uz|ru)$"))
     app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+|inv_pay:\d+:(online|offline)|inv_acc:(ok|no):\d+)$"))
-    app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
-    app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
-    app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
+    # кнопки сотрудника — на любом из языков (uz / ru)
+    app.add_handler(MessageHandler(filters.Text(st.variants("btn_in")), came))
+    app.add_handler(MessageHandler(filters.Text(st.variants("btn_out")), left))
+    app.add_handler(MessageHandler(filters.Text(st.variants("btn_tasks")), my_tasks))
     app.add_handler(MessageHandler(filters.Text([BTN_TEAM]), team))
-    app.add_handler(MessageHandler(filters.Text([BTN_INVEST]), invest))
+    app.add_handler(MessageHandler(filters.Text(list(dict.fromkeys([BTN_INVEST] + st.variants("btn_invest")))), invest))
+    app.add_handler(MessageHandler(filters.Text(st.variants("btn_lang")), staff_lang_cmd))
     app.add_handler(CommandHandler("news", news_cmd))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))

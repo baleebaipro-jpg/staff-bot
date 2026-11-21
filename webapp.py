@@ -17,6 +17,7 @@ import i18n
 import invest
 import posts
 import projects
+import staff_text as st
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
 
@@ -87,17 +88,18 @@ def ava_version(uid) -> int:
 @need_user()
 def api_avatar(uid, data):
     """Сотрудник загружает своё фото (уже сжатое в браузере до JPEG)."""
+    L = core.staff_lang(uid)  # язык сотрудника (для клиента ответ ниже — на его языке)
     raw = str(data.get("image", ""))
     if "," in raw:
         raw = raw.split(",", 1)[1]
     try:
         img = base64.b64decode(raw, validate=True)
     except Exception:
-        return jsonify(ok=False, msg="Не удалось прочитать фото.")
+        return jsonify(ok=False, msg=st.s(L, "photo_bad"))
     if len(img) > 2_000_000:
-        return jsonify(ok=False, msg="Фото слишком большое.")
+        return jsonify(ok=False, msg=st.s(L, "photo_big"))
     if not img.startswith(b"\xff\xd8\xff"):
-        return jsonify(ok=False, msg="Нужна картинка в формате JPEG.")
+        return jsonify(ok=False, msg=st.s(L, "photo_jpeg"))
     os.makedirs(AVATAR_DIR, exist_ok=True)
     tmp = os.path.join(AVATAR_DIR, f"{uid}.tmp")
     with open(tmp, "wb") as f:
@@ -105,15 +107,35 @@ def api_avatar(uid, data):
     os.replace(tmp, os.path.join(AVATAR_DIR, f"{uid}.jpg"))
     # отметка, что фото своё — бот не будет заменять его фото из Telegram
     open(os.path.join(AVATAR_DIR, f"{uid}.custom"), "w").close()
-    lang = i18n.lang_of((core.get_client(uid) or {}).get("lang")) if core.is_client(uid) else "ru"
+    if not core.is_client(uid):
+        return jsonify(ok=True, msg=st.s(L, "photo_updated"))
+    lang = i18n.lang_of((core.get_client(uid) or {}).get("lang"))
     return jsonify(ok=True, msg={"uz": "Rasm yangilandi 📸", "ru": "Фото обновлено 📸", "en": "Photo updated 📸"}[lang])
+
+
+def _ranks(uid):
+    """Названия званий: для сотрудника, выбравшего узбекский, — по-узбекски."""
+    ranks = getattr(config, "RANKS", None)
+    if core.employee(uid) and core.staff_lang(uid) == "uz" and (not ranks or list(ranks) == st.RANKS["ru"]):
+        return st.RANKS["uz"]
+    return ranks
+
+
+@app.post("/api/staff_lang")
+@need_user(staff=True)
+def api_staff_lang(uid, data):
+    """Сотрудник меняет язык кабинета и бота (uz / ru)."""
+    if not core.employee(uid):
+        return jsonify(ok=False, msg="Только для сотрудников.")
+    L = core.set_staff_lang(uid, str(data.get("lang", "")))
+    return jsonify(ok=True, msg=st.s(L, "lang_set"))
 
 
 @app.post("/api/me")
 @need_user()
 def api_me(uid, data):
     res = {"is_admin": core.is_admin(uid), "is_employee": bool(core.employee(uid)), "goal": config.GOAL_HOURS,
-           "ranks": getattr(config, "RANKS", None),
+           "ranks": _ranks(uid),
            "today_wd": core.now().weekday()}
     if res["is_employee"]:
         res["profile"] = core.profile(uid)
@@ -165,7 +187,7 @@ def api_checkin(uid, data):
             return jsonify(ok=False, msg=msg)
         with core.db() as c:
             core.notify(c, uid, "HTML:" + msg)  # бот пришлёт просьбу о кружке в чат
-        return jsonify(ok=True, close=True, msg="📹 Запишите кружок в чате с ботом — это подтвердит приход")
+        return jsonify(ok=True, close=True, msg=st.s(core.staff_lang(uid), "proof_closed"))
     ok, msg = core.check_in(uid)
     return jsonify(ok=ok, msg=msg)
 
@@ -694,7 +716,7 @@ PAGE = r"""<!doctype html>
   <!-- ЛИЧНЫЙ КАБИНЕТ -->
   <div id="view-me" class="hidden">
     <div class="profile">
-      <label class="ava" title="Изменить фото">
+      <label class="ava">
         <span id="me-ava" style="display:contents"></span>
         <span class="ava-edit">📷</span>
         <input type="file" id="ava-file" accept="image/*" hidden>
@@ -703,22 +725,23 @@ PAGE = r"""<!doctype html>
         <div class="pname" id="p-name"></div>
         <div class="prole" id="p-role"></div>
         <div class="lvl-pill" id="p-lvl"></div>
+        <div><button class="link" id="me-lang" style="font-size:13px;margin-top:8px"></button></div>
       </div>
     </div>
 
-    <div class="goal"><span id="g-have"></span> <small>/ <span id="g-goal"></span> ч</small></div>
-    <div class="hint" id="g-to">до высшего звания</div>
+    <div class="goal"><span id="g-have"></span> <small>/ <span id="g-goal"></span> <span data-sx="h"></span></small></div>
+    <div class="hint" id="g-to"></div>
     <div class="bar-row"><div class="bar"><div id="g-bar" style="width:0"></div></div><div class="pct" id="g-pct"></div></div>
 
     <div class="stats">
-      <div class="stat s1"><div class="ic">📅</div><b id="s-month"></b><span>за месяц</span></div>
-      <div class="stat s2"><div class="ic">🔥</div><b id="s-streak"></b><span>подряд</span></div>
-      <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span>текущее звание</span></div>
+      <div class="stat s1"><div class="ic">📅</div><b id="s-month"></b><span data-sx="per_month"></span></div>
+      <div class="stat s2"><div class="ic">🔥</div><b id="s-streak"></b><span data-sx="in_row"></span></div>
+      <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span data-sx="cur_rank"></span></div>
     </div>
 
     <button class="card folder" id="go-inv">
       <div class="f-ic">💰</div>
-      <div style="min-width:0"><b>Инвестиции</b><div class="f-sub" id="inv-folder-sub"></div></div>
+      <div style="min-width:0"><b data-sx="invest">Инвестиции</b><div class="f-sub" id="inv-folder-sub"></div></div>
       <div class="f-arrow">›</div>
     </button>
     <div class="card status">
@@ -729,25 +752,25 @@ PAGE = r"""<!doctype html>
       <button class="btn btn-main" id="btn-mark"></button>
     </div>
     <div class="card" style="padding:12px 14px">
-      <div class="hint" style="font-size:13px">🗓 Мой график на неделю</div>
+      <div class="hint" style="font-size:13px" data-sx="my_week"></div>
       <div class="week" id="my-week"></div>
     </div>
     <div class="card" id="pen-card"></div>
 
     <div class="card">
-      <h3>Звания</h3>
+      <h3 data-sx="ranks"></h3>
       <div class="levels" id="levels"></div>
     </div>
 
     <div class="card">
-      <div class="head"><h3>📋 Мои задачи</h3></div>
+      <div class="head"><h3 data-sx="my_tasks"></h3></div>
       <div id="tasks"></div>
     </div>
 
     <div class="card">
       <div class="head">
-        <h3><svg class="ico" style="width:22px;height:22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Последние посещения</h3>
-        <button class="link" id="all-btn">Все →</button>
+        <h3><svg class="ico" style="width:22px;height:22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span data-sx="last_visits"></span></h3>
+        <button class="link" id="all-btn" data-sx="all"></button>
       </div>
       <div id="visits"></div>
     </div>
@@ -905,7 +928,7 @@ PAGE = r"""<!doctype html>
 
   <!-- ВСЯ ИСТОРИЯ -->
   <div id="view-history" class="hidden">
-    <div class="card"><h3>Все посещения</h3><div id="history-all"></div></div>
+    <div class="card"><h3 data-sx="all_visits">Все посещения</h3><div id="history-all"></div></div>
   </div>
 
   <!-- КОМАНДА -->
@@ -1104,21 +1127,56 @@ function show(v) {
 }
 tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 
+/* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
+const SX = {
+  ru: {h: "ч", per_month: "за месяц", in_row: "подряд", cur_rank: "текущее звание", invest: "Инвестиции",
+       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", last_visits: "Последние посещения",
+       all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
+       auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
+       close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
+       free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
+       shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
+       fines: "🔴 Штрафы", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
+       no_fines: "Штрафов нет — так держать! 👍", due: "📅 на {d}", review: "⏳ на проверке", done: "Готово",
+       no_tasks: "Задач нет 🎉", no_visits: "Посещений пока нет", to_rank: "до звания «{r}»",
+       keep_going: "Продолжайте в том же духе!", you_are: "Вы — {r}! 🏆", left_to: "До звания «{r}» осталось {h} ч 💪",
+       goal_done: "Цель {h} часов достигнута", soon: "Раздел скоро появится", soon_pill: "Скоро ⏳",
+       invest_soon: "💰 Раздел «Инвестиции» скоро появится ⏳", lang_btn: "🌐 O'zbekchaga o'tish", photo: "Загружаю фото…"},
+  uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
+       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", last_visits: "Oxirgi tashriflar",
+       all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
+       auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
+       close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
+       free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
+       shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
+       fines: "🔴 Jarimalar", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
+       no_fines: "Jarima yo'q — shunday davom eting! 👍", due: "📅 {d} ga", review: "⏳ tekshiruvda", done: "Bajarildi",
+       no_tasks: "Vazifa yo'q 🎉", no_visits: "Hozircha tashriflar yo'q", to_rank: "«{r}» unvonigacha",
+       keep_going: "Shunday davom eting!", you_are: "Siz — {r}! 🏆", left_to: "«{r}» unvonigacha {h} soat qoldi 💪",
+       goal_done: "{h} soatlik maqsadga erishildi", soon: "Bo'lim tez orada ochiladi", soon_pill: "Tez orada ⏳",
+       invest_soon: "💰 «Investitsiyalar» bo'limi tez orada ochiladi ⏳", lang_btn: "🌐 Перейти на русский", photo: "Rasm yuklanmoqda…"},
+};
+const meLang = () => (data && data.profile && data.profile.lang === "uz") ? "uz" : "ru";
+const sx = (k, v = {}) => (SX[meLang()][k] || SX.ru[k] || k).replace(/\{(\w+)\}/g, (_, n) => v[n] ?? "");
+const daysSx = n => meLang() === "uz" ? `${n} kun` : n + " " + plural(n, "день", "дня", "дней");
+
 function visitRow(h, full) {
   return `<div class="visit ${full ? "" : "short"}">
     <div class="t">
       <span>${icCal}${h.date.slice(0, 5)}<span class="yr">${h.date.slice(5)}</span>${full ? ` <span class="hint">${h.wd}</span>` : ""}</span>
-      <span>${icClock}${h.in} – ${h.out || "сейчас"}</span>
+      <span>${icClock}${h.in} – ${h.out || sx("now")}</span>
       ${full && (h.late || h.early || h.auto) ? `<div class="tag" style="width:100%">
-        ${h.late ? `<span style="color:var(--orange)">опоздание ${h.late}</span> ` : ""}
-        ${h.early ? `<span style="color:var(--orange)">ранний уход ${h.early}</span> ` : ""}
-        ${h.auto ? `<span class="hint">уход закрыт автоматически</span>` : ""}</div>` : ""}
+        ${h.late ? `<span style="color:var(--orange)">${sx("late")} ${h.late}</span> ` : ""}
+        ${h.early ? `<span style="color:var(--orange)">${sx("early")} ${h.early}</span> ` : ""}
+        ${h.auto ? `<span class="hint">${sx("auto")}</span>` : ""}</div>` : ""}
     </div>
     <div class="dur">${h.worked}</div></div>`;
 }
 
 function renderMe() {
   const p = data.profile;
+  document.querySelectorAll("[data-sx]").forEach(el => el.textContent = sx(el.dataset.sx));
+  $("me-lang").textContent = sx("lang_btn");
   const [lvl, idx, L] = levelOf(p.total_hours, p.goal);
   $("me-ava").innerHTML = avatar(p.id, p.name, p.ava_v);
   $("p-name").textContent = p.name;
@@ -1129,34 +1187,34 @@ function renderMe() {
   const pct = Math.min(100, p.total_hours / p.goal * 100);
   $("g-bar").style.width = pct + "%";
   $("g-pct").textContent = (pct < 1 && pct > 0 ? pct.toFixed(1) : Math.floor(pct)) + "%";
-  $("s-month").textContent = num(p.month_hours) + " ч";
-  $("s-streak").textContent = p.streak + " " + plural(p.streak, "день", "дня", "дней");
+  $("s-month").textContent = num(p.month_hours) + " " + sx("h");
+  $("s-streak").textContent = daysSx(p.streak);
   $("s-level").textContent = lvl.name;
 
   $("my-week").innerHTML = weekCells(p.week, p.today_wd);
   $("st-text").innerHTML = p.on_site
-    ? `<span class="dot" style="background:var(--green)"></span>На месте с ${p.since}`
-    : `<span class="dot" style="background:var(--hint)"></span>Не на месте`;
+    ? `<span class="dot" style="background:var(--green)"></span>${sx("here_since", {t: p.since})}`
+    : `<span class="dot" style="background:var(--hint)"></span>${sx("not_here")}`;
   const can = p.on_site ? p.can_out : p.can_in;
-  $("st-sub").textContent = p.on_site && p.unfinished ? `⛔ Сначала закройте задачи (${p.unfinished})`
-    : !p.has_schedule ? (p.on_site ? "Свободный график · отметьте уход, когда закончите" : "Свободный график · отмечайтесь в любое время")
-    : !p.workday ? `Сегодня выходной`
-    : p.on_site ? `Уход: ${p.out_window}`
-    : p.came_today ? `Смена завершена · график ${p.schedule}`
-    : `Приход: ${p.in_window}`;
-  $("btn-mark").textContent = p.on_site ? "🚪 Ушёл" : "✅ Пришёл";
+  $("st-sub").textContent = p.on_site && p.unfinished ? sx("close_tasks", {n: p.unfinished})
+    : !p.has_schedule ? (p.on_site ? sx("free_here") : sx("free_any"))
+    : !p.workday ? sx("day_off")
+    : p.on_site ? sx("out_at", {w: p.out_window})
+    : p.came_today ? sx("shift_done", {s: p.schedule})
+    : sx("in_at", {w: p.in_window});
+  $("btn-mark").textContent = p.on_site ? sx("btn_out") : sx("btn_in");
   $("btn-mark").className = "btn " + (p.on_site ? "btn-soft" : "btn-main");
   $("btn-mark").disabled = !can;
   $("pen-card").style.borderColor = p.penalties_total ? "rgba(248,113,113,.35)" : "";
   $("pen-card").innerHTML = `
-    <div class="head"><h3>🔴 Штрафы</h3></div>
+    <div class="head"><h3>${sx("fines")}</h3></div>
     <div class="pen-stats">
-      <div><b style="color:${p.penalties_total ? "var(--red)" : "var(--green)"}">${p.penalties_total}</b><span>всего</span></div>
-      <div><b style="color:${p.penalties_month ? "var(--red)" : "var(--green)"}">${p.penalties_month}</b><span>за этот месяц</span></div>
+      <div><b style="color:${p.penalties_total ? "var(--red)" : "var(--green)"}">${p.penalties_total}</b><span>${sx("total")}</span></div>
+      <div><b style="color:${p.penalties_month ? "var(--red)" : "var(--green)"}">${p.penalties_month}</b><span>${sx("this_month")}</span></div>
     </div>` + (p.penalties.length ? p.penalties.map(x => `
     <div class="pen"><div class="tt">${x.date} · ${esc(x.reason)}</div>
     ${x.amount ? `<b style="color:var(--red)">${esc(x.amount)}</b>` : ""}</div>`).join("")
-    : `<div class="empty">${p.penalties_total ? "В этом месяце штрафов нет 👍" : "Штрафов нет — так держать! 👍"}</div>`);
+    : `<div class="empty">${p.penalties_total ? sx("no_fines_month") : sx("no_fines")}</div>`);
 
   $("levels").innerHTML = L.map((l, k) => (k ? `<div class="arrow">›</div>` : "") + `
     <div class="lv ${k > idx ? "locked" : ""} ${k === idx ? "cur" : ""}">${l.icon()}<b>${l.name}</b>
@@ -1165,23 +1223,23 @@ function renderMe() {
   const open = data.tasks.filter(t => !t.done), done = data.tasks.filter(t => t.done).slice(0, 3);
   $("tasks").innerHTML = (open.length || done.length) ? [...open, ...done].map(t => `
     <div class="task ${t.done ? "done" : ""}"><div class="tt">${esc(t.title)}<div class="hint" style="font-size:12px">${t.created}</div></div>
-    ${t.done ? "✔️" : t.due ? `<span class="hint" style="font-size:13px;white-space:nowrap">📅 на ${t.due}</span>`
-      : t.status === "review" ? `<span class="hint" style="font-size:13px;white-space:nowrap">⏳ на проверке</span>`
-      : `<button class="btn btn-main btn-sm" data-done="${t.id}">Готово</button>`}</div>`).join("")
-    : `<div class="empty">Задач нет 🎉</div>`;
+    ${t.done ? "✔️" : t.due ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("due", {d: t.due})}</span>`
+      : t.status === "review" ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("review")}</span>`
+      : `<button class="btn btn-main btn-sm" data-done="${t.id}">${sx("done")}</button>`}</div>`).join("")
+    : `<div class="empty">${sx("no_tasks")}</div>`;
   document.querySelectorAll("[data-done]").forEach(b => b.onclick = () => action("/api/task_done", {id: +b.dataset.done}));
 
   $("visits").innerHTML = data.history.length ? data.history.slice(0, 4).map(h => visitRow(h, false)).join("")
-    : `<div class="empty">Посещений пока нет</div>`;
+    : `<div class="empty">${sx("no_visits")}</div>`;
   $("history-all").innerHTML = data.history.length ? data.history.map(h => visitRow(h, true)).join("")
-    : `<div class="empty">Посещений пока нет</div>`;
+    : `<div class="empty">${sx("no_visits")}</div>`;
 
   const next = L[idx + 1];
   const top = L[L.length - 1];
-  $("g-to").textContent = `до звания «${top.name}»`;
-  $("m-title").textContent = next ? "Продолжайте в том же духе!" : `Вы — ${top.name}! 🏆`;
-  $("m-sub").textContent = next ? `До звания «${next.name}» осталось ${num(Math.max(0, next.from - p.total_hours))} ч 💪`
-                                : `Цель ${num(p.goal)} часов достигнута`;
+  $("g-to").textContent = sx("to_rank", {r: top.name});
+  $("m-title").textContent = next ? sx("keep_going") : sx("you_are", {r: top.name});
+  $("m-sub").textContent = next ? sx("left_to", {r: next.name, h: num(Math.max(0, next.from - p.total_hours))})
+                                : sx("goal_done", {h: num(p.goal)});
 }
 
 function weekCells(week, todayWd) {
@@ -1857,8 +1915,9 @@ $("n-add").onclick = () => {
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
+$("me-lang").onclick = () => action("/api/staff_lang", {lang: meLang() === "uz" ? "ru" : "uz"});
 const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
-$("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
+$("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(data.profile ? sx("invest_soon") : SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-clients").onclick = () => show("clients");
 $("go-staff").onclick = () => show("staff");
@@ -1872,10 +1931,12 @@ function investSoon() {
     const el = $(id);
     if (!el) return;
     el.classList.add("soon");
-    const sub = el.querySelector(".f-sub"); if (sub) sub.textContent = "Раздел скоро появится";
+    const mine = id === "go-inv" && data.profile;  // карточка сотрудника — на его языке
+    const sub = el.querySelector(".f-sub"); if (sub) sub.textContent = mine ? sx("soon") : "Раздел скоро появится";
     const badge = el.querySelector("#inv-admin-badge"); if (badge) badge.innerHTML = "";
     const arrow = el.querySelector(".f-arrow");
-    if (arrow) arrow.outerHTML = `<span class="soon-pill" style="margin-left:auto">Скоро ⏳</span>`;
+    if (arrow) arrow.outerHTML = `<span class="soon-pill" style="margin-left:auto"></span>`;
+    const pill = el.querySelector(".soon-pill"); if (pill) pill.textContent = mine ? sx("soon_pill") : "Скоро ⏳";
   });
   if (view === "invest" || view === "invest-admin") view = data.is_employee ? "me" : "team";
 }
@@ -1884,7 +1945,7 @@ $("ava-file").onchange = async (ev) => {
   ev.target.value = "";
   if (!file) return;
   try {
-    toast("Загружаю фото…");
+    toast(data.profile ? sx("photo") : "Загружаю фото…");
     await action("/api/avatar", {image: await squareJpeg(file)});
   } catch (e) { toast(e.message); }
 };

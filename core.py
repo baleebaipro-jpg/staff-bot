@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import config
+import staff_text as st
 
 _DATA_DIR = getattr(config, "DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(_DATA_DIR, exist_ok=True)
@@ -30,11 +31,32 @@ def at(day, hhmm: str) -> datetime:
     return datetime(day.year, day.month, day.day, h, m)
 
 
-def fmt_min(minutes: int) -> str:
-    h, m = divmod(int(minutes), 60)
-    if h and m:
-        return f"{h} ч {m} мин"
-    return f"{h} ч" if h else f"{m} мин"
+def fmt_min(minutes: int, lang: str = None) -> str:
+    return st.fmt_min(minutes, lang)
+
+
+# ---------- язык сотрудника (uz / ru) ----------
+
+def staff_lang(uid: int) -> str:
+    """Язык интерфейса сотрудника. Пока не выбран — русский."""
+    try:
+        with db() as c:
+            r = c.execute("SELECT lang FROM staff_lang WHERE user_id=?", (uid,)).fetchone()
+    except sqlite3.Error:
+        r = None
+    return st.lang_of(r[0] if r else None)
+
+
+def staff_lang_chosen(uid: int) -> bool:
+    with db() as c:
+        return bool(c.execute("SELECT 1 FROM staff_lang WHERE user_id=?", (uid,)).fetchone())
+
+
+def set_staff_lang(uid: int, lang: str) -> str:
+    lang = st.lang_of(lang)
+    with db() as c:
+        c.execute("INSERT OR REPLACE INTO staff_lang(user_id, lang) VALUES(?, ?)", (uid, lang))
+    return lang
 
 
 SHIFTS = getattr(config, "SHIFTS", {})
@@ -115,22 +137,40 @@ def has_schedule(emp, day=None) -> bool:
     return workday(emp, day or now())
 
 
-def schedule_text(emp, day=None) -> str:
-    sh = day_shift(emp, day or now())
-    return "Выходной" if sh is None else sh["title"]
+def shift_title(sh, lang=None) -> str:
+    """Название графика на языке сотрудника (русский — как в config.py)."""
+    if sh is None:
+        return st.s(lang, "day_off")
+    if st.lang_of(lang) == "ru":
+        return sh["title"]
+    if not (sh.get("start") and sh.get("end")):
+        return st.s(lang, "free_schedule")
+    return st.s(lang, "range", a=sh["start"], b=sh["end"])
 
 
-def week_list(emp) -> list:
+def shift_short(sh, lang=None) -> str:
+    if sh is None:
+        return "—"
+    if not (sh.get("start") and sh.get("end")):
+        return st.s(lang, "free_short") if st.lang_of(lang) != "ru" else sh.get("short", "своб.")
+    return sh.get("short") or f"{sh['start']}–{sh['end']}"
+
+
+def schedule_text(emp, day=None, lang=None) -> str:
+    return shift_title(day_shift(emp, day or now()), lang)
+
+
+def week_list(emp, lang=None) -> list:
     """Для кабинета: [{'day': 'Пн', 'key': '9-18', 'short': '9–18'}, ...]"""
     out = []
     for d, key in week_plan(emp).items():
         if key == OFF:
             short = "—"
         elif key in SHIFTS:
-            short = SHIFTS[key].get("short", SHIFTS[key]["title"])
+            short = shift_short(SHIFTS[key], lang)
         else:
-            short = (day_shift(emp, now() + timedelta(days=(d - now().weekday()) % 7)) or {}).get("short", "")
-        out.append({"day": WEEKDAYS[d], "key": key, "short": short})
+            short = shift_short(day_shift(emp, now() + timedelta(days=(d - now().weekday()) % 7)), lang)
+        out.append({"day": st.WEEKDAYS[st.lang_of(lang)][d], "key": key, "short": short})
     return out
 
 
@@ -148,8 +188,9 @@ def set_week(uid: int, plan: dict):
         c.execute("DELETE FROM emp_week WHERE user_id=?", (uid,))
         c.executemany("INSERT INTO emp_week(user_id, weekday, shift) VALUES(?, ?, ?)",
                       [(uid, d, k) for d, k in clean.items()])
-        lines = [f"{WEEKDAYS[d]} — {'Выходной' if k == OFF else SHIFTS[k]['title']}" for d, k in clean.items()]
-        notify(c, uid, "🗓 Ваш график на неделю обновлён:\n" + "\n".join(lines))
+        L = staff_lang(uid)
+        lines = [f"{st.WEEKDAYS[L][d]} — {shift_title(None if k == OFF else SHIFTS[k], L)}" for d, k in clean.items()]
+        notify(c, uid, st.s(L, "week_updated") + "\n" + "\n".join(lines))
     _cache["week"][uid] = clean
     return True, f"График сохранён: {name(uid)}"
 
@@ -188,9 +229,9 @@ def window(emp, kind: str, day):
     return base - timedelta(minutes=WINDOW), base + timedelta(minutes=WINDOW)
 
 
-def window_text(emp, kind: str, day) -> str:
+def window_text(emp, kind: str, day, lang=None) -> str:
     if not workday(emp, day):
-        return "в любое время"
+        return st.s(lang, "any_time")
     a, b = window(emp, kind, day)
     return f"{a:%H:%M}–{b:%H:%M}"
 
@@ -252,6 +293,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS invest_access(
                 user_id INTEGER PRIMARY KEY, status TEXT, plan_amount TEXT, note TEXT,
                 created_at TEXT, decided_at TEXT);
+            CREATE TABLE IF NOT EXISTS staff_lang(user_id INTEGER PRIMARY KEY, lang TEXT);
             CREATE TABLE IF NOT EXISTS posts(
                 id INTEGER PRIMARY KEY, owner_id INTEGER, text TEXT, photo TEXT, button_text TEXT,
                 button_url TEXT, audience TEXT, to_news INTEGER DEFAULT 0, status TEXT, send_at TEXT,
@@ -346,22 +388,23 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
     """Отметить приход. dry_run — только проверить, можно ли.
     t — время прихода (например, время нажатия кнопки, если ждали кружок)."""
     emp = employee(uid)
+    L = staff_lang(uid)
     if not emp:
-        return False, "Вы не в списке сотрудников."
+        return False, st.s(L, "not_staff")
     t = t or now()
     with db() as c:
         _close_stale(c, uid)
         s = _open_session(c, uid)
         if s:
-            return False, f"Вы уже отметили приход сегодня в {s['check_in'][11:16]}."
+            return False, st.s(L, "already_in", t=s['check_in'][11:16])
         if c.execute("SELECT 1 FROM sessions WHERE user_id=? AND substr(check_in, 1, 10) = ?",
                      (uid, t.strftime("%Y-%m-%d"))).fetchone() and workday(emp, t):
-            return False, "Сегодня смена уже завершена."
+            return False, st.s(L, "shift_done")
         if not in_window(emp, "in", t):
             a, b = window(emp, "in", t)
             if t > b and not dry_run:
                 notify_admins(c, f"⛔ {emp['name']} пытался(ась) отметить приход в {t:%H:%M} — окно закрыто ({a:%H:%M}–{b:%H:%M})")
-            return False, f"⏰ Отметить приход можно только с {a:%H:%M} до {b:%H:%M}.\nСейчас {t:%H:%M}."
+            return False, st.s(L, "in_window_only", a=f"{a:%H:%M}", b=f"{b:%H:%M}", t=f"{t:%H:%M}")
         if dry_run:
             return True, ""
         late = 0
@@ -376,36 +419,37 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
             notify_admins(c, f"⚠️ {emp['name']} пришёл(ла) в {t:%H:%M} — опоздание {fmt_min(late)} (по графику {shift_start(emp, t)})")
         else:
             notify_admins(c, f"✅ {emp['name']} пришёл(ла) в {t:%H:%M}")
-    msg = f"✅ Приход отмечен в {t:%H:%M}."
+    msg = st.s(L, "in_ok", t=f"{t:%H:%M}")
     with db() as c:
         today_tasks = _unfinished(c, uid)
     if today_tasks:
-        msg += f"\n📋 Задач на сегодня: {len(today_tasks)} — загляните в «Мои задачи»."
+        msg += st.s(L, "tasks_today", n=len(today_tasks), btn=st.s(L, "btn_tasks"))
     if late:
-        msg += f"\n⚠️ Опоздание: {fmt_min(late)}"
+        msg += st.s(L, "late", m=fmt_min(late, L))
     elif workday(emp, t):
-        msg += "\nВы вовремя 👍"
+        msg += st.s(L, "on_time")
     return True, msg
 
 
 def check_out(uid: int):
     emp = employee(uid)
+    L = staff_lang(uid)
     if not emp:
-        return False, "Вы не в списке сотрудников."
+        return False, st.s(L, "not_staff")
     t = now()
     with db() as c:
         _close_stale(c, uid)
         s = _open_session(c, uid)
         if not s:
-            return False, "Сегодня вы ещё не отмечали приход."
+            return False, st.s(L, "not_in_yet")
         if not in_window(emp, "out", t):
             a, b = window(emp, "out", t)
-            return False, f"⏰ Уйти можно не раньше {a:%H:%M}.\nСейчас {t:%H:%M}."
+            return False, st.s(L, "out_not_before", a=f"{a:%H:%M}", t=f"{t:%H:%M}")
         left = _unfinished(c, uid)
         if left:
-            lines = "\n".join(f"• {r['title']}" + (" — ⏳ на проверке" if r["status"] == "review" else "") for r in left)
-            return False, ("⛔ Уходить нельзя — есть незакрытые задачи:\n" + lines +
-                           "\n\nНажмите «Готово» и дождитесь, пока руководитель примет задачу.")
+            lines = "\n".join(f"• {r['title']}" + (" — " + st.s(L, "task_review") if r["status"] == "review" else "")
+                              for r in left)
+            return False, st.s(L, "out_blocked", lines=lines)
         cin = parse(s["check_in"])
         worked = int((t - cin).total_seconds() // 60)
         early = 0
@@ -418,9 +462,9 @@ def check_out(uid: int):
         if early:
             text += f"\n⚠️ Ранний уход: на {fmt_min(early)} раньше графика ({shift_end(emp, t)})"
         notify_admins(c, text)
-    msg = f"🚪 Уход отмечен в {t:%H:%M}.\nСегодня отработано: {fmt_min(worked)}"
+    msg = st.s(L, "out_ok", t=f"{t:%H:%M}", w=fmt_min(worked, L))
     if early:
-        msg += f"\n⚠️ Раньше графика на {fmt_min(early)}"
+        msg += st.s(L, "early", m=fmt_min(early, L))
     return True, msg
 
 
@@ -461,6 +505,7 @@ def _streak(c, uid, emp) -> int:
 
 def profile(uid: int) -> dict:
     emp = employee(uid)
+    L = staff_lang(uid)
     t = now()
     with db() as c:
         _close_stale(c, uid)
@@ -477,11 +522,12 @@ def profile(uid: int) -> dict:
         res = {
             "id": uid,
             "name": emp["name"],
-            "role": emp.get("role", "Сотрудник"),
             "streak": _streak(c, uid, emp),
-            "schedule": schedule_text(emp, t),
+            "lang": L,
+            "role": st.role(emp.get("role", "Сотрудник"), L),
+            "schedule": schedule_text(emp, t, L),
             "has_schedule": not is_free_day(emp, t),
-            "week": week_list(emp),
+            "week": week_list(emp, L),
             "today_wd": t.weekday(),
             "goal": config.GOAL_HOURS,
             "total_hours": round(total, 1),
@@ -493,11 +539,11 @@ def profile(uid: int) -> dict:
             "since": s["check_in"][11:16] if s else None,
             "came_today": bool(today),
             "penalties_month": penalties_month(c, uid),
-            "penalties": penalties_list(c, uid),
+            "penalties": penalties_list(c, uid, L),
             "penalties_total": penalties_total(c, uid),
             "workday": workday(emp, t),
-            "in_window": window_text(emp, "in", t),
-            "out_window": window_text(emp, "out", t),
+            "in_window": window_text(emp, "in", t, L),
+            "out_window": window_text(emp, "out", t, L),
             "can_in": in_window(emp, "in", t) and not s and not (today and workday(emp, t)),
             "unfinished": len(_unfinished(c, uid)),
             "can_out": bool(s) and in_window(emp, "out", t) and not _unfinished(c, uid),
@@ -506,6 +552,7 @@ def profile(uid: int) -> dict:
 
 
 def history(uid: int, limit: int = 30) -> list:
+    L = staff_lang(uid)
     with db() as c:
         rows = c.execute(
             "SELECT * FROM sessions WHERE user_id=? ORDER BY check_in DESC LIMIT ?", (uid, limit)
@@ -517,12 +564,12 @@ def history(uid: int, limit: int = 30) -> list:
         cout = parse(r["check_out"]) if r["check_out"] else None
         out.append({
             "date": f"{cin:%d.%m.%Y}",
-            "wd": WEEKDAYS[cin.weekday()],
+            "wd": st.WEEKDAYS[L][cin.weekday()],
             "in": f"{cin:%H:%M}",
             "out": f"{cout:%H:%M}" if cout else None,
-            "worked": fmt_min(((cout or t) - cin).total_seconds() // 60),
-            "late": fmt_min(r["late_min"]) if r["late_min"] else None,
-            "early": fmt_min(r["early_min"]) if r["early_min"] else None,
+            "worked": fmt_min(((cout or t) - cin).total_seconds() // 60, L),
+            "late": fmt_min(r["late_min"], L) if r["late_min"] else None,
+            "early": fmt_min(r["early_min"], L) if r["early_min"] else None,
             "auto": bool(r["auto_closed"]),
         })
     return out
@@ -551,26 +598,32 @@ def check_penalties():
                 continue
             if c.execute("SELECT 1 FROM proof_pending WHERE user_id=?", (uid,)).fetchone():
                 continue  # нажал «Пришёл», ждём кружок — штраф пока не выписываем
-            reason = f"не отметил(а) приход до {window(emp, 'in', t)[1]:%H:%M} (график {shift_start(emp, t)})"
+            until, start = f"{window(emp, 'in', t)[1]:%H:%M}", shift_start(emp, t)
+            reason = st.s("ru", "late_reason", t=until, start=start)
             cur = c.execute(
                 "INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
                 (uid, today, PENALTY_AMOUNT, reason),
             )
             if not cur.rowcount:
                 continue  # штраф за сегодня уже выписан
-            _announce(c, uid, "🔴 Штраф", reason, PENALTY_AMOUNT)
+            _announce(c, uid, "penalty", reason, PENALTY_AMOUNT,
+                      reason_emp=st.s(staff_lang(uid), "late_reason", t=until, start=start))
 
 
-def _announce(c, uid, title, reason, amount):
-    """Сообщение о штрафе: в группу (или руководителям) и самому сотруднику."""
-    text = f"{title}\n👤 {name(uid)}\n📅 {now():%d.%m.%Y}\nПричина: {reason}"
+def _announce(c, uid, title_key, reason, amount, reason_emp=None):
+    """Сообщение о штрафе: в группу (или руководителям) — по-русски, самому сотруднику — на его языке."""
+    text = f"{st.s('ru', title_key)}\n👤 {name(uid)}\n📅 {now():%d.%m.%Y}\nПричина: {reason}"
     if amount:
         text += f"\n💰 Сумма: {amount}"
     if PENALTY_CHAT_ID:
         c.execute("INSERT INTO outbox(chat_id, text) VALUES(?, ?)", (PENALTY_CHAT_ID, text))
     else:
         notify_admins(c, text)
-    notify(c, uid, text)
+    L = staff_lang(uid)
+    mine = st.s(L, "penalty_msg", title=st.s(L, title_key), date=f"{now():%d.%m.%Y}", reason=reason_emp or reason)
+    if amount:
+        mine += st.s(L, "penalty_sum", amount=amount)
+    notify(c, uid, mine)
 
 
 def add_penalty(uid: int, reason: str, amount: str = "") -> None:
@@ -583,7 +636,7 @@ def add_penalty(uid: int, reason: str, amount: str = "") -> None:
             "INSERT INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, ?, ?, ?)",
             (uid, t.strftime("%Y-%m-%d"), f"manual:{t.strftime(FMT)}:{os.urandom(3).hex()}", amount, reason),
         )
-        _announce(c, uid, "🔴 Штраф", reason, amount)
+        _announce(c, uid, "penalty", reason, amount)
 
 
 def delete_penalty(pid: int):
@@ -592,7 +645,8 @@ def delete_penalty(pid: int):
         if not r:
             return False, "Штраф не найден."
         c.execute("DELETE FROM penalties WHERE id=?", (pid,))
-        _announce(c, r["user_id"], "✅ Штраф отменён", r["note"] or "—", r["amount"])
+        _announce(c, r["user_id"], "penalty_cancelled", r["note"] or "—", r["amount"],
+                  reason_emp=_penalty_reason(r, staff_lang(r["user_id"])))
     return True, "Штраф отменён."
 
 
@@ -600,14 +654,26 @@ def penalties_total(c, uid) -> int:
     return c.execute("SELECT COUNT(*) FROM penalties WHERE user_id=?", (uid,)).fetchone()[0]
 
 
-def penalties_list(c, uid) -> list:
+def _penalty_reason(r, lang=None) -> str:
+    """Причина штрафа на языке сотрудника (автоштраф за опоздание переводится, ручной — как написал руководитель)."""
+    import re
+    note = r["note"] or ""
+    if r["reason"] == "late":
+        m = re.search(r"до (\d\d:\d\d) \(график (\d\d:\d\d)\)", note)
+        if m:
+            return st.s(lang, "late_reason", t=m.group(1), start=m.group(2))
+        return note or st.s(lang, "late_short")
+    return note or st.s(lang, "late_short")
+
+
+def penalties_list(c, uid, lang=None) -> list:
     rows = c.execute(
         "SELECT * FROM penalties WHERE user_id=? AND day >= ? ORDER BY id DESC",
         (uid, now().strftime("%Y-%m-01")),
     ).fetchall()
     return [
         {"id": r["id"], "date": datetime.strptime(r["day"], "%Y-%m-%d").strftime("%d.%m"),
-         "reason": r["note"] or "опоздание", "amount": r["amount"] or "",
+         "reason": _penalty_reason(r, lang), "amount": r["amount"] or "",
          "auto": r["reason"] == "late"}
         for r in rows
     ]
@@ -627,7 +693,7 @@ def add_task(uid: int, title: str) -> int:
         cur = c.execute(
             "INSERT INTO tasks(user_id, title, created_at) VALUES(?, ?, ?)", (uid, title, now().strftime(FMT))
         )
-        notify(c, uid, f"📌 Новая задача:\n{title}")
+        notify(c, uid, st.s(staff_lang(uid), "task_new", t=title))
         return cur.lastrowid
 
 
@@ -643,12 +709,12 @@ def _all_open(c, uid) -> list:
                      "ORDER BY due_date IS NOT NULL, due_date, id", (uid,)).fetchall()
 
 
-def _due_label(due: str):
+def _due_label(due: str, lang=None):
     """'2026-11-24' -> 'Вт 24.11', если дата в будущем; иначе None."""
     if not due or due <= now().strftime("%Y-%m-%d"):
         return None
     d = datetime.strptime(due, "%Y-%m-%d")
-    return f"{WEEKDAYS[d.weekday()]} {d:%d.%m}"
+    return f"{st.WEEKDAYS[st.lang_of(lang)][d.weekday()]} {d:%d.%m}"
 
 
 def next_workday(uid: int) -> datetime:
@@ -663,32 +729,34 @@ def next_workday(uid: int) -> datetime:
 
 
 def tasks(uid: int) -> list:
+    L = staff_lang(uid)
     with db() as c:
         rows = c.execute(
             "SELECT * FROM tasks WHERE user_id=? ORDER BY status='done', id DESC LIMIT 50", (uid,)
         ).fetchall()
     return [
         {"id": r["id"], "title": r["title"], "created": parse(r["created_at"]).strftime("%d.%m %H:%M"),
-         "status": r["status"], "done": r["status"] == "done", "due": _due_label(r["due_date"])}
+         "status": r["status"], "done": r["status"] == "done", "due": _due_label(r["due_date"], L)}
         for r in rows
     ]
 
 
 def complete_task(task_id: int, uid: int):
     """Сотрудник нажал «Готово» — задача уходит руководителю на проверку."""
+    L = staff_lang(uid)
     with db() as c:
         r = c.execute("SELECT * FROM tasks WHERE id=? AND user_id=?", (task_id, uid)).fetchone()
         if not r:
-            return False, "Задача не найдена."
+            return False, st.s(L, "task_not_found")
         if r["status"] == "done":
-            return False, "Задача уже принята."
+            return False, st.s(L, "task_already_done")
         if r["status"] == "review":
-            return False, "Задача уже на проверке ⏳"
+            return False, st.s(L, "task_already_review")
         c.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
         notify_admins(c, f"📝 {name(uid)} выполнил(а) задачу — проверьте:\n{r['title']}",
                       [[("✅ Принять", f"task:ok:{task_id}"), ("↩️ Вернуть", f"task:back:{task_id}")],
                        [("📅 Оставить на завтра", f"task:later:{task_id}")]])
-    return True, "Отправлено руководителю на проверку ⏳"
+    return True, st.s(L, "task_sent")
 
 
 def review_task(task_id: int, action):
@@ -709,17 +777,19 @@ def review_task(task_id: int, action):
             label = f"{WEEKDAYS[d.weekday()]} {d:%d.%m}"
             c.execute("UPDATE tasks SET status='open', due_date=? WHERE id=?", (d.strftime("%Y-%m-%d"), task_id))
             left = len(_unfinished(c, r["user_id"]))
-            extra = "\nНа сегодня задач больше нет — можно уходить 👋" if not left else f"\nНа сегодня осталось задач: {left}"
-            notify(c, r["user_id"], f"📅 Задачу перенесли на {label}:\n{r['title']}{extra}")
+            L = staff_lang(r["user_id"])
+            extra = st.s(L, "none_left_moved") if not left else st.s(L, "left_today", n=left)
+            notify(c, r["user_id"], st.s(L, "task_moved", d=f"{st.WEEKDAYS[L][d.weekday()]} {d:%d.%m}", t=r["title"]) + extra)
             return True, f"📅 Перенесено на {label}: {r['title']}"
         if action == "ok":
             c.execute("UPDATE tasks SET status='done', done_at=? WHERE id=?", (now().strftime(FMT), task_id))
             left = len(_unfinished(c, r["user_id"]))
-            extra = "\nВсе задачи закрыты — можно уходить 👋" if not left else f"\nОсталось задач: {left}"
-            notify(c, r["user_id"], f"✅ Задача принята:\n{r['title']}{extra}")
+            L = staff_lang(r["user_id"])
+            extra = st.s(L, "none_left") if not left else st.s(L, "left", n=left)
+            notify(c, r["user_id"], st.s(L, "task_accepted", t=r["title"]) + extra)
             return True, f"✅ Принято: {r['title']}"
         c.execute("UPDATE tasks SET status='open' WHERE id=?", (task_id,))
-        notify(c, r["user_id"], f"↩️ Задачу вернули на доработку:\n{r['title']}")
+        notify(c, r["user_id"], st.s(staff_lang(r["user_id"]), "task_returned", t=r["title"]))
         return True, f"↩️ Возвращено: {r['title']}"
 
 
@@ -837,7 +907,7 @@ def start_proof(uid: int):
                   "ON CONFLICT(user_id) DO UPDATE SET pressed_at=excluded.pressed_at, "
                   "expires_at=excluded.expires_at, code=excluded.code",
                   (uid, t.strftime(FMT), (t + timedelta(minutes=PROOF_MINUTES)).strftime(FMT), code))
-    return True, PROOF_PROMPT.format(minutes=PROOF_MINUTES, code=code, min_sec=PROOF_MIN_SECONDS)
+    return True, st.s(staff_lang(uid), "proof_prompt", minutes=PROOF_MINUTES, code=code, min_sec=PROOF_MIN_SECONDS)
 
 
 def proof_pending(uid: int) -> bool:
@@ -849,27 +919,36 @@ def proof_pending(uid: int) -> bool:
 def take_proof(uid: int, file_unique_id: str = "", duration: int = 0, forwarded: bool = False):
     """Пришёл кружок: проверяем и засчитываем приход по времени нажатия кнопки.
     Возвращает (ok, сообщение, код)."""
+    L = staff_lang(uid)
+    btn = st.s(L, "btn_in")
     with db() as c:
         r = c.execute("SELECT pressed_at, expires_at, code FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
         if not r:
-            return False, "Сначала нажмите «✅ Пришёл», потом запишите кружок.", None
+            return False, st.s(L, "proof_first", btn=btn), None
         if parse(r[1]) < now():
             c.execute("DELETE FROM proof_pending WHERE user_id=?", (uid,))
-            return False, "⌛ Время на кружок вышло. Нажмите «✅ Пришёл» ещё раз.", None
+            return False, st.s(L, "proof_expired", btn=btn), None
         # дальше — ошибки, которые можно исправить, пока время не вышло (запрос не удаляем)
         if forwarded:
-            return False, "❌ Пересланный кружок не подходит. Запишите новый.", None
+            return False, st.s(L, "proof_forwarded"), None
         if duration < PROOF_MIN_SECONDS:
-            return False, f"❌ Слишком короткий кружок. Запишите не короче {PROOF_MIN_SECONDS} сек.", None
+            return False, st.s(L, "proof_short", sec=PROOF_MIN_SECONDS), None
         if file_unique_id and c.execute("SELECT 1 FROM proof_used WHERE file_unique_id=?", (file_unique_id,)).fetchone():
             notify_admins(c, f"🚨 {name(uid)} отправил(а) кружок, который уже присылался раньше. Приход не засчитан.")
-            return False, "❌ Этот кружок уже отправлялся раньше. Запишите новый.", None
+            return False, st.s(L, "proof_reused"), None
         c.execute("DELETE FROM proof_pending WHERE user_id=?", (uid,))
         if file_unique_id:
             c.execute("INSERT OR IGNORE INTO proof_used(file_unique_id, user_id, used_at) VALUES(?, ?, ?)",
                       (file_unique_id, uid, now().strftime(FMT)))
     ok, msg = check_in(uid, t=parse(r[0]), notify_boss=False)
     return ok, msg, r[2]
+
+
+def last_checkin(uid: int):
+    """('09:05', 5) — время последнего прихода и опоздание в минутах (для сообщения руководителю)."""
+    with db() as c:
+        r = c.execute("SELECT check_in, late_min FROM sessions WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+    return (r["check_in"][11:16], r["late_min"] or 0) if r else ("—", 0)
 
 
 def expired_proofs() -> list:
