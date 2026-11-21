@@ -75,6 +75,27 @@ T = {
         "ru": "Выберите раздел 👇",
         "en": "Choose a section 👇",
     },
+    "purchases_info": {
+        "uz": "🛍 Xaridlaringiz umumiy summasi: {sum}\n\nMa'lumot BILLZ tizimidan olinadi.",
+        "ru": "🛍 Общая сумма ваших покупок: {sum}\n\nДанные из системы BILLZ.",
+        "en": "🛍 Your total purchases: {sum}\n\nData from the BILLZ system.",
+    },
+    "bonus_info": {
+        "uz": "🎁 Bonus (keshbek) balansingiz: {sum}",
+        "ru": "🎁 Ваш бонусный (кешбэк) баланс: {sum}",
+        "en": "🎁 Your bonus (cashback) balance: {sum}",
+    },
+    "billz_not_found": {
+        "uz": "Sizning raqamingiz hali do'kon bazasida topilmadi. Birinchi xariddan keyin shu raqam bilan bu yerda xaridlar va bonuslar paydo bo'ladi 🛍",
+        "ru": "Ваш номер пока не найден в базе магазина. После первой покупки с этим номером здесь появятся покупки и бонусы 🛍",
+        "en": "Your number isn't in the store database yet. After your first purchase with this number, purchases and bonuses will appear here 🛍",
+    },
+    "billz_error": {
+        "uz": "Hozircha ma'lumotni olib bo'lmadi, birozdan keyin qayta urinib ko'ring 🙏",
+        "ru": "Сейчас не удалось получить данные, попробуйте чуть позже 🙏",
+        "en": "Couldn't get the data right now, please try a bit later 🙏",
+    },
+    "currency": {"uz": "so'm", "ru": "сум", "en": "UZS"},
     "btn_purchases": {"uz": "🛍 Xaridlarim", "ru": "🛍 Мои покупки", "en": "🛍 My purchases"},
     "btn_bonus": {"uz": "🎁 Bonuslar", "ru": "🎁 Бонусы", "en": "🎁 Bonuses"},
     "btn_news": {"uz": "📰 Yangiliklar", "ru": "📰 Новости", "en": "📰 News"},

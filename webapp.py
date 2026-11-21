@@ -14,6 +14,7 @@ from flask import Flask, abort, jsonify, request, send_file
 import config
 import core
 import i18n
+import erp
 import invest
 import posts
 import projects
@@ -162,6 +163,7 @@ def api_me(uid, data):
         res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
     res["is_client"] = not res["is_admin"] and not res["is_employee"]
     if res["is_client"]:
+        billz = erp.sync_client(uid) if erp.enabled() else {}  # покупки и бонусы (кэш 10 мин), статус по сумме
         cl = core.get_client(uid) or {}
         tier = core.tier_of(cl)
         birth = cl.get("birth_date")
@@ -169,7 +171,8 @@ def api_me(uid, data):
                          "tier": tier, "tier_title": core.CLIENT_TIERS[tier]["title"],
                          "ava_v": ava_version(uid), "lang": i18n.lang_of(cl.get("lang")),
                          "registered": cl.get("step") == "done",
-                         "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None}
+                         "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None,
+                         "billz": dict(billz, enabled=bool(billz) or erp.enabled())}
         res["news"] = core.news_list(10, i18n.lang_of(cl.get("lang")))  # каждый клиент — на своём языке
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
@@ -940,8 +943,11 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)" data-t="finish_reg"></div>
     <div class="stats" style="grid-template-columns:1fr 1fr">
-      <div class="stat s1 soon-stat"><div class="ic">🛍</div><b>—</b><span data-t="purchases"></span><em data-t="soon"></em></div>
-      <div class="stat s3 soon-stat"><div class="ic">🎁</div><b>—</b><span data-t="bonuses"></span><em data-t="soon"></em></div>
+      <div class="stat s1 soon-stat" id="cl-st-buy"><div class="ic">🛍</div><b id="cl-buy">—</b><span data-t="purchases"></span><em data-t="soon"></em></div>
+      <div class="stat s3 soon-stat" id="cl-st-bonus"><div class="ic">🎁</div><b id="cl-bonus">—</b><span data-t="bonuses"></span><em data-t="soon"></em></div>
+    </div>
+    <div class="hint hidden" style="font-size:12.5px;text-align:center;margin:-6px 0 12px" id="cl-billz-note"></div>
+    <div style="display:none">
     </div>
     <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b data-t="invest"></b>
       <div class="hint" style="font-size:13px" data-t="invest_soon"></div></div><span class="soon-pill" data-t="soon_pill"></span></div>
@@ -1873,17 +1879,23 @@ const CL_T = {
        invest_soon: "Bo'lim tez orada paydo bo'ladi", soon_pill: "Tez orada ⏳", news: "📰 Yangiliklar",
        no_news: "Hozircha yangiliklar yo'q", no_phone: "raqam ko'rsatilmagan", client: "Mijoz",
        finish_reg: "📱 Ro'yxatdan o'tishni bot bilan chatda yakunlang — shunda xaridlaringiz va bonuslaringizni topamiz.",
-       birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…"},
+       birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…",
+       billz_not_found: "Raqamingiz hali do'kon bazasida yo'q — birinchi xariddan keyin bu yerda xaridlar va bonuslar paydo bo'ladi",
+       billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi"},
   ru: {purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
        invest_soon: "Раздел скоро появится", soon_pill: "Скоро ⏳", news: "📰 Новости",
        no_news: "Новостей пока нет", no_phone: "номер не указан", client: "Клиент",
        finish_reg: "📱 Завершите регистрацию в чате с ботом — так мы найдём ваши покупки и бонусы.",
-       birth: "🎂 День рождения", photo: "Загружаю фото…"},
+       birth: "🎂 День рождения", photo: "Загружаю фото…",
+       billz_not_found: "Вашего номера пока нет в базе магазина — после первой покупки здесь появятся покупки и бонусы",
+       billz_error: "Сейчас не удалось получить данные, обновится позже"},
   en: {purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
        invest_soon: "This section is coming soon", soon_pill: "Soon ⏳", news: "📰 News",
        no_news: "No news yet", no_phone: "no phone number", client: "Client",
        finish_reg: "📱 Please finish registration in the bot chat so we can find your purchases and bonuses.",
-       birth: "🎂 Birthday", photo: "Uploading photo…"},
+       birth: "🎂 Birthday", photo: "Uploading photo…",
+       billz_not_found: "Your number isn't in the store database yet — purchases and bonuses will appear after your first purchase",
+       billz_error: "Couldn't get the data right now, it will update later"},
 };
 const ct = k => (CL_T[(data && data.client && data.client.lang) || "uz"] || CL_T.uz)[k];
 function renderClient() {
@@ -1901,6 +1913,15 @@ function renderClient() {
   $("cl-birth").textContent = c.birth ? `${ct("birth")}: ${c.birth}` : "";
   $("cl-birth").classList.toggle("hidden", !c.birth);
   $("cl-nophone").classList.toggle("hidden", !!(c.phone && c.registered));
+  // покупки и бонусы из BILLZ
+  const bz = c.billz || {}, cur = {uz: "so'm", ru: "сум", en: "UZS"}[c.lang] || "";
+  const money = v => v === null || v === undefined ? "—" : Math.floor(v).toLocaleString("ru-RU") + " " + cur;
+  ["cl-st-buy", "cl-st-bonus"].forEach(id => $(id).classList.toggle("soon-stat", !bz.enabled));
+  document.querySelectorAll("#cl-st-buy em, #cl-st-bonus em").forEach(e => e.classList.toggle("hidden", !!bz.enabled));
+  $("cl-buy").textContent = bz.enabled && bz.linked ? money(bz.purchases) : "—";
+  $("cl-bonus").textContent = bz.enabled && bz.linked ? money(bz.balance) : "—";
+  const note = !bz.enabled ? "" : bz.error && !bz.linked ? ct("billz_error") : !bz.linked ? ct("billz_not_found") : "";
+  $("cl-billz-note").textContent = note; $("cl-billz-note").classList.toggle("hidden", !note);
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
 }
 function renderClientsAdmin() {
