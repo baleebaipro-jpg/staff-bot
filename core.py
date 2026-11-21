@@ -294,6 +294,9 @@ def init_db():
                 user_id INTEGER PRIMARY KEY, status TEXT, plan_amount TEXT, note TEXT,
                 created_at TEXT, decided_at TEXT);
             CREATE TABLE IF NOT EXISTS staff_lang(user_id INTEGER PRIMARY KEY, lang TEXT);
+            CREATE TABLE IF NOT EXISTS task_templates(
+                id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, repeat TEXT, weekday INTEGER,
+                created_at TEXT, active INTEGER DEFAULT 1);
             CREATE TABLE IF NOT EXISTS posts(
                 id INTEGER PRIMARY KEY, owner_id INTEGER, text TEXT, photo TEXT, button_text TEXT,
                 button_url TEXT, audience TEXT, to_news INTEGER DEFAULT 0, status TEXT, send_at TEXT,
@@ -310,6 +313,8 @@ def init_db():
             c.execute("UPDATE tasks SET status='done' WHERE done_at IS NOT NULL")
         if "due_date" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
+        if "template_id" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
+            c.execute("ALTER TABLE tasks ADD COLUMN template_id INTEGER")
         ccols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
         for col, ddl in (("tier", "TEXT DEFAULT 'bronza'"), ("lang", "TEXT"), ("last_name", "TEXT"),
                          ("birth_date", "TEXT"), ("step", "TEXT"), ("billz_id", "TEXT"), ("billz_balance", "REAL"),
@@ -688,25 +693,101 @@ def penalties_month(c, uid) -> int:
 
 # ---------- задачи ----------
 
-def add_task(uid: int, title: str) -> int:
+def add_task(uid: int, title: str, template_id: int = None) -> int:
     title = title.strip()[:500]
     with db() as c:
         cur = c.execute(
-            "INSERT INTO tasks(user_id, title, created_at) VALUES(?, ?, ?)", (uid, title, now().strftime(FMT))
+            "INSERT INTO tasks(user_id, title, created_at, template_id) VALUES(?, ?, ?, ?)",
+            (uid, title, now().strftime(FMT), template_id)
         )
-        notify(c, uid, st.s(staff_lang(uid), "task_new", t=title))
+        notify(c, uid, st.s(staff_lang(uid), "task_new", t=("🔁 " if template_id else "") + title))
         return cur.lastrowid
+
+
+# ---------- повторяющиеся задачи (каждый день / каждую неделю) ----------
+
+RECURRING_TIME = getattr(config, "RECURRING_TASKS_TIME", "07:00")  # во сколько утром появляются задачи
+
+
+def _template_due(tpl, day) -> bool:
+    """Нужно ли сегодня создать задачу по шаблону.
+    Каждый день — только в рабочие дни сотрудника (по его графику); каждую неделю — в выбранный день."""
+    emp = employee(tpl["user_id"])
+    if not emp:
+        return False
+    if tpl["repeat"] == "weekly":
+        return day.weekday() == tpl["weekday"]
+    return day_shift(emp, day) is not None
+
+
+def _spawn(tpl, day) -> bool:
+    """Создать сегодняшнюю задачу по шаблону (один раз в день; если прошлая ещё не закрыта — не дублировать)."""
+    if not flag_once(f"rtask:{tpl['id']}:{day:%Y-%m-%d}"):
+        return False
+    with db() as c:
+        if c.execute("SELECT 1 FROM tasks WHERE template_id=? AND status IN ('open', 'review')", (tpl["id"],)).fetchone():
+            return False
+    add_task(tpl["user_id"], tpl["title"], template_id=tpl["id"])
+    return True
+
+
+def add_recurring(uid: int, title: str, repeat: str, weekday=None):
+    """Руководитель ставит повторяющуюся задачу. Если сегодня подходящий день — первая задача сразу."""
+    title = (title or "").strip()[:500]
+    if repeat not in ("daily", "weekly") or not title or not employee(uid):
+        return False, "Выберите сотрудника, задачу и повтор."
+    if repeat == "weekly":
+        try:
+            weekday = int(weekday)
+        except (TypeError, ValueError):
+            return False, "Выберите день недели."
+        if not 0 <= weekday <= 6:
+            return False, "Выберите день недели."
+    else:
+        weekday = None
+    with db() as c:
+        tid = c.execute("INSERT INTO task_templates(user_id, title, repeat, weekday, created_at) VALUES(?, ?, ?, ?, ?)",
+                        (uid, title, repeat, weekday, now().strftime(FMT))).lastrowid
+        tpl = c.execute("SELECT * FROM task_templates WHERE id=?", (tid,)).fetchone()
+    when = "каждый рабочий день" if repeat == "daily" else f"каждый {WEEKDAYS[weekday]}"
+    first = " · первая — уже сегодня" if _template_due(tpl, now()) and _spawn(tpl, now()) else ""
+    return True, f"🔁 Задача {when}: {name(uid)}{first}"
+
+
+def stop_recurring(tid: int):
+    with db() as c:
+        r = c.execute("SELECT * FROM task_templates WHERE id=? AND active=1", (tid,)).fetchone()
+        if not r:
+            return False, "Повторяющаяся задача не найдена."
+        c.execute("UPDATE task_templates SET active=0 WHERE id=?", (tid,))
+    return True, f"Повтор остановлен: {r['title']}"
+
+
+def recurring_list(c, uid) -> list:
+    return [{"id": r["id"], "title": r["title"],
+             "when": "каждый день" if r["repeat"] == "daily" else f"каждый {WEEKDAYS[r['weekday']]}"}
+            for r in c.execute("SELECT * FROM task_templates WHERE user_id=? AND active=1 ORDER BY id", (uid,))]
+
+
+def spawn_recurring() -> int:
+    """Из цикла бота: утром (RECURRING_TIME) создать сегодняшние повторяющиеся задачи."""
+    t = now()
+    if t.strftime("%H:%M") < RECURRING_TIME:
+        return 0
+    with db() as c:
+        tpls = c.execute("SELECT * FROM task_templates WHERE active=1").fetchall()
+    return sum(1 for tpl in tpls if _template_due(tpl, t) and _spawn(tpl, t))
 
 
 def _unfinished(c, uid) -> list:
     """Незакрытые задачи на сегодня (перенесённые на будущее не считаются)."""
-    return c.execute("SELECT id, title, status, due_date FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
+    return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
                      "AND (due_date IS NULL OR due_date <= ?) ORDER BY id", (uid, now().strftime("%Y-%m-%d"))).fetchall()
 
 
 def _all_open(c, uid) -> list:
     """Все незакрытые задачи, включая перенесённые на будущие дни."""
-    return c.execute("SELECT id, title, status, due_date FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
+    return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
                      "ORDER BY due_date IS NOT NULL, due_date, id", (uid,)).fetchall()
 
 
@@ -737,7 +818,8 @@ def tasks(uid: int) -> list:
         ).fetchall()
     return [
         {"id": r["id"], "title": r["title"], "created": parse(r["created_at"]).strftime("%d.%m %H:%M"),
-         "status": r["status"], "done": r["status"] == "done", "due": _due_label(r["due_date"], L)}
+         "status": r["status"], "done": r["status"] == "done", "due": _due_label(r["due_date"], L),
+         "repeat": bool(r["template_id"])}
         for r in rows
     ]
 
@@ -843,7 +925,8 @@ def team() -> list:
                 "penalties_total": penalties_total(c, uid),
                 "total_hours": round(_hours(c, uid) + emp.get("hours_before", 0), 1),
                 "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"],
-                           "due": _due_label(r["due_date"])} for r in open_tasks],
+                           "due": _due_label(r["due_date"]), "repeat": bool(r["template_id"])} for r in open_tasks],
+                "recurring": recurring_list(c, uid),
             })
     return out
 

@@ -502,6 +502,8 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return await reply(update, st.s(L, "no_tasks"))
     lines, buttons = [], []
     for i, t in enumerate(open_tasks, 1):
+        if t.get("repeat"):
+            t = dict(t, title="🔁 " + t["title"])  # повторяющаяся задача
         if t["due"]:
             lines.append(f"{i}. {t['title']} — {st.s(L, 'task_due', d=t['due'])}")
         elif t["status"] == "review":
@@ -794,6 +796,10 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
             posts.dispatch_due()
         except Exception:
             logging.exception("Ошибка запланированных постов")
+        try:
+            core.spawn_recurring()  # утром — повторяющиеся задачи сотрудникам
+        except Exception:
+            logging.exception("Ошибка повторяющихся задач")
         try:
             projects.morning_digest()
         except Exception:
