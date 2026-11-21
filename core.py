@@ -252,6 +252,11 @@ def init_db():
             CREATE TABLE IF NOT EXISTS invest_access(
                 user_id INTEGER PRIMARY KEY, status TEXT, plan_amount TEXT, note TEXT,
                 created_at TEXT, decided_at TEXT);
+            CREATE TABLE IF NOT EXISTS projects(
+                id INTEGER PRIMARY KEY, owner_id INTEGER, title TEXT, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS ptasks(
+                id INTEGER PRIMARY KEY, project_id INTEGER, owner_id INTEGER, title TEXT, note TEXT,
+                due_date TEXT, done_at TEXT, created_at TEXT);
             """
         )
         if "status" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:

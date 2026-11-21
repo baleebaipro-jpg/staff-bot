@@ -15,6 +15,7 @@ import config
 import core
 import i18n
 import invest
+import projects
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
 
@@ -138,6 +139,7 @@ def api_me(uid, data):
                              "annual_min": invest.ANNUAL_MIN, "annual_max": invest.ANNUAL_MAX,
                              "history": invest.history_public()}
     if res["is_admin"]:
+        res["projects"] = projects.overview(uid)
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
@@ -264,6 +266,32 @@ def api_delete_task(uid, data):
     core.delete_task(int(data.get("id", 0)))
     return jsonify(ok=True, msg="Задача удалена.")
 
+
+
+# ---------- личные проекты руководителя ----------
+
+@app.post("/api/proj")
+@need_user(admin=True)
+def api_proj(uid, data):
+    """Одна точка для всех действий с проектами: data.action = ..."""
+    act, i = data.get("action"), int(data.get("id") or 0)
+    if act == "add_project":
+        ok, msg = projects.add_project(uid, data.get("title"))
+    elif act == "rename_project":
+        ok, msg = projects.rename_project(uid, i, data.get("title"))
+    elif act == "delete_project":
+        ok, msg = projects.delete_project(uid, i)
+    elif act == "add_task":
+        ok, msg = projects.add_task(uid, i, data.get("title"), data.get("due"))
+    elif act == "update_task":
+        ok, msg = projects.update_task(uid, i, data.get("title"), data.get("note"), data.get("due"))
+    elif act == "done":
+        ok, msg = projects.set_done(uid, i, bool(data.get("done")))
+    elif act == "delete_task":
+        ok, msg = projects.delete_task(uid, i)
+    else:
+        ok, msg = False, "Неизвестное действие."
+    return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/invest_request")
@@ -556,6 +584,30 @@ PAGE = r"""<!doctype html>
   details.inv-months summary { font-size: 12.5px; color: #8b7bff; cursor: pointer; margin-top: 6px; }
   details.inv-form summary { list-style: none; cursor: pointer; }
   .staff-act { padding: 14px 16px; }
+  /* проекты руководителя */
+  .ptask { display: flex; gap: 12px; align-items: flex-start; padding: 11px 0; border-top: 1px solid var(--line); }
+  .ptask:first-child { border-top: none; }
+  .pcheck { width: 26px; height: 26px; flex: none; border-radius: 50%; border: 2px solid var(--hint); background: none;
+            padding: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; margin-top: 1px; }
+  .ptask.done .pcheck { background: var(--green); border-color: var(--green); color: #06281c; }
+  .ptask .pbody { flex: 1; min-width: 0; cursor: pointer; }
+  .ptask .pt { word-break: break-word; }
+  .ptask.done .pt { color: var(--hint); text-decoration: line-through; }
+  .pmeta { font-size: 12.5px; color: var(--hint); margin-top: 3px; display: flex; gap: 6px 10px; flex-wrap: wrap; }
+  .pmeta .late { color: var(--red); font-weight: 600; }
+  .pmeta .dl { color: #cfc6ff; }
+  .prow { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .prow:first-child { border-top: none; }
+  .prow .f-ic { width: 40px; height: 40px; font-size: 20px; border-radius: 12px; flex: none; display: flex; align-items: center;
+                justify-content: center; background: rgba(251,191,36,.14); }
+  .add-row { display: flex; gap: 8px; }
+  .add-row input { margin-bottom: 0; }
+  .add-row .btn { flex: none; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 0; }
+  .quick button { background: var(--card2); border: 1.5px solid var(--line); border-radius: 99px; padding: 6px 12px; font-size: 13px; }
+  .quick button.on { border-color: var(--accent); background: rgba(124,92,255,.2); }
+  .day-h { font-size: 13px; font-weight: 700; margin: 12px 0 2px; }
+  .day-h:first-child { margin-top: 0; }
   .staff-act summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
   .staff-act summary::-webkit-details-marker { display: none; }
   .staff-act summary .hint { font-size: 22px; transition: transform .2s; }
@@ -683,6 +735,39 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- МОИ ПРОЕКТЫ (личное — только для руководителя) -->
+  <div id="view-projects" class="hidden">
+    <div class="page-title">📁 Мои проекты</div>
+    <div class="page-sub">Личные проекты и задачи — видите только вы</div>
+    <div class="card"><div class="head"><h3 id="day-title">☀️ Мой день</h3></div><div id="proj-day"></div></div>
+    <div class="card">
+      <div class="head"><h3>Проекты</h3><span class="hint" style="font-size:13px" id="proj-count"></span></div>
+      <div class="add-row"><input id="np-title" placeholder="Название нового проекта" maxlength="100">
+        <button class="btn btn-main" id="np-add">＋</button></div>
+      <div id="proj-list" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <!-- ОДИН ПРОЕКТ -->
+  <div id="view-project" class="hidden">
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <div class="page-title" id="pj-title" style="flex:1;word-break:break-word"></div>
+      <button class="btn btn-soft btn-sm" id="pj-rename" style="margin-top:4px">✏️</button>
+    </div>
+    <div class="page-sub" id="pj-sub"></div>
+    <div class="card">
+      <input id="nt-title" placeholder="Новая задача" maxlength="300">
+      <div class="quick" id="nt-quick">
+        <button data-q="">📝 Без даты</button><button data-q="0">Сегодня</button><button data-q="1">Завтра</button>
+        <button data-q="pick">📅 Дата…</button>
+      </div>
+      <input type="date" id="nt-date" class="hidden" style="margin-top:10px">
+      <button class="btn btn-main" style="width:100%;margin-top:10px" id="nt-add">Добавить задачу</button>
+    </div>
+    <div class="card" id="pj-tasks"></div>
+    <button class="link" id="pj-delete" style="color:var(--red);display:block;margin:4px auto 0">Удалить проект</button>
+  </div>
+
   <!-- КЛИЕНТЫ (отдельная страница руководителя: список клиентов и новости) -->
   <div id="view-clients" class="hidden">
     <div class="page-title">💎 Клиенты</div>
@@ -740,6 +825,11 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
+    <button class="card folder" id="go-projects">
+      <div class="f-ic" style="background:rgba(251,191,36,.16)">📁</div>
+      <div style="min-width:0"><b>Мои проекты<span id="proj-badge"></span></b><div class="f-sub" id="proj-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder" id="go-staff">
       <div class="f-ic" style="background:rgba(124,92,255,.2)">👥</div>
       <div style="min-width:0"><b>Команда<span id="staff-badge"></span></b><div class="f-sub" id="staff-folder-sub"></div></div>
@@ -912,10 +1002,11 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team"};  // страница → куда ведёт «назад»
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team",
+                  projects: "team", project: "projects"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1365,6 +1456,118 @@ function renderInvestAdmin() {
   bindInvest();
 }
 
+/* ---------- мои проекты (руководитель) ---------- */
+let curProject = null, ntDue = "";
+const P = () => data.projects;
+const isoDay = add => { const d = new Date(); d.setDate(d.getDate() + add);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const projAct = body => action("/api/proj", body);
+
+function ptaskRow(x, withProject) {
+  const meta = [];
+  if (withProject) meta.push(`📁 ${esc(x.project)}`);
+  if (x.due_label) meta.push(`<span class="${x.overdue ? "late" : "dl"}">${x.overdue ? "⏰ просрочено · " : "📅 "}${esc(x.due_label)}</span>`);
+  else if (!x.done) meta.push("без даты");
+  if (x.note) meta.push("📝 заметка");
+  return `<div class="ptask ${x.done ? "done" : ""}">
+    <button class="pcheck" data-pdone="${x.id}" data-v="${x.done ? 0 : 1}">${x.done ? "✓" : ""}</button>
+    <div class="pbody" data-pedit="${x.id}"><div class="pt">${esc(x.title)}</div>
+      ${meta.length ? `<div class="pmeta">${meta.map(m => `<span>${m}</span>`).join("")}</div>` : ""}</div></div>`;
+}
+function bindPtasks() {
+  document.querySelectorAll("[data-pdone]").forEach(b => b.onclick = () => projAct({action: "done", id: +b.dataset.pdone, done: b.dataset.v === "1"}));
+  document.querySelectorAll("[data-pedit]").forEach(b => b.onclick = () => editPtask(+b.dataset.pedit));
+}
+function renderProjects() {
+  const o = P(), d = o.day;
+  const todo = d.today.length + d.overdue.length;
+  $("proj-badge").innerHTML = todo ? `<span class="f-badge">${todo}</span>` : "";
+  $("proj-folder-sub").textContent = `${o.projects.length} ${plural(o.projects.length, "проект", "проекта", "проектов")}` +
+    ` · на сегодня: ${d.today.length}` + (d.overdue.length ? ` · просрочено: ${d.overdue.length}` : "");
+  $("day-title").textContent = `☀️ Мой день · ${o.today}`;
+  const sec = (title, rows) => rows.length ? `<div class="day-h">${title}</div>` + rows.map(x => ptaskRow(x, true)).join("") : "";
+  $("proj-day").innerHTML = (todo || d.done_today.length || d.upcoming.length)
+    ? sec(`<span style="color:var(--red)">🔴 Просрочено (${d.overdue.length})</span>`, d.overdue)
+      + sec(`📅 Сегодня (${d.today.length})`, d.today)
+      + sec(`✅ Сделано сегодня`, d.done_today)
+      + sec(`🗓 Ближайшие 7 дней`, d.upcoming)
+    : `<div class="empty">На сегодня задач нет. Поставьте дату задаче в проекте — она появится здесь.</div>`;
+  $("proj-count").textContent = o.projects.length ? `всего: ${o.projects.length}` : "";
+  $("proj-list").innerHTML = o.projects.length ? o.projects.map(p => `
+    <div class="prow" data-popen="${p.id}"><div class="f-ic">📁</div>
+      <div style="flex:1;min-width:0"><b style="word-break:break-word">${esc(p.title)}</b>
+        <div class="pmeta"><span>задач: ${p.open}</span>${p.undated ? `<span>без даты: ${p.undated}</span>` : ""}
+          ${p.overdue ? `<span class="late">просрочено: ${p.overdue}</span>` : ""}${p.done ? `<span>сделано: ${p.done}</span>` : ""}</div></div>
+      <div class="f-arrow" style="font-size:24px;color:var(--hint)">›</div></div>`).join("")
+    : `<div class="empty">Проектов пока нет — создайте первый</div>`;
+  document.querySelectorAll("[data-popen]").forEach(r => r.onclick = () => { curProject = +r.dataset.popen; renderProject(); show("project"); });
+  if (curProject && !o.projects.some(p => p.id === curProject)) { curProject = null; if (view === "project") view = "projects"; }
+  if (curProject) renderProject();
+  bindPtasks();
+}
+function renderProject() {
+  const p = P().projects.find(x => x.id === curProject);
+  if (!p) return;
+  const all = P().tasks.filter(x => x.project_id === p.id);
+  const dated = all.filter(x => !x.done && x.due_date).sort((a, b) => a.due_date < b.due_date ? -1 : 1);
+  const undated = all.filter(x => !x.done && !x.due_date), done = all.filter(x => x.done);
+  $("pj-title").textContent = "📁 " + p.title;
+  $("pj-sub").textContent = `Задач: ${p.open} · с датой: ${dated.length} · без даты: ${undated.length}`;
+  $("pj-tasks").innerHTML = (dated.length ? `<div class="day-h">📅 С датой (${dated.length})</div>` + dated.map(x => ptaskRow(x)).join("") : "")
+    + (undated.length ? `<div class="day-h">📝 Без даты — в работе (${undated.length})</div>` + undated.map(x => ptaskRow(x)).join("") : "")
+    + (done.length ? `<details class="inv-months"><summary>✅ Выполнено (${done.length})</summary>${done.map(x => ptaskRow(x)).join("")}</details>` : "")
+    + (all.length ? "" : `<div class="empty">Задач пока нет</div>`);
+  bindPtasks();
+}
+function setQuick(q) {
+  document.querySelectorAll("#nt-quick button").forEach(b => b.classList.toggle("on", b.dataset.q === q));
+  $("nt-date").classList.toggle("hidden", q !== "pick");
+  ntDue = q === "" ? "" : q === "pick" ? ($("nt-date").value || "") : isoDay(+q);
+}
+document.querySelectorAll("#nt-quick button").forEach(b => b.onclick = () => setQuick(b.dataset.q));
+$("nt-date").onchange = () => { ntDue = $("nt-date").value; };
+setQuick("");
+$("nt-add").onclick = () => {
+  const title = $("nt-title").value.trim();
+  if (!title) return toast("Введите задачу");
+  projAct({action: "add_task", id: curProject, title, due: ntDue}).then(() => { $("nt-title").value = ""; });
+};
+$("np-add").onclick = () => {
+  const title = $("np-title").value.trim();
+  if (!title) return toast("Введите название проекта");
+  projAct({action: "add_project", title}).then(() => { $("np-title").value = ""; });
+};
+$("pj-rename").onclick = () => {
+  const p = P().projects.find(x => x.id === curProject); if (!p) return;
+  invSheet(`<h3>✏️ Название проекта</h3><input id="pr-title" maxlength="100" value="${esc(p.title)}">${sheetBtns("Сохранить")}`);
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => { const title = $("pr-title").value.trim(); if (!title) return toast("Введите название");
+    invSheetClose(); projAct({action: "rename_project", id: p.id, title}); };
+};
+$("pj-delete").onclick = () => {
+  const p = P().projects.find(x => x.id === curProject); if (!p) return;
+  tg.showConfirm(`Удалить проект «${p.title}» со всеми задачами?`, ok => ok &&
+    projAct({action: "delete_project", id: p.id}).then(() => show("projects")));
+};
+function editPtask(id) {
+  const x = P().tasks.find(t => t.id === id); if (!x) return;
+  invSheet(`<h3>📝 Задача</h3>
+    <div class="hint" style="font-size:12.5px;margin:-8px 0 10px">📁 ${esc(x.project)}</div>
+    <input id="et-title" maxlength="300" value="${esc(x.title)}">
+    <textarea id="et-note" rows="5" maxlength="3000" placeholder="Заметки, детали, идеи…">${esc(x.note || "")}</textarea>
+    <div class="hint" style="font-size:13px;margin-bottom:6px">Дедлайн</div>
+    <div class="add-row" style="margin-bottom:10px"><input type="date" id="et-due" value="${x.due_date || ""}">
+      <button class="btn btn-soft" id="et-nodue">Без даты</button></div>
+    ${sheetBtns("Сохранить")}
+    <button class="link" id="et-del" style="color:var(--red);display:block;margin:14px auto 0">Удалить задачу</button>`);
+  $("et-nodue").onclick = () => { $("et-due").value = ""; };
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => { const title = $("et-title").value.trim(); if (!title) return toast("Введите задачу");
+    const body = {action: "update_task", id, title, note: $("et-note").value, due: $("et-due").value};
+    invSheetClose(); projAct(body); };
+  $("et-del").onclick = () => tg.showConfirm("Удалить задачу?", ok => { if (ok) { invSheetClose(); projAct({action: "delete_task", id}); } });
+}
+
 async function load() {
   try {
     data = await api("/api/me");
@@ -1377,7 +1580,8 @@ async function load() {
     $("go-inv-own").classList.toggle("hidden", !(data.invest_enabled && data.is_admin && !data.is_employee));
     if (!data.invest_enabled) investSoon();
     SUBPAGES.invest = data.is_employee ? "me" : "team";
-    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin(); }
+    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin();
+                         if (data.projects) renderProjects(); }
     if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
@@ -1465,6 +1669,7 @@ $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-clients").onclick = () => show("clients");
 $("go-staff").onclick = () => show("staff");
+$("go-projects").onclick = () => show("projects");
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
 function investSoon() {
