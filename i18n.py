@@ -102,6 +102,16 @@ T = {
     "btn_invest": {"uz": "💰 Investitsiyalar", "ru": "💰 Инвестиции", "en": "💰 Investments"},
     "btn_cabinet": {"uz": "🏠 Kabinetim", "ru": "🏠 Мой кабинет", "en": "🏠 My account"},
     "btn_lang": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
+    "btn_logout": {"uz": "🚪 Chiqish", "ru": "🚪 Выйти", "en": "🚪 Log out"},
+    "logout_confirm": {
+        "uz": "🚪 Chiqasizmi? Til, raqam va ma'lumotlaringiz o'chiriladi — botni qaytadan boshlaysiz.",
+        "ru": "🚪 Выйти? Язык, номер и данные будут сброшены — вы начнёте заново.",
+        "en": "🚪 Log out? Your language, number and details will be reset — you'll start over.",
+    },
+    "logout_yes": {"uz": "✅ Ha, chiqish", "ru": "✅ Да, выйти", "en": "✅ Yes, log out"},
+    "logout_no": {"uz": "✕ Yo'q", "ru": "✕ Нет", "en": "✕ No"},
+    "logout_done": {"uz": "🚪 Siz chiqdingiz.", "ru": "🚪 Вы вышли.", "en": "🚪 You've logged out."},
+    "logout_cancel": {"uz": "Yaxshi, davom etamiz 👌", "ru": "Хорошо, продолжаем 👌", "en": "Okay, let's continue 👌"},
     "soon_purchases": {
         "uz": "🛍 Tez orada bu yerda xaridlaringiz umumiy summasi va tarixi paydo bo'ladi ⏳",
         "ru": "🛍 Скоро здесь будет общая сумма ваших покупок и их история ⏳",

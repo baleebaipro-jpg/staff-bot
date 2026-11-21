@@ -1079,6 +1079,15 @@ def auto_tier(uid: int, purchases: float):
         set_client_tier(uid, best)
 
 
+def reset_client(uid: int):
+    """Клиент нажал «Выйти»: забываем язык, номер, имя, дату рождения и привязку к BILLZ —
+    при следующем /start регистрация начнётся заново. Статус (Bronza/Silver/Gold) сохраняется."""
+    with db() as c:
+        c.execute("UPDATE clients SET lang=NULL, phone=NULL, first_name=NULL, last_name=NULL, birth_date=NULL, "
+                  "step=NULL, billz_id=NULL, billz_balance=NULL, billz_purchases=NULL, billz_synced=NULL "
+                  "WHERE user_id=?", (uid,))
+
+
 def update_client(uid: int, **fields):
     """Обновить поля клиента (создаёт запись, если её нет)."""
     fields = {k: v for k, v in fields.items() if k in CLIENT_FIELDS}
