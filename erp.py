@@ -174,7 +174,7 @@ def sync_client(uid: int, force: bool = False) -> dict:
         return {}
     cl = core.get_client(uid) or {}
     fresh = cl.get("billz_synced") and core.parse(cl["billz_synced"]) > core.now() - timedelta(minutes=CACHE_MINUTES)
-    if fresh and not force:
+    if fresh and not force and cl.get("billz_balance") is not None:  # бонусы не загрузились — обновим сразу
         return _stats(cl)
     try:
         bid = cl.get("billz_id")
