@@ -30,6 +30,7 @@ PLATFORM_ID = "7d4a4c38-dd84-4902-b744-0488b80a4c01"  # статичное зн�
 CACHE_MINUTES = getattr(config, "BILLZ_CACHE_MINUTES", 10)
 CREATE_CLIENTS = getattr(config, "BILLZ_CREATE_CLIENTS", False)
 TIMEOUT = 15
+SEARCH_TIMEOUT = 30  # общий поиск по цифрам у BILLZ бывает медленным
 
 _lock = threading.Lock()
 _token = {"value": None, "until": 0.0}
@@ -50,7 +51,7 @@ def enabled() -> bool:
     return bool(_secret())
 
 
-def _http(method: str, path: str, params: dict = None, body: dict = None, token: str = None):
+def _http(method: str, path: str, params: dict = None, body: dict = None, token: str = None, timeout: int = TIMEOUT):
     url = BASE + path + ("?" + urllib.parse.urlencode(params) if params else "")
     headers = {"platform-id": PLATFORM_ID, "Accept": "application/json",
                # без нормального User-Agent защита сайта (Cloudflare) может отклонять запросы программы
@@ -63,7 +64,7 @@ def _http(method: str, path: str, params: dict = None, body: dict = None, token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
             try:
                 return r.status, (json.loads(raw) if raw else {})
@@ -101,16 +102,16 @@ def _login() -> str:
     return _token["value"]
 
 
-def _api(method: str, path: str, params: dict = None, body: dict = None):
+def _api(method: str, path: str, params: dict = None, body: dict = None, timeout: int = TIMEOUT):
     if not enabled():
         raise BillzError("BILLZ не подключён (нет BILLZ_SECRET_TOKEN)")
     with _lock:
         tok = _token["value"] if _token["value"] and time.time() < _token["until"] else _login()
-    code, res = _http(method, path, params, body, tok)
+    code, res = _http(method, path, params, body, tok, timeout)
     if code == 401:  # токен истёк или отозван — входим заново и повторяем один раз
         with _lock:
             tok = _login()
-        code, res = _http(method, path, params, body, tok)
+        code, res = _http(method, path, params, body, tok, timeout)
     if code >= 400:
         raise BillzError(f"BILLZ {method} {path}: {code} {(res or {}).get('message')}", code)
     return res
@@ -143,19 +144,40 @@ def _same_phone(c: dict, phone: str) -> bool:
     return bool(tail) and any(_digits(p).endswith(tail) for p in (c.get("phone_numbers") or []))
 
 
-def _candidates(phone: str) -> list:
-    """Все записи BILLZ с этим номером: точный поиск в разных форматах + общий поиск по цифрам."""
+def _exact(phone: str) -> dict:
     found = {}
     for p in _phone_variants(phone):
         for c in (_api("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 5}) or {}).get("clients") or []:
             found[c.get("id")] = c
+    return found
+
+
+def _search(phone: str) -> dict:
+    """Общий поиск BILLZ по цифрам номера (находит записи с пробелами, без кода страны и т.п.).
+    Может быть медленным — при таймауте молча пропускается."""
+    found = {}
     digits = _digits(phone)
     for q in dict.fromkeys([digits[-9:], digits]):
         if len(q) < 7:
             continue
-        for c in (_api("GET", "/v1/client", params={"search": q, "page": 1, "limit": 20}) or {}).get("clients") or []:
+        try:
+            res = _api("GET", "/v1/client", params={"search": q, "page": 1, "limit": 20}, timeout=SEARCH_TIMEOUT)
+        except BillzError as e:
+            logging.warning("BILLZ: общий поиск «%s» не удался: %s", q, e)
+            continue
+        for c in (res or {}).get("clients") or []:
             if _same_phone(c, phone):
                 found[c.get("id")] = c
+        if found:
+            break
+    return found
+
+
+def _candidates(phone: str, deep: bool = False) -> list:
+    """Записи BILLZ с этим номером: точный поиск; общий — если точный ничего не дал или deep."""
+    found = _exact(phone)
+    if deep or not found:
+        found.update(_search(phone))
     return list(found.values())
 
 
@@ -166,12 +188,12 @@ def _best(cands: list):
                default=None)
 
 
-def find_client(phone: str):
+def find_client(phone: str, deep: bool = False):
     """Найти клиента в BILLZ по номеру (в любом формате записи). Возвращает словарь или None.
     {"billz_id", "first_name", "last_name", "birth_date" (YYYY-MM-DD), "balance", "cards", "duplicates"}"""
     if not enabled() or not _digits(phone):
         return None
-    cands = _candidates(phone)
+    cands = _candidates(phone, deep)
     c = _best(cands)
     if not c:
         return None
@@ -232,7 +254,7 @@ def sync_client(uid: int, force: bool = False) -> dict:
             if not purchases and not balance and cl.get("phone"):
                 # пустая запись (например, бот сам завёл клиента, не найдя его из-за формата номера) —
                 # проверяем, нет ли в BILLZ записи с этим номером, где есть покупки или бонусы
-                better = find_client(cl["phone"])
+                better = find_client(cl["phone"], deep=True)
                 if better and better["billz_id"] != bid:
                     other = _api("GET", f"/v1/customer/{better['billz_id']}") or {}
                     o_buy = float(other.get("purchase_amount") or 0)
@@ -264,48 +286,65 @@ def diagnose(phone: str = None) -> str:
         return lines[0] + "\n❌ Ключ не задан: нет переменной BILLZ_SECRET_TOKEN в Railway."
     key = _secret()
     lines.append(f"🔑 Ключ: задан, длина {len(key)} симв." + (" ⚠️ есть пробелы/кавычки по краям?" if key != key.strip(" '\"") else ""))
+
+    def timed(fn):
+        t = time.time()
+        try:
+            return fn(), None, time.time() - t
+        except BillzError as e:
+            return None, e, time.time() - t
     # 1. вход
-    try:
-        code, res = _http("POST", "/v1/auth/login", body={"secret_token": key})
-    except BillzError as e:
-        return "\n".join(lines + [f"❌ 1. Вход: нет связи — {e}"])
+    (code_res), err, dt = timed(lambda: _http("POST", "/v1/auth/login", body={"secret_token": key}))
+    if err:
+        return "\n".join(lines + [f"❌ 1. Вход: нет ответа за {dt:.0f} с — {err}"])
+    code, res = code_res
     data = (res or {}).get("data") or {}
     if code == 200 and data.get("access_token"):
         _token.update(value=data["access_token"], until=time.time() + max(60, int(data.get("expires_in") or 3600) - 3600))
-        lines.append("✅ 1. Вход по секретному ключу — успешно")
+        lines.append(f"✅ 1. Вход по секретному ключу — успешно ({dt:.1f} с)")
     elif _looks_like_jwt(key):
-        lines.append(f"ℹ️ 1. Вход по секретному ключу: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}")
         c2, r2 = _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=key)
         if c2 != 200:
-            return "\n".join(lines + [f"❌ Ключ похож на токен доступа (JWT), но и так не подходит: {c2} — "
-                                       f"{(r2 or {}).get('message')} / {(r2 or {}).get('error')}",
-                                       "Возможно, токен истёк. Нужен секретный ключ интеграции из BILLZ."])
+            return "\n".join(lines + [f"❌ 1. Вход: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}; "
+                                       f"как токен (JWT) тоже не подходит: {c2}"])
         _token.update(value=key, until=time.time() + 3600)
-        lines.append("✅ Ключ — это готовый токен доступа (JWT), он работает. Но такой токен со временем истекает — "
-                     "лучше поставить секретный ключ интеграции.")
+        lines.append("✅ 1. Ключ — готовый токен доступа (JWT), работает (лучше поставить секретный ключ интеграции)")
     else:
         return "\n".join(lines + [f"❌ 1. Вход: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}",
-                                   "Ключ не принят BILLZ: проверьте, что это секретный ключ интеграции, вставлен целиком, "
-                                   "без пробелов, и не отключён."])
+                                   "Ключ не принят BILLZ: проверьте, что это секретный ключ интеграции, вставлен целиком."])
     # 2. список клиентов
-    code, res = _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=_token["value"])
-    if code != 200:
-        return "\n".join(lines + [f"❌ 2. Чтение клиентов: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}",
+    (code_res), err, dt = timed(lambda: _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=_token["value"]))
+    if err:
+        lines.append(f"⚠️ 2. Чтение клиентов: нет ответа за {dt:.0f} с — {err}")
+    elif code_res[0] != 200:
+        return "\n".join(lines + [f"❌ 2. Чтение клиентов: {code_res[0]} — {(code_res[1] or {}).get('message')}",
                                    "У роли ключа нет права на клиентов — включите его в BILLZ (права роли ключа)."])
-    lines.append(f"✅ 2. Чтение клиентов — доступно (всего в базе: {(res or {}).get('count')})")
-    # 3. поиск по номеру
+    else:
+        lines.append(f"✅ 2. Чтение клиентов — доступно, в базе {(code_res[1] or {}).get('count')} ({dt:.1f} с)")
+    # 3. поиск по номеру: точный и общий
     if phone:
-        cands = _candidates(phone)
-        if not cands:
-            lines.append(f"ℹ️ 3. Номер {phone} в BILLZ не найден (точно: {', '.join(_phone_variants(phone))}; и общим поиском)")
+        exact, err, dt = timed(lambda: _exact(phone))
+        if err:
+            lines.append(f"⚠️ 3а. Точный поиск: нет ответа за {dt:.0f} с — {err}")
+            exact = {}
         else:
-            best = _best(cands)
-            lines.append(f"✅ 3. Номер {phone} — записей в BILLZ: {len(cands)}" + (" ⚠️ дубли" if len(cands) > 1 else ""))
-            for c in cands:
-                mark = "👉 " if c is best else "   "
-                lines.append(f"{mark}{(c.get('first_name') or '')} {(c.get('last_name') or '')}".rstrip() +
-                             f" · тел. {', '.join(c.get('phone_numbers') or [])} · кешбэк {float(c.get('balance') or 0):,.0f}"
-                             .replace(",", " ") + f" · посл. покупка {str(c.get('last_transaction_date') or '—')[:10]}")
+            lines.append(f"{'✅' if exact else 'ℹ️'} 3а. Точный поиск ({', '.join(_phone_variants(phone))}): "
+                         f"записей {len(exact)} ({dt:.1f} с)")
+        found, err, dt = timed(lambda: _search(phone))
+        found = found or {}
+        if not found and dt >= SEARCH_TIMEOUT * 0.9:
+            lines.append(f"⚠️ 3б. Общий поиск по цифрам: BILLZ не ответил за {SEARCH_TIMEOUT} с — пропущен")
+        else:
+            lines.append(f"{'✅' if found else 'ℹ️'} 3б. Общий поиск по цифрам: записей {len(found)} ({dt:.1f} с)")
+        cands = list({**exact, **found}.values())
+        best = _best(cands)
+        if cands:
+            lines.append(f"Всего записей с этим номером: {len(cands)}" + (" ⚠️ дубли" if len(cands) > 1 else ""))
+        for c in cands:
+            lines.append(("👉 " if c is best else "   ") + f"{(c.get('first_name') or '')} {(c.get('last_name') or '')}".strip() +
+                         f" · тел. {', '.join(c.get('phone_numbers') or [])} · кешбэк " +
+                         f"{float(c.get('balance') or 0):,.0f}".replace(",", " ") +
+                         f" · посл. покупка {str(c.get('last_transaction_date') or '—')[:10]}")
     lines.append(f"➕ Заводить новых клиентов в BILLZ: {'да' if CREATE_CLIENTS else 'нет'}")
     if last_error["text"]:
         lines.append(f"⚠️ Последняя ошибка ({last_error['at']}): {last_error['text']}")
