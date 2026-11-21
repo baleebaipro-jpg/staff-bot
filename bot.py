@@ -206,12 +206,17 @@ async def after_phone(update: Update) -> None:
     lang = cl.get("lang")
     found = None
     try:
-        found = erp.find_client(cl["phone"])
+        found = await asyncio.to_thread(erp.find_client, cl["phone"])  # поиск в BILLZ по номеру
     except Exception:
         logging.exception("Ошибка поиска клиента в ERP")
-    if found:
+    if found and found.get("first_name"):
         core.update_client(u.id, first_name=found.get("first_name"), last_name=found.get("last_name"),
-                           birth_date=found.get("birth_date"), step="done")
+                           birth_date=found.get("birth_date"), billz_id=found.get("billz_id"),
+                           billz_balance=found.get("balance"), step="done")
+        try:
+            await asyncio.to_thread(erp.sync_client, u.id, True)  # сумма покупок и статус
+        except Exception:
+            logging.exception("Ошибка BILLZ")
         await reply(update, i18n.t(lang, "found"))
         return await client_menu(update, greet=True)
     core.update_client(u.id, step="name")
@@ -237,16 +242,32 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not birth:
             return await reply(update, i18n.t(lang, "bad_birth"))
         core.update_client(u.id, birth_date=birth, step="done")
+        if erp.CREATE_CLIENTS:  # завести клиента в BILLZ (включается в config.py)
+            try:
+                await asyncio.to_thread(erp.create_client, u.id)
+            except Exception:
+                logging.exception("BILLZ: не удалось создать клиента")
         await reply(update, i18n.t(lang, "registered"))
         return await client_menu(update)
     if text in i18n.all_variants("btn_lang"):
         return await reply(update, i18n.t(None, "choose_lang"), reply_markup=lang_buttons())
     if not lang or not cl.get("phone"):
         return await client_menu(update)
-    if text in i18n.all_variants("btn_purchases"):
-        return await reply(update, i18n.t(lang, "soon_purchases"), reply_markup=client_keyboard(u.id))
-    if text in i18n.all_variants("btn_bonus"):
-        return await reply(update, i18n.t(lang, "soon_bonus"), reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_purchases") or text in i18n.all_variants("btn_bonus"):
+        purchases = text in i18n.all_variants("btn_purchases")
+        if not erp.enabled():
+            key = "soon_purchases" if purchases else "soon_bonus"
+            return await reply(update, i18n.t(lang, key), reply_markup=client_keyboard(u.id))
+        stats = await asyncio.to_thread(erp.sync_client, u.id)
+        value = stats.get("purchases" if purchases else "balance")
+        if not stats.get("linked"):
+            msg = i18n.t(lang, "billz_error") if stats.get("error") else i18n.t(lang, "billz_not_found")
+        elif value is None:
+            msg = i18n.t(lang, "billz_error")
+        else:
+            money = f"{int(value):,}".replace(",", " ") + " " + i18n.t(lang, "currency")  # вниз: не обещать лишнего
+            msg = i18n.t(lang, "purchases_info" if purchases else "bonus_info", sum=money)
+        return await reply(update, msg, reply_markup=client_keyboard(u.id))
     if text in i18n.all_variants("btn_invest"):
         return await reply(update, i18n.t(lang, "soon_invest"), reply_markup=client_keyboard(u.id))
     if text in i18n.all_variants("btn_news"):

@@ -312,7 +312,8 @@ def init_db():
             c.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
         ccols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
         for col, ddl in (("tier", "TEXT DEFAULT 'bronza'"), ("lang", "TEXT"), ("last_name", "TEXT"),
-                         ("birth_date", "TEXT"), ("step", "TEXT")):
+                         ("birth_date", "TEXT"), ("step", "TEXT"), ("billz_id", "TEXT"), ("billz_balance", "REAL"),
+                         ("billz_purchases", "REAL"), ("billz_synced", "TEXT")):
             if col not in ccols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
         ocols = {r[1] for r in c.execute("PRAGMA table_info(outbox)")}
@@ -1058,7 +1059,24 @@ def set_client_tier(uid: int, tier: str):
     return True, f"{r['first_name'] or uid}: {tier_title(tier)}"
 
 
-CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username"}
+CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username",
+                 "billz_id", "billz_balance", "billz_purchases", "billz_synced"}
+
+
+def auto_tier(uid: int, purchases: float):
+    """Статус по сумме покупок из BILLZ: выбирается самый высокий, чей порог min_purchases достигнут.
+    Пороги — CLIENT_TIERS в config.py; пока у Silver/Gold порог None, статус ставит руководитель вручную
+    (автоматически статус только повышается — понижать вручную выставленный не будем)."""
+    order = list(CLIENT_TIERS)
+    best = None
+    for key in order:
+        need = CLIENT_TIERS[key].get("min_purchases")
+        if need is not None and purchases >= need:
+            best = key
+    cl = get_client(uid) or {}
+    cur = tier_of(cl)
+    if best and order.index(best) > order.index(cur):
+        set_client_tier(uid, best)
 
 
 def update_client(uid: int, **fields):
