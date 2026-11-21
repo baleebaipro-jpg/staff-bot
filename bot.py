@@ -798,6 +798,7 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
             logging.exception("Ошибка запланированных постов")
         try:
             core.spawn_recurring()  # утром — повторяющиеся задачи сотрудникам
+            core.shift_reminders()  # за 15 мин до начала и конца смены — напомнить отметиться
         except Exception:
             logging.exception("Ошибка повторяющихся задач")
         try:

@@ -587,6 +587,41 @@ PENALTY_CHAT_ID = getattr(config, "PENALTY_CHAT_ID", None)
 PENALTY_AMOUNT = getattr(config, "PENALTY_AMOUNT", "")
 
 
+SHIFT_REMINDERS = getattr(config, "SHIFT_REMINDERS", True)
+
+
+def shift_reminders() -> int:
+    """Напоминания сотрудникам с графиком (не свободным): за WINDOW минут до начала смены — отметить приход
+    (если ещё не отметился), за WINDOW минут до конца — отметить уход (если на месте). Каждое — раз в день."""
+    if not SHIFT_REMINDERS:
+        return 0
+    t = now()
+    today = t.strftime("%Y-%m-%d")
+    sent = 0
+    with db() as c:
+        for uid in config.EMPLOYEES:
+            emp = employee(uid)
+            if not emp or not workday(emp, t):  # выходной или свободный график — без напоминаний
+                continue
+            L = staff_lang(uid)
+            in_from, in_to = window(emp, "in", t)
+            if in_from <= t < in_to:
+                came = c.execute("SELECT 1 FROM sessions WHERE user_id=? AND substr(check_in, 1, 10) = ?",
+                                 (uid, today)).fetchone()
+                waiting = c.execute("SELECT 1 FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
+                if not came and not waiting and flag_once(f"remind_in:{uid}:{today}"):
+                    notify(c, uid, st.s(L, "remind_in", m=WINDOW, start=shift_start(emp, t),
+                                        until=f"{in_to:%H:%M}", btn=st.s(L, "btn_in")))
+                    sent += 1
+            out_from = window(emp, "out", t)[0]
+            end = at(t, shift_end(emp, t))
+            if out_from <= t < end + timedelta(minutes=WINDOW) and _open_session(c, uid) \
+                    and flag_once(f"remind_out:{uid}:{today}"):
+                notify(c, uid, st.s(L, "remind_out", m=WINDOW, end=shift_end(emp, t), btn=st.s(L, "btn_out")))
+                sent += 1
+    return sent
+
+
 def check_penalties():
     """Штраф тем, кто не отметил приход до конца окна (например до 09:15).
     Вызывается ботом раз в минуту."""
