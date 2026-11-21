@@ -31,6 +31,7 @@ import core
 import erp
 import i18n
 import invest as invest_mod
+import projects
 import relay
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
@@ -638,6 +639,10 @@ async def outbox_loop(app: Application) -> None:
                 await app.bot.send_message(uid, "⌛ Время на кружок вышло, приход не засчитан.\nНажмите «✅ Пришёл» ещё раз.")
         except Exception:
             logging.exception("Ошибка при проверке кружков")
+        try:
+            projects.morning_digest()
+        except Exception:
+            logging.exception("Ошибка утреннего списка задач")
         try:
             if invest_mod.ENABLED:
                 invest_mod.check_rating_day()
