@@ -511,6 +511,26 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, "\n".join(lines), reply_markup=buttons or keyboard(uid))
 
 
+async def invest_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/investchat в группе — заявки по инвестициям будут приходить сюда.
+    /investchat off — снова руководителям в личку."""
+    uid = update.effective_user.id
+    if not core.is_admin(uid):
+        return await reply(update, "Подключить группу может только руководитель.")
+    chat = update.effective_chat
+    if context.args and context.args[0].lower() in ("off", "выкл"):
+        invest_mod.set_group(None)
+        return await reply(update, "✅ Группа для инвестиций отключена — заявки снова придут руководителям в личку.")
+    if chat.type not in ("group", "supergroup"):
+        cur, _ = invest_mod.group()
+        return await reply(update, "Напишите /investchat в группе, куда должны приходить заявки по инвестициям."
+                                   + (f"\nСейчас подключена группа {cur}." if cur else ""))
+    thread = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+    invest_mod.set_group(chat.id, thread)
+    await reply(update, f"✅ Готово! Сюда будут приходить заявки на вклады, напоминания об оценке месяца и выплатах.\n"
+                        f"Нажимать кнопки под заявками может только руководитель.")
+
+
 async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Кнопки под сообщениями: «Деньги получил / Отклонить» и оценка месяца."""
     q = update.callback_query
@@ -523,6 +543,8 @@ async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ok, msg = invest_mod.set_level(a, b)
     await q.answer(msg[:190], show_alert=not ok)
     if ok or kind == "inv":
+        if q.message.chat.type != "private":
+            msg += f" — {q.from_user.first_name}"
         try:
             await q.edit_message_text(q.message.text + "\n\n" + msg)
         except TelegramError:
@@ -565,7 +587,9 @@ async def outbox_loop(app: Application) -> None:
         try:
             for m in core.pending_outbox():
                 try:
-                    thread = PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID else None
+                    inv_chat, inv_thread = invest_mod.group()
+                    thread = (PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID
+                              else inv_thread if m["chat_id"] == inv_chat else None)
                     text, mode = m["text"], None
                     if text.startswith("HTML:"):
                         text, mode = text[5:], "HTML"
@@ -606,6 +630,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("chatid", chat_id))
+    app.add_handler(CommandHandler("investchat", invest_chat_cmd))
     app.add_handler(CommandHandler("task", task_cmd))
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
