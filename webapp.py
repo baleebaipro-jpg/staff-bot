@@ -133,7 +133,7 @@ def api_me(uid, data):
                          "ava_v": ava_version(uid), "lang": i18n.lang_of(cl.get("lang")),
                          "registered": cl.get("step") == "done",
                          "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None}
-        res["news"] = core.news_list(10)
+        res["news"] = core.news_list(10, i18n.lang_of(cl.get("lang")))  # каждый клиент — на своём языке
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
                              "max": invest.MAX_AMOUNT, "currency": invest.CURRENCY,
@@ -248,10 +248,10 @@ def api_set_tier(uid, data):
 @app.post("/api/add_news")
 @need_user(admin=True)
 def api_add_news(uid, data):
-    text = str(data.get("text", "")).strip()
-    if not text:
-        return jsonify(ok=False, msg="Напишите текст новости.")
-    core.add_news(text)
+    texts = i18n.clean_texts(data.get("texts")) or i18n.clean_texts({"uz": data.get("text", "")})
+    if not texts:
+        return jsonify(ok=False, msg="Напишите текст новости хотя бы на одном языке.")
+    core.add_news(texts=texts)
     return jsonify(ok=True, msg="📰 Новость опубликована для клиентов")
 
 
@@ -291,11 +291,12 @@ def api_post(uid, data):
         if not img.startswith(b"\xff\xd8\xff") or len(img) > 5_000_000:
             return jsonify(ok=False, msg="Не удалось прочитать фото.")
         photo = posts.save_photo(img)
-    args = (data.get("text"), photo, data.get("button_text"), data.get("button_url"))
+    args = (data.get("texts"), photo, data.get("button_text"), data.get("button_url"))
     if act == "test":
-        ok, msg = posts.test(uid, *args)
+        ok, msg = posts.test(uid, *args, text=data.get("text", ""))
     elif act == "create":
-        ok, msg = posts.create(uid, *args, data.get("audience") or [], bool(data.get("to_news")), data.get("send_at") or "")
+        ok, msg = posts.create(uid, *args, data.get("audience") or [], bool(data.get("to_news")),
+                               data.get("send_at") or "", text=data.get("text", ""))
     else:
         ok, msg = False, "Неизвестное действие."
     return jsonify(ok=ok, msg=msg)
@@ -640,6 +641,14 @@ PAGE = r"""<!doctype html>
   .quick button { background: var(--card2); border: 1.5px solid var(--line); border-radius: 99px; padding: 6px 12px; font-size: 13px; }
   .quick button.on { border-color: var(--accent); background: rgba(124,92,255,.2); }
   .day-h { font-size: 13px; font-weight: 700; margin: 12px 0 2px; }
+  /* тексты на трёх языках */
+  .ltabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .ltabs button { flex: 1; background: var(--card2); border: 1.5px solid var(--line); border-radius: 11px; padding: 8px 4px;
+                  font-size: 13.5px; font-weight: 700; }
+  .ltabs button.on { border-color: var(--accent); background: rgba(124,92,255,.2); }
+  .ltabs button .ok { color: var(--green); margin-left: 3px; }
+  .lang-badges { display: inline-flex; gap: 4px; margin-left: 6px; }
+  .lang-badges span { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: var(--card2); color: var(--hint); }
   /* постинг */
   .po-lbl { font-size: 13px; color: var(--hint); margin: 12px 0 6px; }
   .po-post { padding: 11px 0; border-top: 1px solid var(--line); }
@@ -794,8 +803,9 @@ PAGE = r"""<!doctype html>
     <div class="page-title">📣 Постинг</div>
     <div class="page-sub">Посты от имени бота — клиентам, сотрудникам, в группы и каналы</div>
     <div class="card">
-      <textarea id="po-text" rows="6" maxlength="4000" placeholder="Текст поста…"></textarea>
-      <div class="hint" style="font-size:12px;text-align:right;margin:-6px 0 8px" id="po-count"></div>
+      <div id="po-langs"></div>
+      <div class="hint" style="font-size:12px;display:flex;justify-content:space-between;margin:-6px 0 8px">
+        <span id="po-lang-hint"></span><span id="po-count"></span></div>
       <label class="btn btn-soft" style="display:block;text-align:center" id="po-photo-btn">📷 Добавить фото
         <input type="file" id="po-file" accept="image/*" hidden></label>
       <div id="po-photo-box" class="hidden" style="position:relative;margin-top:10px">
@@ -854,7 +864,7 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="card">
       <div class="head"><h3>📰 Новости для клиентов</h3><span class="hint" style="font-size:13px" id="cl-count"></span></div>
-      <textarea id="n-text" rows="3" placeholder="Текст новости…" maxlength="2000"></textarea>
+      <div id="n-langs"></div>
       <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
       <div id="n-list" style="margin-top:8px"></div>
     </div>
@@ -1648,6 +1658,30 @@ function editPtask(id) {
   $("et-del").onclick = () => tg.showConfirm("Удалить задачу?", ok => { if (ok) { invSheetClose(); projAct({action: "delete_task", id}); } });
 }
 
+/* ---------- текст на трёх языках (uz / ru / en) ---------- */
+const LANG_TABS = [["uz", "🇺🇿 UZ"], ["ru", "🇷🇺 RU"], ["en", "🇬🇧 EN"]];
+function langEditor(boxId, rows, max, ph, onInput) {
+  const box = $(boxId); let cur = "uz";
+  box.innerHTML = `<div class="ltabs">${LANG_TABS.map(([k, t]) => `<button data-lt="${k}">${t}</button>`).join("")}</div>` +
+    LANG_TABS.map(([k]) => `<textarea data-lta="${k}" rows="${rows}" maxlength="${max}" placeholder="${esc(ph[k])}"></textarea>`).join("");
+  const ta = k => box.querySelector(`[data-lta="${k}"]`);
+  const paint = () => {
+    box.querySelectorAll("[data-lt]").forEach(b => {
+      const k = b.dataset.lt; b.classList.toggle("on", k === cur);
+      b.innerHTML = LANG_TABS.find(x => x[0] === k)[1] + (ta(k).value.trim() ? `<span class="ok">✓</span>` : "");
+    });
+    box.querySelectorAll("[data-lta]").forEach(t => t.classList.toggle("hidden", t.dataset.lta !== cur));
+  };
+  box.querySelectorAll("[data-lt]").forEach(b => b.onclick = () => { cur = b.dataset.lt; paint(); ta(cur).focus(); onInput && onInput(); });
+  box.querySelectorAll("[data-lta]").forEach(t => t.oninput = () => { paint(); onInput && onInput(); });
+  paint();
+  return {
+    texts: () => Object.fromEntries(LANG_TABS.map(([k]) => [k, ta(k).value.trim()]).filter(([, v]) => v)),
+    current: () => ta(cur),
+    clear: () => { box.querySelectorAll("[data-lta]").forEach(t => t.value = ""); cur = "uz"; paint(); },
+  };
+}
+
 /* ---------- постинг ---------- */
 let poPhoto = null, poWhen = "now";
 const poAud = new Set();
@@ -1660,6 +1694,8 @@ function renderPosting() {
     poAud.has(b.dataset.aud) ? poAud.delete(b.dataset.aud) : poAud.add(b.dataset.aud);
     b.classList.toggle("on", poAud.has(b.dataset.aud));
   });
+  const cl = a.client_langs || {};
+  $("po-lang-hint").textContent = `Клиенты по языкам: UZ ${cl.uz || 0} · RU ${cl.ru || 0} · EN ${cl.en || 0}`;
   const planned = h.filter(p => p.status === "scheduled").length;
   $("posting-folder-sub").textContent = `клиентов: ${a.clients} · групп: ${a.chats.length}` +
     (planned ? ` · запланировано: ${planned}` : h.length ? ` · постов: ${h.length}` : "");
@@ -1668,7 +1704,7 @@ function renderPosting() {
       : `<span class="chip ${p.queued ? "active" : "matured"}">${p.queued ? "📤 отправляется" : "✅ отправлен"}</span>`;
     const stats = p.status === "scheduled" ? "" : `<span>доставлено: ${p.delivered} из ${p.total}</span>` +
       (p.failed ? `<span class="late">не доставлено: ${p.failed}</span>` : "") + (p.queued ? `<span>в очереди: ${p.queued}</span>` : "");
-    return `<div class="po-post"><div class="inv-top"><span class="hint" style="font-size:12.5px">${p.status === "scheduled" ? "Запланирован" : p.when}${p.has_photo ? " · 📷" : ""}${p.button_text ? " · 🔗" : ""}</span>${st}</div>
+    return `<div class="po-post"><div class="inv-top"><span class="hint" style="font-size:12.5px">${p.status === "scheduled" ? "Запланирован" : p.when}${p.has_photo ? " · 📷" : ""}${p.button_text ? " · 🔗" : ""}<span class="lang-badges">${(p.langs || []).map(l => `<span>${l.toUpperCase()}</span>`).join("")}</span></span>${st}</div>
       <div class="pt">${esc(p.text || "(только фото)")}</div>
       <div class="pmeta"><span>→ ${esc(p.audience_titles.join(", "))}</span>${stats}</div>
       ${p.status === "scheduled" ? `<div class="inv-act"><button class="btn btn-soft btn-sm" data-pocancel="${p.id}">Отменить</button></div>` : ""}</div>`;
@@ -1676,9 +1712,10 @@ function renderPosting() {
   document.querySelectorAll("[data-pocancel]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить запланированный пост?", ok => ok && action("/api/post", {action: "cancel", id: +b.dataset.pocancel})));
 }
-const poCount = () => { const n = $("po-text").value.length, max = poPhoto ? 1024 : 4000;
+const poCount = () => { const n = poEd.current().value.length, max = poPhoto ? 1024 : 4000;
   $("po-count").innerHTML = `<span style="color:${n > max ? "var(--red)" : "inherit"}">${n} / ${max}</span>`; };
-$("po-text").oninput = poCount;
+const poEd = langEditor("po-langs", 6, 4000, {uz: "Post matni (o'zbekcha)…", ru: "Текст поста (по-русски)…",
+  en: "Post text (English)…"}, () => poCount());
 $("po-file").onchange = async ev => {
   const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;
   try { poPhoto = await reportJpeg(f); $("po-prev").src = poPhoto; $("po-photo-box").classList.remove("hidden");
@@ -1691,25 +1728,28 @@ document.querySelectorAll("#po-when button").forEach(b => b.onclick = () => {
   $("po-at").classList.toggle("hidden", poWhen !== "later");
 });
 function poBody() {
-  return {text: $("po-text").value.trim(), image: poPhoto || "", button_text: $("po-btn-text").value.trim(),
+  return {texts: poEd.texts(), image: poPhoto || "", button_text: $("po-btn-text").value.trim(),
           button_url: $("po-btn-url").value.trim()};
 }
 function poReset() {
-  $("po-text").value = ""; $("po-btn-text").value = ""; $("po-btn-url").value = ""; $("po-at").value = "";
+  poEd.clear(); $("po-btn-text").value = ""; $("po-btn-url").value = ""; $("po-at").value = "";
   $("po-news").checked = false; poAud.clear(); $("po-photo-del").onclick(); poCount();
 }
 $("po-test").onclick = () => {
-  const b = poBody(); if (!b.text && !b.image) return toast("Напишите текст или добавьте фото");
+  const b = poBody(); if (!Object.keys(b.texts).length && !b.image) return toast("Напишите текст или добавьте фото");
   toast("Отправляю…"); api("/api/post", Object.assign({action: "test"}, b)).then(r => toast(r.msg)).catch(e => toast(e.message));
 };
 $("po-send").onclick = () => {
   const b = poBody();
-  if (!b.text && !b.image) return toast("Напишите текст или добавьте фото");
+  if (!Object.keys(b.texts).length && !b.image) return toast("Напишите текст или добавьте фото");
   if (!poAud.size) return toast("Выберите, кому отправить");
   if (poWhen === "later" && !$("po-at").value) return toast("Выберите дату и время");
   const names = [...document.querySelectorAll("[data-aud].on")].map(x => x.textContent).join(", ");
   const when = poWhen === "later" ? `\nКогда: ${$("po-at").value.replace("T", " ")}` : "\nОтправить сейчас.";
-  tg.showConfirm(`Опубликовать пост?\nКому: ${names}${when}`, ok => {
+  const filled = Object.keys(b.texts), missing = LANG_TABS.map(x => x[0]).filter(k => !filled.includes(k));
+  const langs = `\nЯзыки: ${filled.map(k => k.toUpperCase()).join(", ") || "—"}` +
+    (missing.length && filled.length ? ` (без ${missing.map(k => k.toUpperCase()).join(", ")} — получат на ${filled.includes("uz") ? "UZ" : filled[0].toUpperCase()})` : "");
+  tg.showConfirm(`Опубликовать пост?\nКому: ${names}${when}${langs}`, ok => {
     if (!ok) return;
     toast("Отправляю…");
     api("/api/post", Object.assign({action: "create", audience: [...poAud], to_news: $("po-news").checked,
@@ -1744,7 +1784,7 @@ async function load() {
 
 function newsHtml(items, admin) {
   return items.length ? items.map(n => `<div class="news-item"><div class="hint" style="font-size:12px;display:flex;justify-content:space-between">
-      <span>🗓 ${n.date}</span>${admin ? `<button class="link" data-delnews="${n.id}">удалить</button>` : ""}</div>${esc(n.text)}</div>`).join("")
+      <span>🗓 ${n.date}${admin && n.langs && n.langs.length ? `<span class="lang-badges">${n.langs.map(l => `<span>${l.toUpperCase()}</span>`).join("")}</span>` : ""}</span>${admin ? `<button class="link" data-delnews="${n.id}">удалить</button>` : ""}</div>${esc(n.text)}</div>`).join("")
     : `<div class="empty">Новостей пока нет</div>`;
 }
 const TIER_EMOJI = {bronza: "🥉", silver: "🥈", gold: "🥇"};
@@ -1807,10 +1847,12 @@ function renderNewsAdmin() {
   document.querySelectorAll("[data-delnews]").forEach(b => b.onclick = () =>
     tg.showConfirm("Удалить новость?", ok => ok && action("/api/delete_news", {id: +b.dataset.delnews})));
 }
+const newsEd = langEditor("n-langs", 3, 2000, {uz: "Yangilik matni (o'zbekcha)…", ru: "Текст новости (по-русски)…",
+  en: "News text (English)…"});
 $("n-add").onclick = () => {
-  const text = $("n-text").value.trim();
-  if (!text) return toast("Напишите текст новости");
-  action("/api/add_news", {text}).then(() => $("n-text").value = "");
+  const texts = newsEd.texts();
+  if (!Object.keys(texts).length) return toast("Напишите текст новости хотя бы на одном языке");
+  action("/api/add_news", {texts}).then(() => newsEd.clear());
 };
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));

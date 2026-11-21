@@ -114,6 +114,22 @@ def lang_of(code) -> str:
     return code if code in LANGS else DEFAULT
 
 
+def clean_texts(texts) -> dict:
+    """{'uz': '...', 'ru': '', 'en': None} → только заполненные языки."""
+    if not isinstance(texts, dict):
+        return {}
+    return {k: str(texts[k]).strip() for k in LANGS if texts.get(k) and str(texts[k]).strip()}  # порядок uz, ru, en
+
+
+def pick(texts: dict, lang) -> str:
+    """Текст на нужном языке; если перевода нет — на основном (uz → ru → en)."""
+    texts = texts or {}
+    for k in (lang_of(lang), DEFAULT, "ru", "en"):
+        if texts.get(k):
+            return texts[k]
+    return ""
+
+
 def t(lang, key: str, **kw) -> str:
     text = T[key].get(lang_of(lang)) or T[key][DEFAULT]
     return text.format(**kw) if kw else text
