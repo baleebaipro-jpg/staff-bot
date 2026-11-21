@@ -277,6 +277,23 @@ def api_invest_decide(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+@app.post("/api/invest_early")
+@need_user(staff=True)
+def api_invest_early(uid, data):
+    if data.get("cancel"):
+        ok, msg = invest.early_cancel(uid, int(data.get("id", 0)))
+    else:
+        ok, msg = invest.early_request(uid, int(data.get("id", 0)))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/invest_early_decide")
+@need_user(admin=True)
+def api_invest_early_decide(uid, data):
+    ok, msg = invest.early_decide(int(data.get("id", 0)), bool(data.get("approve")))
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/invest_rate")
 @need_user(admin=True)
 def api_invest_rate(uid, data):
@@ -976,7 +993,7 @@ function renderTeam() {
 
 /* ---------- инвестиции ---------- */
 const INV_STATUS = {pending: "⏳ ждёт", active: "📈 работает", rating: "⏳ ждёт оценки", matured: "🎉 к выплате",
-                    paid: "✔️ выплачен", rejected: "отклонён"};
+                    paid: "✔️ выплачен", withdrawn: "↩️ выведен", rejected: "отклонён"};
 const sum = n => Math.round(Number(n || 0)).toLocaleString("ru-RU") + " " + ((data && data.invest_cfg && data.invest_cfg.currency) || "");
 const pc = x => (Math.round(x * 100) / 100).toLocaleString("ru-RU") + "%";
 const daysWord = n => n + " " + plural(n, "день", "дня", "дней");
@@ -1000,9 +1017,19 @@ function invItem(r, admin) {
     else sub += `<span style="width:100%;color:var(--green)">Срок закончился — к выплате <b>${sum(r.payout)}</b></span>`;
     if (admin && r.status === "matured")
       act = `<div class="inv-act"><button class="btn btn-main btn-sm" data-inv-paid="${r.id}">💸 Выплачено ${sum(r.payout)}</button></div>`;
+    if (r.early) {
+      sub += `<span style="width:100%;color:var(--orange)">↩️ Заявка на досрочный вывод: к выплате ${sum(r.amount)}, доход +${sum(r.accrued)} сгорает</span>`;
+      act = admin ? `<div class="inv-act"><button class="btn btn-main btn-sm" data-early-ok="${r.id}">✅ Выплатил ${sum(r.amount)}</button>
+                     <button class="btn btn-soft btn-sm" data-early-no="${r.id}">✕ Отклонить</button></div>`
+                  : `<div class="inv-act"><button class="btn btn-soft btn-sm" data-early-cancel="${r.id}">Передумал — оставить вклад</button></div>`;
+    } else if (!admin && r.status === "active") {
+      act = `<div class="inv-act"><button class="btn btn-soft btn-sm" data-early="${r.id}" data-amount="${r.amount}" data-accrued="${r.accrued}">↩️ Забрать досрочно</button></div>`;
+    }
     if (r.months_list.length) months = `<details class="inv-months"><summary>Начисления по месяцам</summary><div class="mchips">${
       r.months_list.map(m => `<span>${esc(m.title.split(" ")[0].slice(0, 3).toLowerCase())}${m.share < 100 ? ` (${m.share}%)` : ""} ${
         m.level ? LVL()[m.level].emoji + " +" + sum(m.earned) : "⏳"}</span>`).join("")}</div></details>`;
+  } else if (r.status === "withdrawn") {
+    sub = `<span>${r.start} → ${r.end}</span><span>выведен досрочно · выплачено ${sum(r.payout)}</span>`;
   } else if (r.status === "paid") {
     sub = `<span>${r.start} → ${r.end}</span><span>доход ${sum(r.accrued)} (${pc(r.percent)})</span>`;
   } else {
@@ -1024,6 +1051,17 @@ function bindInvest() {
     tg.showConfirm("Отметить вклад как выплаченный?", ok => ok && action("/api/invest_paid", {id: +b.dataset.invPaid})));
   document.querySelectorAll("[data-inv-cancel]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить заявку на вклад?", ok => ok && action("/api/invest_cancel", {id: +b.dataset.invCancel})));
+  document.querySelectorAll("[data-early]").forEach(b => b.onclick = () =>
+    tg.showConfirm(`Забрать вклад досрочно? Вы получите только ${sum(b.dataset.amount)}, начисленный доход +${sum(b.dataset.accrued)} сгорит.`,
+      ok => ok && action("/api/invest_early", {id: +b.dataset.early})));
+  document.querySelectorAll("[data-early-cancel]").forEach(b => b.onclick = () =>
+    action("/api/invest_early", {id: +b.dataset.earlyCancel, cancel: true}));
+  document.querySelectorAll("[data-early-ok]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Подтвердить досрочную выплату (только тело вклада)?",
+      ok => ok && action("/api/invest_early_decide", {id: +b.dataset.earlyOk, approve: true})));
+  document.querySelectorAll("[data-early-no]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Отклонить досрочный вывод? Вклад продолжит работать.",
+      ok => ok && action("/api/invest_early_decide", {id: +b.dataset.earlyNo, approve: false})));
   document.querySelectorAll("[data-lvl]").forEach(b => b.onclick = () => {
     const [month, level] = b.dataset.lvl.split("|");
     if (b.classList.contains("on")) return;
@@ -1060,7 +1098,7 @@ function renderInvestMe() {
     + (m.earned ? `<div class="hint" style="font-size:13px;margin-top:8px">Всего заработано на вкладах: <b style="color:var(--green)">${sum(m.earned)}</b></div>` : "");
   $("inv-rules").innerHTML = `Вклад на ${cfg.term} мес. Каждый месяц руководитель подводит итог — от него зависит ваша доля:<br>` +
     cfg.levels.map(l => `${l.emoji} ${l.title.toLowerCase()} — ${pc(l.monthly)} за месяц (${pc(l.annual)} годовых)`).join("<br>") +
-    `<br>Деньги передаются руководителю лично, начисления идут со дня подтверждения. Забрать вклад можно только после окончания срока — вместе со всем доходом.`;
+    `<br>Деньги передаются руководителю лично, начисления идут со дня подтверждения. После окончания срока вы получаете вклад со всем доходом. Досрочно — по заявке, только вложенную сумму (доход сгорает).`;
   const pend = m.items.some(r => r.status === "pending"), ready = m.items.some(r => r.status === "matured");
   $("inv-folder-sub").innerHTML = live.length
     ? `Вложено ${sum(m.invested)} · <span style="color:var(--green)">+${sum(m.accrued)}</span>${ready ? " · 🎉 к выплате" : ""}`
@@ -1104,15 +1142,17 @@ function renderInvestAdmin() {
     + invTiles([[o.invested, "вложено"], ["+" + sum(o.accrued), "начислено", "var(--green)"],
       [`${sum(o.obligations_min)} –<br>${sum(o.obligations_max)}`, "вернуть всего", "var(--orange)"]])
     + block(`⏳ Ждут подтверждения (${o.pending.length})`, o.pending)
+    + block(`↩️ Досрочный вывод (${o.early.length})`, o.early)
     + block(`🎉 Пора выплатить — ${sum(o.to_pay_now)}`, o.matured)
-    + block(`📈 Работают (${o.active.length})`, o.active)
+    + block(`📈 Работают (${o.active.filter(r => !r.early).length})`, o.active.filter(r => !r.early))
     + block("✔️ Выплачены", o.paid)
     + (any ? "" : `<div class="empty">Вкладов пока нет</div>`);
-  const todo = o.pending.length + o.matured.length + o.to_rate.length;
+  const todo = o.pending.length + o.matured.length + o.to_rate.length + o.early.length;
   $("inv-admin-badge").innerHTML = todo ? `<span class="f-badge">${todo}</span>` : "";
   $("inv-admin-folder-sub").textContent = [
     o.to_rate.length ? "⚠️ оцените месяц" : "",
     o.pending.length ? `заявок: ${o.pending.length}` : "",
+    o.early.length ? `досрочно: ${o.early.length}` : "",
     o.matured.length ? `к выплате: ${o.matured.length}` : "",
     `вложено ${sum(o.invested)}`].filter(Boolean).join(" · ");
   bindInvest();

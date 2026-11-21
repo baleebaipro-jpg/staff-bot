@@ -17,6 +17,7 @@
       ├ rating  — срок закончился, но последний месяц ещё не оценён
       └ matured — срок закончился, все месяцы оценены — можно выплатить
     paid      — выплачено (сумма выплаты запоминается)
+    withdrawn — выведен досрочно: выплачено только тело вклада
     rejected  — заявку отклонил руководитель
     cancelled — сотрудник отменил заявку
 """
@@ -45,12 +46,14 @@ _annual = [v["annual"] for v in LEVELS.values()]
 ANNUAL_MIN, ANNUAL_MAX = min(_annual), max(_annual)
 
 
-# ---------- куда слать заявки: группа или руководителям в личку ----------
-# Группу подключают командой /investchat прямо в группе (запоминается в базе).
-# Если группа не подключена — берётся INVEST_CHAT_ID из config.py, иначе — личка руководителей.
+# ---------- куда слать: группа с темами или руководителям в личку ----------
+# Группа — INVEST_CHAT_ID в config.py (или команда /investchat в группе).
+# Тема для каждого вида сообщений — INVEST_TOPICS в config.py.
+TOPICS = getattr(config, "INVEST_TOPICS", {})
 
-def group(c=None) -> tuple:
-    """(chat_id, thread_id) группы для заявок или (None, None)."""
+
+def group(c=None):
+    """ID группы для инвестиций или None (тогда — личка руководителей)."""
     try:
         if c is not None:
             r = c.execute("SELECT value FROM flags WHERE name='invest_chat'").fetchone()
@@ -59,28 +62,32 @@ def group(c=None) -> tuple:
                 r = c2.execute("SELECT value FROM flags WHERE name='invest_chat'").fetchone()
     except Exception:
         r = None
-    if r and r["value"]:
-        chat, _, thread = r["value"].partition(":")
-        return int(chat), (int(thread) if thread else None)
-    if r is not None:  # отключено командой /investchat off
-        return None, None
-    return getattr(config, "INVEST_CHAT_ID", None), getattr(config, "INVEST_THREAD_ID", None)
+    if r is not None:  # задано командой /investchat («» — отключено)
+        return int(r["value"].partition(":")[0]) if r["value"] else None
+    return getattr(config, "INVEST_CHAT_ID", None)
 
 
-def set_group(chat_id, thread_id=None) -> None:
-    value = f"{chat_id}:{thread_id or ''}" if chat_id else ""
+def set_group(chat_id) -> None:
     with core.db() as c:
-        c.execute("INSERT OR REPLACE INTO flags(name, value) VALUES('invest_chat', ?)", (value,))
+        c.execute("INSERT OR REPLACE INTO flags(name, value) VALUES('invest_chat', ?)", (str(chat_id or ""),))
 
 
-def notify_team(c, text: str, buttons=None) -> None:
-    """Сообщение по инвестициям: в группу, если подключена, иначе руководителям."""
-    chat, _ = group(c)
+def topic(kind: str):
+    """Номер темы для вида сообщения. Тема 1 — «General», туда шлём без номера."""
+    t = TOPICS.get(kind)
+    return None if t in (None, 1) else t
+
+
+def notify_team(c, text: str, buttons=None, kind: str = "new") -> None:
+    """Сообщение по инвестициям: в нужную тему группы, иначе руководителям в личку.
+    kind: new — заявки, payout — выплаты по сроку, early — досрочный вывод, rating — оценка месяца."""
+    chat = group(c)
     if not chat:
         return core.notify_admins(c, text, buttons)
     import json
     markup = json.dumps(buttons, ensure_ascii=False) if buttons else None
-    c.execute("INSERT INTO outbox(chat_id, text, markup) VALUES(?, ?, ?)", (chat, text, markup))
+    c.execute("INSERT INTO outbox(chat_id, text, markup, thread_id) VALUES(?, ?, ?, ?)",
+              (chat, text, markup, topic(kind)))
 
 
 # ---------- вспомогательное ----------
@@ -175,7 +182,8 @@ def _row(r, today: date, rated: dict) -> dict:
         d["start"], d["end"] = start.strftime("%d.%m.%Y"), end.strftime("%d.%m.%Y")
         if d["status"] == "active" and today >= end:
             d["status"] = "matured" if rest_w == 0 else "rating"
-    if d["status"] == "paid" and d.get("paid_amount"):
+    d["early"] = bool(d.get("early_at")) and d["status"] == "active"
+    if d["status"] in ("paid", "withdrawn") and d.get("paid_amount") is not None:
         d["payout"] = d["paid_amount"]
         d["accrued"] = d["paid_amount"] - amount
     else:
@@ -223,7 +231,7 @@ def cancel(uid: int, inv_id: int):
         if not r:
             return False, "Заявка не найдена."
         if r["status"] != "pending":
-            return False, "Подтверждённый вклад отменить нельзя — он выплачивается после окончания срока."
+            return False, "Вклад уже работает — заявку отменить нельзя. Досрочно можно забрать только вложенную сумму (кнопка «Забрать досрочно»)."
         c.execute("UPDATE investments SET status='cancelled', decided_at=? WHERE id=?",
                   (core.now().strftime(core.FMT), inv_id))
         notify_team(c, f"↩️ {core.name(uid)} отменил(а) заявку на вклад №{inv_id} ({money(r['amount'])}).")
@@ -333,10 +341,64 @@ def mark_paid(inv_id: int):
             return False, "Сначала оцените все месяцы вклада."
         c.execute("UPDATE investments SET status='paid', paid_at=?, paid_amount=? WHERE id=?",
                   (core.now().strftime(core.FMT), row["payout"], inv_id))
+        notify_team(c, f"💸 Выплачено: вклад №{inv_id}, {core.name(r['user_id'])} — {money(row['payout'])}", kind="payout")
         core.notify(c, r["user_id"], f"💸 Вклад №{inv_id} выплачен: {money(row['payout'])} "
                                      f"(доход +{money(row['accrued'])}, {pct(row['percent'])}). "
                                      f"Спасибо, что инвестируете в команду!")
     return True, f"💸 Выплачено: {core.name(r['user_id'])}, {money(row['payout'])}"
+
+
+# ---------- досрочный вывод: возвращается только тело вклада ----------
+
+def early_request(uid: int, inv_id: int):
+    today, rated = _today(), ratings()
+    with core.db() as c:
+        r = c.execute("SELECT * FROM investments WHERE id=? AND user_id=?", (inv_id, uid)).fetchone()
+        if not r or r["status"] != "active":
+            return False, "Вклад не найден."
+        row = _row(r, today, rated)
+        if row["status"] != "active":
+            return False, "Срок вклада уже закончился — он будет выплачен полностью, с доходом."
+        if r["early_at"]:
+            return False, "Заявка на досрочный вывод уже отправлена."
+        c.execute("UPDATE investments SET early_at=? WHERE id=?", (core.now().strftime(core.FMT), inv_id))
+        notify_team(
+            c,
+            f"↩️ Досрочный вывод — вклад №{inv_id}\n"
+            f"👤 {core.name(uid)}\n"
+            f"Вклад: {money(r['amount'])} с {row['start']} (до {row['end']})\n"
+            f"Начислено: +{money(row['accrued'])} — сгорает\n"
+            f"К выплате: {money(r['amount'])}",
+            [[("✅ Выплатил", f"inv_early:ok:{inv_id}"), ("✕ Отклонить", f"inv_early:no:{inv_id}")]],
+            kind="early")
+    return True, f"📨 Заявка на досрочный вывод отправлена. Вы получите {money(r['amount'])}."
+
+
+def early_cancel(uid: int, inv_id: int):
+    with core.db() as c:
+        r = c.execute("SELECT * FROM investments WHERE id=? AND user_id=?", (inv_id, uid)).fetchone()
+        if not r or r["status"] != "active" or not r["early_at"]:
+            return False, "Заявки на досрочный вывод нет."
+        c.execute("UPDATE investments SET early_at=NULL WHERE id=?", (inv_id,))
+        notify_team(c, f"↩️ {core.name(uid)} передумал(а) выводить вклад №{inv_id} досрочно — вклад продолжает работать.",
+                    kind="early")
+    return True, "Заявка отменена — вклад продолжает работать."
+
+
+def early_decide(inv_id: int, approve: bool):
+    with core.db() as c:
+        r = c.execute("SELECT * FROM investments WHERE id=?", (inv_id,)).fetchone()
+        if not r or r["status"] != "active" or not r["early_at"]:
+            return False, "Заявки на досрочный вывод уже нет."
+        who = core.name(r["user_id"])
+        if not approve:
+            c.execute("UPDATE investments SET early_at=NULL WHERE id=?", (inv_id,))
+            core.notify(c, r["user_id"], f"✕ Досрочный вывод вклада №{inv_id} отклонён — вклад продолжает работать.")
+            return True, f"✕ Отклонено: {who}, вклад продолжает работать"
+        c.execute("UPDATE investments SET status='withdrawn', paid_at=?, paid_amount=? WHERE id=?",
+                  (core.now().strftime(core.FMT), r["amount"], inv_id))
+        core.notify(c, r["user_id"], f"↩️ Вклад №{inv_id} выведен досрочно: вам выплачено {money(r['amount'])}.")
+    return True, f"↩️ Выплачено досрочно: {who}, {money(r['amount'])}"
 
 
 def overview() -> dict:
@@ -344,7 +406,8 @@ def overview() -> dict:
     today, rated = _today(), ratings()
     with core.db() as c:
         rows = [_row(r, today, rated) for r in c.execute(
-            "SELECT * FROM investments WHERE status IN ('pending', 'active', 'paid') ORDER BY id DESC LIMIT 300")]
+            "SELECT * FROM investments WHERE status IN ('pending', 'active', 'paid', 'withdrawn') "
+            "ORDER BY id DESC LIMIT 300")]
     for r in rows:
         r["name"] = core.name(r["user_id"])
     live = [r for r in rows if r["status"] in ("active", "rating", "matured")]
@@ -354,7 +417,8 @@ def overview() -> dict:
         "pending": [r for r in rows if r["status"] == "pending"],
         "matured": [r for r in rows if r["status"] == "matured"],
         "active": [r for r in rows if r["status"] in ("active", "rating")],
-        "paid": [r for r in rows if r["status"] == "paid"][:20],
+        "early": [r for r in rows if r["early"]],
+        "paid": [r for r in rows if r["status"] in ("paid", "withdrawn")][:20],
         "invested": sum(r["amount"] for r in live),
         "accrued": sum(r["accrued"] for r in live),
         "obligations_min": sum(r["amount"] + r["min_total"] for r in live),
@@ -393,7 +457,7 @@ def check_rating_day() -> None:
     with core.db() as c:
         notify_team(
             c, f"📊 Пора оценить месяц: {month_title(ym).lower()}.\nКак он прошёл? От этого зависит доход инвесторов.",
-            [[(f"{v['emoji']} {v['title']}", f"inv_lvl:{ym}:{k}") for k, v in LEVELS.items()]])
+            [[(f"{v['emoji']} {v['title']}", f"inv_lvl:{ym}:{k}") for k, v in LEVELS.items()]], kind="rating")
 
 
 def check_matured() -> None:
@@ -411,4 +475,5 @@ def check_matured() -> None:
                                          f"К выплате: {money(row['payout'])} (доход +{money(row['accrued'])}, "
                                          f"{pct(row['percent'])}). Руководитель получил уведомление.")
             notify_team(c, f"⏰ Пора выплатить вклад №{r['id']}: {core.name(r['user_id'])} — "
-                                  f"{money(row['payout'])}.\nПосле выплаты отметьте в кабинете → Инвестиции.")
+                                  f"{money(row['payout'])}.\nПосле выплаты отметьте в кабинете → Инвестиции.",
+                        kind="payout")

@@ -478,7 +478,8 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if r["status"] == "pending":
                 lines.append(f"⏳ Заявка {M(r['amount'])} — ждёт руководителя")
             elif r["status"] == "active":
-                lines.append(f"📈 {M(r['amount'])} · +{M(r['accrued'])} · до {r['end']} (ещё {r['days_left']} дн.)")
+                lines.append(f"📈 {M(r['amount'])} · +{M(r['accrued'])} · до {r['end']} (ещё {r['days_left']} дн.)"
+                             + (" · ⏳ заявка на досрочный вывод" if r["early"] else ""))
             elif r["status"] == "rating":
                 lines.append(f"📈 {M(r['amount'])} · срок закончился, ждём оценку последнего месяца")
             elif r["status"] == "matured":
@@ -499,7 +500,8 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                      f"Вложено: {M(o['invested'])}\n"
                      f"Начислено: {M(o['accrued'])}\n"
                      f"Вернуть в конце сроков: {M(o['obligations_min'])} – {M(o['obligations_max'])}\n"
-                     f"Заявок ждут: {len(o['pending'])} · к выплате сейчас: {len(o['matured'])}")
+                     f"Заявок ждут: {len(o['pending'])} · досрочный вывод: {len(o['early'])} · "
+                     f"к выплате сейчас: {len(o['matured'])}")
         for t in o["to_rate"]:
             lines.append(f"⚠️ Не оценён месяц: {t['title'].lower()}")
     buttons = None
@@ -512,8 +514,8 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def invest_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/investchat в группе — заявки по инвестициям будут приходить сюда.
-    /investchat off — снова руководителям в личку."""
+    """/investchat в группе — сообщения по инвестициям идут в эту группу
+    (по темам из INVEST_TOPICS в config.py). /investchat off — в личку руководителям."""
     uid = update.effective_user.id
     if not core.is_admin(uid):
         return await reply(update, "Подключить группу может только руководитель.")
@@ -522,13 +524,15 @@ async def invest_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         invest_mod.set_group(None)
         return await reply(update, "✅ Группа для инвестиций отключена — заявки снова придут руководителям в личку.")
     if chat.type not in ("group", "supergroup"):
-        cur, _ = invest_mod.group()
+        cur = invest_mod.group()
         return await reply(update, "Напишите /investchat в группе, куда должны приходить заявки по инвестициям."
                                    + (f"\nСейчас подключена группа {cur}." if cur else ""))
-    thread = update.message.message_thread_id if update.message and update.message.is_topic_message else None
-    invest_mod.set_group(chat.id, thread)
-    await reply(update, f"✅ Готово! Сюда будут приходить заявки на вклады, напоминания об оценке месяца и выплатах.\n"
-                        f"Нажимать кнопки под заявками может только руководитель.")
+    invest_mod.set_group(chat.id)
+    t = invest_mod.TOPICS
+    await reply(update, "✅ Группа подключена. Темы:\n"
+                        f"• новые заявки — {t.get('new', '—')}\n• выплаты по сроку — {t.get('payout', '—')}\n"
+                        f"• досрочный вывод — {t.get('early', '—')}\n• оценка месяца — {t.get('rating', '—')}\n"
+                        "Нажимать кнопки может только руководитель.")
 
 
 async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -539,10 +543,12 @@ async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     kind, a, b = q.data.split(":")
     if kind == "inv":
         ok, msg = invest_mod.decide(int(b), a == "ok")
+    elif kind == "inv_early":
+        ok, msg = invest_mod.early_decide(int(b), a == "ok")
     else:
         ok, msg = invest_mod.set_level(a, b)
     await q.answer(msg[:190], show_alert=not ok)
-    if ok or kind == "inv":
+    if ok or kind in ("inv", "inv_early"):
         if q.message.chat.type != "private":
             msg += f" — {q.from_user.first_name}"
         try:
@@ -587,9 +593,7 @@ async def outbox_loop(app: Application) -> None:
         try:
             for m in core.pending_outbox():
                 try:
-                    inv_chat, inv_thread = invest_mod.group()
-                    thread = (PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID
-                              else inv_thread if m["chat_id"] == inv_chat else None)
+                    thread = m.get("thread_id") or (PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID else None)
                     text, mode = m["text"], None
                     if text.startswith("HTML:"):
                         text, mode = text[5:], "HTML"
@@ -635,7 +639,7 @@ def main() -> None:
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
-    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+)$"))
+    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+)$"))
     app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))

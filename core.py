@@ -256,8 +256,13 @@ def init_db():
                          ("birth_date", "TEXT"), ("step", "TEXT")):
             if col not in ccols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
-        if "markup" not in {r[1] for r in c.execute("PRAGMA table_info(outbox)")}:
+        ocols = {r[1] for r in c.execute("PRAGMA table_info(outbox)")}
+        if "markup" not in ocols:
             c.execute("ALTER TABLE outbox ADD COLUMN markup TEXT")
+        if "thread_id" not in ocols:
+            c.execute("ALTER TABLE outbox ADD COLUMN thread_id INTEGER")
+        if "early_at" not in {r[1] for r in c.execute("PRAGMA table_info(investments)")}:
+            c.execute("ALTER TABLE investments ADD COLUMN early_at TEXT")
         if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
             c.execute("ALTER TABLE proof_pending ADD COLUMN code TEXT")
         cols = {r[1] for r in c.execute("PRAGMA table_info(penalties)")}
