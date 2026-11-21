@@ -466,6 +466,8 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
         return await client_text(update, context)
+    if not invest_mod.ENABLED:
+        return await reply(update, invest_mod.SOON_TEXT, reply_markup=keyboard(uid))
     M = invest_mod.money
     lines = []
     if invest_mod.can_invest(uid):
@@ -548,7 +550,7 @@ async def invest_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 class _WaitingReport(filters.MessageFilter):
     """Сообщение-фото от руководителя, от которого ждём фото-отчёт о выплате."""
     def filter(self, message) -> bool:
-        return bool(message.from_user and core.is_admin(message.from_user.id)
+        return bool(invest_mod.ENABLED and message.from_user and core.is_admin(message.from_user.id)
                     and invest_mod.waiting_report(message.from_user.id))
 
 
@@ -569,6 +571,8 @@ async def invest_report_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Кнопки под сообщениями: «Деньги получил / Отклонить» и оценка месяца."""
     q = update.callback_query
+    if not invest_mod.ENABLED:
+        return await q.answer(invest_mod.SOON_TEXT, show_alert=True)
     if not core.is_admin(q.from_user.id):
         return await q.answer("Нет доступа.", show_alert=True)
     kind, a, b = q.data.split(":")
@@ -635,8 +639,9 @@ async def outbox_loop(app: Application) -> None:
         except Exception:
             logging.exception("Ошибка при проверке кружков")
         try:
-            invest_mod.check_rating_day()
-            invest_mod.check_matured()
+            if invest_mod.ENABLED:
+                invest_mod.check_rating_day()
+                invest_mod.check_matured()
         except Exception:
             logging.exception("Ошибка при проверке сроков инвестиций")
         try:

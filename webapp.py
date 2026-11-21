@@ -56,6 +56,13 @@ def need_user(admin=False, staff=False):
     return deco
 
 
+@app.before_request
+def invest_closed():
+    """Пока раздел «Инвестиции» выключен (INVEST_ENABLED = False) — все его действия закрыты."""
+    if not invest.ENABLED and request.path.startswith("/api/invest"):
+        return jsonify(ok=False, msg=invest.SOON_TEXT)
+
+
 @app.route("/")
 def index():
     return PAGE
@@ -111,7 +118,8 @@ def api_me(uid, data):
         res["profile"]["ava_v"] = ava_version(uid)
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
-    if res["is_employee"] or res["is_admin"]:
+    res["invest_enabled"] = invest.ENABLED
+    if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
     res["is_client"] = not res["is_admin"] and not res["is_employee"]
     if res["is_client"]:
@@ -124,13 +132,14 @@ def api_me(uid, data):
                          "registered": cl.get("step") == "done",
                          "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None}
         res["news"] = core.news_list(10)
-    if res["is_employee"] or res["is_admin"]:
+    if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
                              "max": invest.MAX_AMOUNT, "currency": invest.CURRENCY,
                              "annual_min": invest.ANNUAL_MIN, "annual_max": invest.ANNUAL_MAX,
                              "history": invest.history_public()}
     if res["is_admin"]:
-        res["invest_admin"] = invest.overview()
+        if invest.ENABLED:
+            res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
         res["clients"] = core.clients_stats()
         res["client_list"] = core.clients_list()
@@ -1321,9 +1330,10 @@ async function load() {
     if (data.is_employee) renderMe();
     if (data.invest) renderInvestMe();
     // руководитель без кабинета сотрудника открывает свои инвестиции с вкладки «Команда»
-    $("go-inv-own").classList.toggle("hidden", !(data.is_admin && !data.is_employee));
+    $("go-inv-own").classList.toggle("hidden", !(data.invest_enabled && data.is_admin && !data.is_employee));
+    if (!data.invest_enabled) investSoon();
     SUBPAGES.invest = data.is_employee ? "me" : "team";
-    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); renderInvestAdmin(); }
+    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin(); }
     if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
@@ -1404,9 +1414,21 @@ $("n-add").onclick = () => {
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
-$("go-inv").onclick = () => show("invest");
-$("go-inv-own").onclick = () => show("invest");
-$("go-inv-admin").onclick = () => show("invest-admin");
+const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
+$("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
+$("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
+$("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
+/* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
+function investSoon() {
+  ["go-inv", "go-inv-admin"].forEach(id => {
+    const el = $(id);
+    el.classList.add("soon");
+    el.querySelector(".f-sub").textContent = "Раздел скоро появится";
+    const badge = el.querySelector("#inv-admin-badge"); if (badge) badge.innerHTML = "";
+    el.querySelector(".f-arrow").outerHTML = `<span class="soon-pill" style="margin-left:auto">Скоро ⏳</span>`;
+  });
+  if (view === "invest" || view === "invest-admin") view = data.is_employee ? "me" : "team";
+}
 $("ava-file").onchange = async (ev) => {
   const file = ev.target.files[0];
   ev.target.value = "";
