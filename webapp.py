@@ -111,7 +111,8 @@ def api_me(uid, data):
         res["profile"]["ava_v"] = ava_version(uid)
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
-        res["invest"] = invest.mine(uid)
+    if res["is_employee"] or res["is_admin"]:
+        res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
     res["is_client"] = not res["is_admin"] and not res["is_employee"]
     if res["is_client"]:
         cl = core.get_client(uid) or {}
@@ -719,6 +720,11 @@ PAGE = r"""<!doctype html>
       <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
       <div id="n-list" style="margin-top:8px"></div>
     </div>
+    <button class="card folder hidden" id="go-inv-own">
+      <div class="f-ic">💼</div>
+      <div style="min-width:0"><b>Мои инвестиции</b><div class="f-sub" id="inv-folder-sub-own"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder" id="go-inv-admin">
       <div class="f-ic">💰</div>
       <div style="min-width:0"><b>Инвестиции сотрудников<span id="inv-admin-badge"></span></b>
@@ -1204,6 +1210,7 @@ function renderInvCalc() {
     (a < cfg.min ? `<br><span style="color:var(--orange)">Мин. сумма — ${sum(cfg.min)}</span>` : "") +
     (a > cfg.max ? `<br><span style="color:var(--orange)">Макс. сумма — ${sum(cfg.max)}</span>` : "");
 }
+function setFolderSub(html) { $("inv-folder-sub").innerHTML = html; $("inv-folder-sub-own").innerHTML = html; }
 function renderInvestMe() {
   const m = data.invest, cfg = data.invest_cfg;
   const has = m.access === "approved";
@@ -1216,7 +1223,7 @@ function renderInvestMe() {
       (m.access === "pending" ? `<div class="inv-calc" style="color:var(--orange)">⏳ Заявка на рассмотрении у руководителя</div>`
        : m.access === "rejected" ? `<div class="inv-calc">Прошлая заявка отклонена — можно подать снова.</div>` : "");
     $("inv-access-form").classList.toggle("hidden", m.access === "pending");
-    $("inv-folder-sub").textContent = m.access === "pending" ? "⏳ Заявка на участие на рассмотрении" : "🙋 Участие по заявке — подайте заявку";
+    setFolderSub(m.access === "pending" ? "⏳ Заявка на участие на рассмотрении" : "🙋 Участие по заявке — подайте заявку");
     $("inv-page-sub").textContent = `Инвестиции в товар · по заявке`;
     return;
   }
@@ -1234,9 +1241,9 @@ function renderInvestMe() {
     `Деньги передаются руководителю лично, капитал начинает работать со дня подтверждения. Через ${cfg.term} мес. вы получаете капитал и долю прибыли. ` +
     `Досрочный выход — по заявке: возвращается только капитал, доля прибыли не выплачивается.`;
   const pend = m.items.some(r => r.status === "pending"), ready = m.items.some(r => r.status === "matured");
-  $("inv-folder-sub").innerHTML = live.length
+  setFolderSub(live.length
     ? `Вложено ${sum(m.invested)} · <span style="color:var(--green)">+${sum(m.accrued)}</span>${ready ? " · 🎉 к выплате" : ""}`
-    : pend ? "⏳ Заявка ждёт руководителя" : `Инвестиции в товар · доля прибыли от продаж`;
+    : pend ? "⏳ Заявка ждёт руководителя" : `Инвестиции в товар · доля прибыли от продаж`);
   $("inv-page-sub").textContent = `Инвестиция в товар на ${cfg.term} мес. · доля прибыли зависит от итогов продаж каждого месяца`;
   renderInvCalc();
   bindInvest();
@@ -1311,7 +1318,11 @@ async function load() {
     data = await api("/api/me");
     $("loading").classList.add("hidden");
     if (data.is_client) { renderClient(); show("client"); return; }
-    if (data.is_employee) { renderMe(); renderInvestMe(); }
+    if (data.is_employee) renderMe();
+    if (data.invest) renderInvestMe();
+    // руководитель без кабинета сотрудника открывает свои инвестиции с вкладки «Команда»
+    $("go-inv-own").classList.toggle("hidden", !(data.is_admin && !data.is_employee));
+    SUBPAGES.invest = data.is_employee ? "me" : "team";
     if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); renderInvestAdmin(); }
     if (!data.is_employee && view === "me") view = "team";
     show(view);
@@ -1394,6 +1405,7 @@ $("n-add").onclick = () => {
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
 $("go-inv").onclick = () => show("invest");
+$("go-inv-own").onclick = () => show("invest");
 $("go-inv-admin").onclick = () => show("invest-admin");
 $("ava-file").onchange = async (ev) => {
   const file = ev.target.files[0];
