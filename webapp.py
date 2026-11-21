@@ -283,14 +283,33 @@ def api_invest_early(uid, data):
     if data.get("cancel"):
         ok, msg = invest.early_cancel(uid, int(data.get("id", 0)))
     else:
-        ok, msg = invest.early_request(uid, int(data.get("id", 0)))
+        ok, msg = invest.early_request(uid, int(data.get("id", 0)), data.get("name", ""),
+                                       data.get("phone", ""), data.get("requisites", ""))
     return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/invest_early_decide")
 @need_user(admin=True)
 def api_invest_early_decide(uid, data):
-    ok, msg = invest.early_decide(int(data.get("id", 0)), bool(data.get("approve")))
+    inv_id = int(data.get("id", 0))
+    if not data.get("approve"):
+        ok, msg = invest.early_reject(inv_id)
+        return jsonify(ok=ok, msg=msg)
+    method = str(data.get("method", ""))
+    if method not in invest.PAY_METHODS:
+        return jsonify(ok=False, msg="Выберите: онлайн или офлайн оплата.")
+    raw = str(data.get("image", ""))
+    if "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        img = base64.b64decode(raw, validate=True)
+    except Exception:
+        img = b""
+    if not img.startswith(b"\xff\xd8\xff"):
+        return jsonify(ok=False, msg="Прикрепите фото-отчёт о выплате.")
+    if len(img) > 5_000_000:
+        return jsonify(ok=False, msg="Фото слишком большое.")
+    ok, msg = invest.early_pay(inv_id, method, invest.save_report(inv_id, img))
     return jsonify(ok=ok, msg=msg)
 
 
@@ -711,6 +730,7 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 </div>
+<div class="sheet-bg hidden" id="inv-sheet-bg"><div class="sheet" id="inv-sheet"></div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1019,7 +1039,8 @@ function invItem(r, admin) {
       act = `<div class="inv-act"><button class="btn btn-main btn-sm" data-inv-paid="${r.id}">💸 Выплачено ${sum(r.payout)}</button></div>`;
     if (r.early) {
       sub += `<span style="width:100%;color:var(--orange)">↩️ Заявка на досрочный вывод: к выплате ${sum(r.amount)}, доход +${sum(r.accrued)} сгорает</span>`;
-      act = admin ? `<div class="inv-act"><button class="btn btn-main btn-sm" data-early-ok="${r.id}">✅ Выплатил ${sum(r.amount)}</button>
+      if (r.early_info) sub += `<span style="width:100%;color:var(--text);line-height:1.5">👤 ${esc(r.early_info.name)}<br>📞 ${esc(r.early_info.phone)}<br>💳 ${esc(r.early_info.requisites)}</span>`;
+      act = admin ? `<div class="inv-act"><button class="btn btn-main btn-sm" data-early-ok="${r.id}" data-amount="${r.amount}" data-name="${esc(r.name)}">✅ Выплатить ${sum(r.amount)}</button>
                      <button class="btn btn-soft btn-sm" data-early-no="${r.id}">✕ Отклонить</button></div>`
                   : `<div class="inv-act"><button class="btn btn-soft btn-sm" data-early-cancel="${r.id}">Передумал — оставить вклад</button></div>`;
     } else if (!admin && r.status === "active") {
@@ -1029,7 +1050,7 @@ function invItem(r, admin) {
       r.months_list.map(m => `<span>${esc(m.title.split(" ")[0].slice(0, 3).toLowerCase())}${m.share < 100 ? ` (${m.share}%)` : ""} ${
         m.level ? LVL()[m.level].emoji + " +" + sum(m.earned) : "⏳"}</span>`).join("")}</div></details>`;
   } else if (r.status === "withdrawn") {
-    sub = `<span>${r.start} → ${r.end}</span><span>выведен досрочно · выплачено ${sum(r.payout)}</span>`;
+    sub = `<span>${r.start} → ${r.end}</span><span>выведен досрочно · выплачено ${sum(r.payout)}${r.pay_method_title ? " · " + r.pay_method_title : ""}</span>`;
   } else if (r.status === "paid") {
     sub = `<span>${r.start} → ${r.end}</span><span>доход ${sum(r.accrued)} (${pc(r.percent)})</span>`;
   } else {
@@ -1051,14 +1072,10 @@ function bindInvest() {
     tg.showConfirm("Отметить вклад как выплаченный?", ok => ok && action("/api/invest_paid", {id: +b.dataset.invPaid})));
   document.querySelectorAll("[data-inv-cancel]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить заявку на вклад?", ok => ok && action("/api/invest_cancel", {id: +b.dataset.invCancel})));
-  document.querySelectorAll("[data-early]").forEach(b => b.onclick = () =>
-    tg.showConfirm(`Забрать вклад досрочно? Вы получите только ${sum(b.dataset.amount)}, начисленный доход +${sum(b.dataset.accrued)} сгорит.`,
-      ok => ok && action("/api/invest_early", {id: +b.dataset.early})));
+  document.querySelectorAll("[data-early]").forEach(b => b.onclick = () => earlyForm(b.dataset));
   document.querySelectorAll("[data-early-cancel]").forEach(b => b.onclick = () =>
     action("/api/invest_early", {id: +b.dataset.earlyCancel, cancel: true}));
-  document.querySelectorAll("[data-early-ok]").forEach(b => b.onclick = () =>
-    tg.showConfirm("Подтвердить досрочную выплату (только тело вклада)?",
-      ok => ok && action("/api/invest_early_decide", {id: +b.dataset.earlyOk, approve: true})));
+  document.querySelectorAll("[data-early-ok]").forEach(b => b.onclick = () => payForm(b.dataset));
   document.querySelectorAll("[data-early-no]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отклонить досрочный вывод? Вклад продолжит работать.",
       ok => ok && action("/api/invest_early_decide", {id: +b.dataset.earlyNo, approve: false})));
@@ -1067,6 +1084,80 @@ function bindInvest() {
     if (b.classList.contains("on")) return;
     tg.showConfirm(`${b.dataset.title}: ${lvlTag(level)} месяц?`, ok => ok && action("/api/invest_rate", {month, level}));
   });
+}
+
+/* ---------- формы досрочного вывода ---------- */
+function invSheet(html) { $("inv-sheet").innerHTML = html; $("inv-sheet-bg").classList.remove("hidden"); }
+function invSheetClose() { $("inv-sheet-bg").classList.add("hidden"); $("inv-sheet").innerHTML = ""; }
+$("inv-sheet-bg").onclick = ev => { if (ev.target.id === "inv-sheet-bg") invSheetClose(); };
+const sheetBtns = ok => `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px">
+  <button class="btn btn-soft" id="is-cancel">Отмена</button><button class="btn btn-main" id="is-ok">${ok}</button></div>`;
+
+function earlyForm(d) {
+  invSheet(`<h3>↩️ Забрать вклад досрочно</h3>
+    <div class="inv-calc">Вы получите <b>${sum(d.amount)}</b>.<br>
+      <span style="color:var(--orange)">Начисленный доход +${sum(d.accrued)} сгорит.</span></div>
+    <input id="ef-name" placeholder="ФИО полностью" maxlength="100" value="${esc((data.profile && data.profile.name) || "")}">
+    <input id="ef-phone" placeholder="Телефон, например +998 90 123 45 67" inputmode="tel" maxlength="30">
+    <textarea id="ef-req" rows="3" maxlength="300" placeholder="Реквизиты: номер карты (Uzcard / Humo) или банк и счёт"></textarea>
+    ${sheetBtns("Отправить заявку")}`);
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => {
+    const name = $("ef-name").value.trim(), phone = $("ef-phone").value.trim(), requisites = $("ef-req").value.trim();
+    if (name.length < 3) return toast("Укажите ФИО полностью");
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length < 9 || digits.length > 15) return toast("Укажите номер телефона");
+    if (requisites.length < 4) return toast("Укажите реквизиты");
+    invSheetClose();
+    action("/api/invest_early", {id: +d.early, name, phone, requisites});
+  };
+}
+
+/* Сжать фото-отчёт (чек) до 1600 px по большей стороне, JPEG */
+function reportJpeg(file) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      ok(c.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => fail(new Error("Не удалось открыть фото"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+function payForm(d) {
+  let method = null, photo = null;
+  invSheet(`<h3>💸 Досрочная выплата</h3>
+    <div class="hint" style="margin:-8px 0 12px">${d.name} · ${sum(d.amount)}</div>
+    <div class="hint" style="font-size:13px;margin-bottom:6px">1. Как оплатили?</div>
+    <div class="lvl-btns" style="margin:0 0 14px;grid-template-columns:1fr 1fr"><button data-m="online">💳 Онлайн<span>перевод на карту</span></button>
+      <button data-m="offline">💵 Офлайн<span>наличными</span></button></div>
+    <div class="hint" style="font-size:13px;margin-bottom:6px">2. Фото-отчёт <span id="pf-hint"></span></div>
+    <label class="btn btn-soft" style="display:block;text-align:center;margin-bottom:10px">📷 Выбрать фото
+      <input type="file" id="pf-file" accept="image/*" hidden></label>
+    <img id="pf-prev" class="hidden" style="width:100%;max-height:260px;object-fit:contain;border-radius:12px;margin-bottom:10px;background:var(--card2)">
+    ${sheetBtns("Подтвердить выплату")}`);
+  document.querySelectorAll("#inv-sheet [data-m]").forEach(b => b.onclick = () => {
+    method = b.dataset.m;
+    document.querySelectorAll("#inv-sheet [data-m]").forEach(x => x.classList.toggle("on", x === b));
+    $("pf-hint").textContent = method === "online" ? "— чек / скриншот перевода" : "— фото передачи денег";
+  });
+  $("pf-file").onchange = async ev => {
+    const f = ev.target.files[0]; if (!f) return;
+    try { photo = await reportJpeg(f); $("pf-prev").src = photo; $("pf-prev").classList.remove("hidden"); }
+    catch (e) { toast(e.message); }
+  };
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => {
+    if (!method) return toast("Выберите: онлайн или офлайн");
+    if (!photo) return toast("Прикрепите фото-отчёт");
+    invSheetClose();
+    toast("Отправляю…");
+    action("/api/invest_early_decide", {id: +d.earlyOk, approve: true, method, image: photo});
+  };
 }
 
 const invAmount = () => +($("inv-amount").value.replace(/\D/g, "")) || 0;

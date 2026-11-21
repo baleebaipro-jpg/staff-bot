@@ -22,6 +22,9 @@
     cancelled — сотрудник отменил заявку
 """
 import calendar
+import json
+import os
+import re
 from datetime import date, datetime, timedelta
 
 import config
@@ -78,16 +81,17 @@ def topic(kind: str):
     return None if t in (None, 1) else t
 
 
-def notify_team(c, text: str, buttons=None, kind: str = "new") -> None:
+def notify_team(c, text: str, buttons=None, kind: str = "new", photo: str = None) -> None:
     """Сообщение по инвестициям: в нужную тему группы, иначе руководителям в личку.
     kind: new — заявки, payout — выплаты по сроку, early — досрочный вывод, rating — оценка месяца."""
+    markup = json.dumps(buttons, ensure_ascii=False) if buttons else None
     chat = group(c)
     if not chat:
-        return core.notify_admins(c, text, buttons)
-    import json
-    markup = json.dumps(buttons, ensure_ascii=False) if buttons else None
-    c.execute("INSERT INTO outbox(chat_id, text, markup, thread_id) VALUES(?, ?, ?, ?)",
-              (chat, text, markup, topic(kind)))
+        for a in config.ADMINS:
+            c.execute("INSERT INTO outbox(chat_id, text, markup, photo) VALUES(?, ?, ?, ?)", (a, text, markup, photo))
+        return
+    c.execute("INSERT INTO outbox(chat_id, text, markup, thread_id, photo) VALUES(?, ?, ?, ?, ?)",
+              (chat, text, markup, topic(kind), photo))
 
 
 # ---------- вспомогательное ----------
@@ -183,6 +187,9 @@ def _row(r, today: date, rated: dict) -> dict:
         if d["status"] == "active" and today >= end:
             d["status"] = "matured" if rest_w == 0 else "rating"
     d["early"] = bool(d.get("early_at")) and d["status"] == "active"
+    d["early_info"] = json.loads(d["early_info"]) if d.get("early_info") else None
+    d["pay_method_title"] = PAY_METHODS.get(d.get("pay_method") or "", "")
+    d.pop("pay_report", None)
     if d["status"] in ("paid", "withdrawn") and d.get("paid_amount") is not None:
         d["payout"] = d["paid_amount"]
         d["accrued"] = d["paid_amount"] - amount
@@ -350,7 +357,25 @@ def mark_paid(inv_id: int):
 
 # ---------- досрочный вывод: возвращается только тело вклада ----------
 
-def early_request(uid: int, inv_id: int):
+PAY_METHODS = {"online": "💳 онлайн", "offline": "💵 офлайн"}
+REPORT_HINT = {"online": "чек / скриншот перевода", "offline": "фото передачи денег"}
+REPORT_DIR = os.path.join(core._DATA_DIR, "invest_reports")
+
+
+def _digits(s) -> str:
+    return re.sub(r"\D", "", str(s or ""))
+
+
+def early_request(uid: int, inv_id: int, full_name: str = "", phone: str = "", requisites: str = ""):
+    """Сотрудник просит вывести вклад досрочно. Нужны ФИО, телефон и реквизиты."""
+    full_name, requisites = str(full_name or "").strip()[:100], str(requisites or "").strip()[:300]
+    phone = str(phone or "").strip()[:30]
+    if len(full_name) < 3:
+        return False, "Укажите ФИО полностью."
+    if not 9 <= len(_digits(phone)) <= 15:
+        return False, "Укажите номер телефона, например +998 90 123 45 67."
+    if len(requisites) < 4:
+        return False, "Укажите реквизиты: номер карты или банк и счёт."
     today, rated = _today(), ratings()
     with core.db() as c:
         r = c.execute("SELECT * FROM investments WHERE id=? AND user_id=?", (inv_id, uid)).fetchone()
@@ -361,15 +386,20 @@ def early_request(uid: int, inv_id: int):
             return False, "Срок вклада уже закончился — он будет выплачен полностью, с доходом."
         if r["early_at"]:
             return False, "Заявка на досрочный вывод уже отправлена."
-        c.execute("UPDATE investments SET early_at=? WHERE id=?", (core.now().strftime(core.FMT), inv_id))
+        info = json.dumps({"name": full_name, "phone": phone, "requisites": requisites}, ensure_ascii=False)
+        c.execute("UPDATE investments SET early_at=?, early_info=? WHERE id=?",
+                  (core.now().strftime(core.FMT), info, inv_id))
         notify_team(
             c,
             f"↩️ Досрочный вывод — вклад №{inv_id}\n"
             f"👤 {core.name(uid)}\n"
             f"Вклад: {money(r['amount'])} с {row['start']} (до {row['end']})\n"
             f"Начислено: +{money(row['accrued'])} — сгорает\n"
-            f"К выплате: {money(r['amount'])}",
-            [[("✅ Выплатил", f"inv_early:ok:{inv_id}"), ("✕ Отклонить", f"inv_early:no:{inv_id}")]],
+            f"К выплате: {money(r['amount'])}\n\n"
+            f"ФИО: {full_name}\n"
+            f"Телефон: {phone}\n"
+            f"Реквизиты: {requisites}",
+            [[("✅ Выплатить", f"inv_early:ok:{inv_id}"), ("✕ Отклонить", f"inv_early:no:{inv_id}")]],
             kind="early")
     return True, f"📨 Заявка на досрочный вывод отправлена. Вы получите {money(r['amount'])}."
 
@@ -385,20 +415,73 @@ def early_cancel(uid: int, inv_id: int):
     return True, "Заявка отменена — вклад продолжает работать."
 
 
-def early_decide(inv_id: int, approve: bool):
+def early_reject(inv_id: int):
     with core.db() as c:
         r = c.execute("SELECT * FROM investments WHERE id=?", (inv_id,)).fetchone()
         if not r or r["status"] != "active" or not r["early_at"]:
             return False, "Заявки на досрочный вывод уже нет."
+        c.execute("UPDATE investments SET early_at=NULL WHERE id=?", (inv_id,))
+        core.notify(c, r["user_id"], f"✕ Досрочный вывод вклада №{inv_id} отклонён — вклад продолжает работать.")
+    return True, f"✕ Отклонено: {core.name(r['user_id'])}, вклад продолжает работать"
+
+
+def early_pay(inv_id: int, method: str, report: str, post_to_group: bool = True):
+    """Досрочная выплата. method — online/offline, report — фото-отчёт:
+    'tg:<file_id>' (прислали в Telegram) или путь к файлу (загрузили в кабинете)."""
+    if method not in PAY_METHODS:
+        return False, "Выберите: онлайн или офлайн оплата."
+    if not report:
+        return False, "Нужен фото-отчёт о выплате."
+    with core.db() as c:
+        r = c.execute("SELECT * FROM investments WHERE id=?", (inv_id,)).fetchone()
+        if not r or r["status"] != "active" or not r["early_at"]:
+            return False, "Заявки на досрочный вывод уже нет."
+        c.execute("UPDATE investments SET status='withdrawn', paid_at=?, paid_amount=?, pay_method=?, pay_report=? "
+                  "WHERE id=?", (core.now().strftime(core.FMT), r["amount"], method, report, inv_id))
         who = core.name(r["user_id"])
-        if not approve:
-            c.execute("UPDATE investments SET early_at=NULL WHERE id=?", (inv_id,))
-            core.notify(c, r["user_id"], f"✕ Досрочный вывод вклада №{inv_id} отклонён — вклад продолжает работать.")
-            return True, f"✕ Отклонено: {who}, вклад продолжает работать"
-        c.execute("UPDATE investments SET status='withdrawn', paid_at=?, paid_amount=? WHERE id=?",
-                  (core.now().strftime(core.FMT), r["amount"], inv_id))
-        core.notify(c, r["user_id"], f"↩️ Вклад №{inv_id} выведен досрочно: вам выплачено {money(r['amount'])}.")
-    return True, f"↩️ Выплачено досрочно: {who}, {money(r['amount'])}"
+        caption = (f"↩️ Досрочно выплачено: вклад №{inv_id}\n👤 {who} — {money(r['amount'])}\n"
+                   f"Способ: {PAY_METHODS[method]}")
+        if post_to_group:
+            notify_team(c, caption, kind="early", photo=report)
+        core.notify(c, r["user_id"], f"↩️ Вклад №{inv_id} выведен досрочно: вам выплачено {money(r['amount'])} "
+                                     f"({PAY_METHODS[method]}). Фото-отчёт ниже.")
+        c.execute("INSERT INTO outbox(chat_id, text, photo) VALUES(?, ?, ?)",
+                  (r["user_id"], f"📸 Отчёт о выплате по вкладу №{inv_id}", report))
+    return True, f"↩️ Выплачено досрочно: {who}, {money(r['amount'])} ({PAY_METHODS[method]})"
+
+
+def save_report(inv_id: int, jpeg: bytes) -> str:
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    path = os.path.join(REPORT_DIR, f"{inv_id}_{int(core.now().timestamp())}.jpg")
+    with open(path, "wb") as f:
+        f.write(jpeg)
+    return path
+
+
+# Ожидание фото-отчёта в Telegram: руководитель выбрал способ — ждём его фото 30 минут.
+
+def wait_report(admin_id: int, inv_id: int, method: str) -> None:
+    until = (core.now() + timedelta(minutes=30)).strftime(core.FMT)
+    with core.db() as c:
+        c.execute("INSERT OR REPLACE INTO flags(name, value) VALUES(?, ?)",
+                  (f"inv_pay:{admin_id}", f"{inv_id}|{method}|{until}"))
+
+
+def waiting_report(admin_id: int):
+    """(inv_id, method) если ждём от руководителя фото-отчёт, иначе None."""
+    with core.db() as c:
+        r = c.execute("SELECT value FROM flags WHERE name=?", (f"inv_pay:{admin_id}",)).fetchone()
+    if not r or not r["value"]:
+        return None
+    inv_id, method, until = r["value"].split("|")
+    if core.now().strftime(core.FMT) > until:
+        return None
+    return int(inv_id), method
+
+
+def stop_waiting(admin_id: int) -> None:
+    with core.db() as c:
+        c.execute("DELETE FROM flags WHERE name=?", (f"inv_pay:{admin_id}",))
 
 
 def overview() -> dict:

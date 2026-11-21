@@ -261,8 +261,12 @@ def init_db():
             c.execute("ALTER TABLE outbox ADD COLUMN markup TEXT")
         if "thread_id" not in ocols:
             c.execute("ALTER TABLE outbox ADD COLUMN thread_id INTEGER")
-        if "early_at" not in {r[1] for r in c.execute("PRAGMA table_info(investments)")}:
-            c.execute("ALTER TABLE investments ADD COLUMN early_at TEXT")
+        if "photo" not in ocols:
+            c.execute("ALTER TABLE outbox ADD COLUMN photo TEXT")
+        icols = {r[1] for r in c.execute("PRAGMA table_info(investments)")}
+        for col in ("early_at", "early_info", "pay_method", "pay_report"):
+            if col not in icols:
+                c.execute(f"ALTER TABLE investments ADD COLUMN {col} TEXT")
         if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
             c.execute("ALTER TABLE proof_pending ADD COLUMN code TEXT")
         cols = {r[1] for r in c.execute("PRAGMA table_info(penalties)")}
