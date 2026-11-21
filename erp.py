@@ -52,7 +52,9 @@ def enabled() -> bool:
 
 def _http(method: str, path: str, params: dict = None, body: dict = None, token: str = None):
     url = BASE + path + ("?" + urllib.parse.urlencode(params) if params else "")
-    headers = {"platform-id": PLATFORM_ID, "Accept": "application/json"}
+    headers = {"platform-id": PLATFORM_ID, "Accept": "application/json",
+               # без нормального User-Agent защита сайта (Cloudflare) может отклонять запросы программы
+               "User-Agent": "Mozilla/5.0 (compatible; staff-bot/1.0; +https://t.me)"}
     data = None
     if body is not None:
         data = json.dumps(body).encode()
@@ -63,22 +65,36 @@ def _http(method: str, path: str, params: dict = None, body: dict = None, token:
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             raw = r.read()
-            return r.status, (json.loads(raw) if raw else {})
+            try:
+                return r.status, (json.loads(raw) if raw else {})
+            except ValueError:  # пришёл не JSON (например, страница защиты сайта)
+                return 502, {"message": "ответ не JSON: " + raw[:150].decode(errors="replace").replace("\n", " ")}
     except urllib.error.HTTPError as e:
         raw = e.read()
         try:
             return e.code, json.loads(raw)
         except ValueError:
-            return e.code, {"message": raw[:200].decode(errors="replace")}
+            return e.code, {"message": "ответ не JSON: " + raw[:150].decode(errors="replace").replace("\n", " ")}
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise BillzError(f"BILLZ недоступен: {e}")
 
 
+def _looks_like_jwt(key: str) -> bool:
+    return key.count(".") == 2 and key.startswith("ey")
+
+
 def _login() -> str:
-    code, res = _http("POST", "/v1/auth/login", body={"secret_token": _secret()})
+    key = _secret()
+    code, res = _http("POST", "/v1/auth/login", body={"secret_token": key})
     data = (res or {}).get("data") or {}
+    if (code != 200 or not data.get("access_token")) and _looks_like_jwt(key):
+        # в Railway вставлен не секретный ключ, а готовый токен доступа (JWT) — пробуем его напрямую
+        c2, _ = _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=key)
+        if c2 == 200:
+            _token["value"], _token["until"] = key, time.time() + 3600  # через час проверим заново
+            return key
     if code != 200 or not data.get("access_token"):
-        raise BillzError(f"BILLZ: вход не удался ({code}: {(res or {}).get('message')})")
+        raise BillzError(f"BILLZ: вход не удался ({code}: {(res or {}).get('message')} / {(res or {}).get('error')})")
     _token["value"] = data["access_token"]
     # обновляем заранее: за час до истечения (refresh-токен не используем — повторный вход проще и надёжнее)
     _token["until"] = time.time() + max(60, int(data.get("expires_in") or 3600) - 3600)
@@ -210,11 +226,23 @@ def diagnose(phone: str = None) -> str:
     except BillzError as e:
         return "\n".join(lines + [f"❌ 1. Вход: нет связи — {e}"])
     data = (res or {}).get("data") or {}
-    if code != 200 or not data.get("access_token"):
+    if code == 200 and data.get("access_token"):
+        _token.update(value=data["access_token"], until=time.time() + max(60, int(data.get("expires_in") or 3600) - 3600))
+        lines.append("✅ 1. Вход по секретному ключу — успешно")
+    elif _looks_like_jwt(key):
+        lines.append(f"ℹ️ 1. Вход по секретному ключу: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}")
+        c2, r2 = _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=key)
+        if c2 != 200:
+            return "\n".join(lines + [f"❌ Ключ похож на токен доступа (JWT), но и так не подходит: {c2} — "
+                                       f"{(r2 or {}).get('message')} / {(r2 or {}).get('error')}",
+                                       "Возможно, токен истёк. Нужен секретный ключ интеграции из BILLZ."])
+        _token.update(value=key, until=time.time() + 3600)
+        lines.append("✅ Ключ — это готовый токен доступа (JWT), он работает. Но такой токен со временем истекает — "
+                     "лучше поставить секретный ключ интеграции.")
+    else:
         return "\n".join(lines + [f"❌ 1. Вход: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}",
-                                   "Похоже, ключ неверный или отключён в BILLZ."])
-    _token.update(value=data["access_token"], until=time.time() + max(60, int(data.get("expires_in") or 3600) - 3600))
-    lines.append("✅ 1. Вход по ключу — успешно")
+                                   "Ключ не принят BILLZ: проверьте, что это секретный ключ интеграции, вставлен целиком, "
+                                   "без пробелов, и не отключён."])
     # 2. список клиентов
     code, res = _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=_token["value"])
     if code != 200:
