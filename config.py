@@ -3,14 +3,19 @@ import os
 
 # Токен бота и адрес мини-аппа задаются в Railway → Variables:
 #   BOT_TOKEN   — токен от @BotFather
-#   WEBAPP_URL  — адрес сервиса, например https://staff-bot-production.up.railway.app
+#   WEBAPP_URL  — адрес кабинета: https://staff-bot-production-7a47ab13.up.railway.app
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 # Отдельный бот для клиентов (необязательно). Если задан CLIENT_BOT_TOKEN в Railway:
 #   BOT_TOKEN        — бот сотрудников и руководителя (+ группы: цены, штрафы, инвестиции)
 #   CLIENT_BOT_TOKEN — бот клиентов (язык, номер, покупки и бонусы BILLZ, новости, кабинет клиента)
 # Без него всё работает в одном боте, как раньше.
 CLIENT_BOT_TOKEN = os.getenv("CLIENT_BOT_TOKEN", "").strip()
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://abdullohbe.pythonanywhere.com").strip().rstrip("/")
+# Адрес личного кабинета (мини-приложения) — для кнопок «🏠 Личный кабинет / Kabinetim» в обоих ботах.
+# Берётся из WEBAPP_URL в Railway; если там пусто или старый адрес PythonAnywhere — этот:
+WEBAPP_URL_DEFAULT = "https://staff-bot-production-7a47ab13.up.railway.app"
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip().rstrip("/")
+if not WEBAPP_URL or "pythonanywhere" in WEBAPP_URL:
+    WEBAPP_URL = WEBAPP_URL_DEFAULT
 if not WEBAPP_URL.startswith("https://"):
     WEBAPP_URL = "https://" + WEBAPP_URL.removeprefix("http://")
 
