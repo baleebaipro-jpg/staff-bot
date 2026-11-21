@@ -36,6 +36,8 @@ from datetime import date, datetime, timedelta
 import config
 import core
 
+ENABLED = getattr(config, "INVEST_ENABLED", True)
+SOON_TEXT = "💰 Раздел «Инвестиции» скоро появится ⏳"
 TERM = getattr(config, "INVEST_TERM_MONTHS", 12)
 LEVELS = getattr(config, "INVEST_LEVELS", {
     "weak": {"title": "Слабый", "emoji": "🟠", "annual": 18.0},
