@@ -468,7 +468,7 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return await client_text(update, context)
     M = invest_mod.money
     lines = []
-    if core.employee(uid):
+    if invest_mod.can_invest(uid):
         m = invest_mod.mine(uid)
         lines.append("💰 Мои инвестиции")
         if m["access"] != "approved":
@@ -476,29 +476,31 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                           "rejected": "Заявка на участие отклонена. Можно подать снова в «🏠 Личный кабинет» → «💰 Инвестиции»."}
                          .get(m["access"], "Инвестиции в товар компании — по заявке.\n"
                                            "Подайте заявку на участие в «🏠 Личный кабинет» → «💰 Инвестиции»."))
-            return await reply(update, "\n".join(lines), reply_markup=keyboard(uid))
-        if m["invested"]:
-            lines.append(f"Капитал в товаре: {M(m['invested'])}\n"
-                         f"Доля прибыли: +{M(m['accrued'])}")
-        for r in m["items"]:
-            if r["status"] == "pending":
-                lines.append(f"⏳ Заявка {M(r['amount'])} — ждёт руководителя")
-            elif r["status"] == "active":
-                lines.append(f"📈 {M(r['amount'])} · +{M(r['accrued'])} · до {r['end']} (ещё {r['days_left']} дн.)"
-                             + (" · ⏳ заявка на досрочный выход" if r["early"] else ""))
-            elif r["status"] == "rating":
-                lines.append(f"📈 {M(r['amount'])} · срок закончился, ждём оценку последнего месяца")
-            elif r["status"] == "matured":
-                lines.append(f"🎉 {M(r['amount'])} · к выплате {M(r['payout'])}")
-        if len(lines) == 1:
-            lines.append("Инвестиций пока нет.")
-        hist = invest_mod.history_public(3)
-        if hist:
-            lv = invest_mod.LEVELS
-            lines.append("\nПоследние месяцы: " + ", ".join(
-                f"{h['title'].split()[0].lower()} {lv[h['level']]['emoji']}" for h in hist))
-        lines.append(f"\nИнвестиция в товар на {invest_mod.TERM} мес. Доля прибыли зависит от итогов продаж "
-                     f"каждого месяца.\nИнвестировать — в «{BTN_CABINET}».")
+            if not core.is_admin(uid):
+                return await reply(update, "\n".join(lines), reply_markup=keyboard(uid))
+        else:
+            if m["invested"]:
+                lines.append(f"Капитал в товаре: {M(m['invested'])}\n"
+                             f"Доля прибыли: +{M(m['accrued'])}")
+            for r in m["items"]:
+                if r["status"] == "pending":
+                    lines.append(f"⏳ Заявка {M(r['amount'])} — ждёт руководителя")
+                elif r["status"] == "active":
+                    lines.append(f"📈 {M(r['amount'])} · +{M(r['accrued'])} · до {r['end']} (ещё {r['days_left']} дн.)"
+                                 + (" · ⏳ заявка на досрочный выход" if r["early"] else ""))
+                elif r["status"] == "rating":
+                    lines.append(f"📈 {M(r['amount'])} · срок закончился, ждём оценку последнего месяца")
+                elif r["status"] == "matured":
+                    lines.append(f"🎉 {M(r['amount'])} · к выплате {M(r['payout'])}")
+            if not m["items"]:
+                lines.append("Инвестиций пока нет.")
+            hist = invest_mod.history_public(3)
+            if hist:
+                lv = invest_mod.LEVELS
+                lines.append("\nПоследние месяцы: " + ", ".join(
+                    f"{h['title'].split()[0].lower()} {lv[h['level']]['emoji']}" for h in hist))
+            lines.append(f"\nИнвестиция в товар на {invest_mod.TERM} мес. Доля прибыли зависит от итогов продаж "
+                         f"каждого месяца.\nИнвестировать — в «{BTN_CABINET}».")
     if core.is_admin(uid):
         o = invest_mod.overview()
         lines.append(f"{chr(10) if lines else ''}📊 Инвестиции команды\n"

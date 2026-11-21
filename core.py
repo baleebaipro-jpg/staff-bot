@@ -171,7 +171,12 @@ def is_admin(uid: int) -> bool:
 
 def name(uid: int) -> str:
     e = config.EMPLOYEES.get(uid)
-    return e["name"] if e else str(uid)
+    if e:
+        return e["name"]
+    admins = getattr(config, "ADMIN_NAMES", {})
+    if uid in admins:
+        return admins[uid]
+    return "Руководитель" if uid in config.ADMINS else str(uid)
 
 
 WINDOW = getattr(config, "WINDOW_MINUTES", 15)

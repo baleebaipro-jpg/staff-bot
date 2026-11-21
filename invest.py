@@ -208,6 +208,11 @@ def _row(r, today: date, rated: dict) -> dict:
 # ---------- сотрудник ----------
 
 # Доступ к инвестициям — по заявке на участие (тема «access» в группе).
+# Инвестировать могут сотрудники и руководители.
+
+def can_invest(uid: int) -> bool:
+    return bool(core.employee(uid)) or core.is_admin(uid)
+
 
 def access_status(uid: int) -> str:
     """approved / pending / rejected / none. У кого уже были инвестиции — доступ есть."""
@@ -223,8 +228,8 @@ def access_status(uid: int) -> str:
 
 
 def access_request(uid: int, plan_amount: str = "", note: str = ""):
-    if not core.employee(uid):
-        return False, "Инвестиции доступны только сотрудникам."
+    if not can_invest(uid):
+        return False, "Инвестиции доступны только сотрудникам компании."
     st = access_status(uid)
     if st == "approved":
         return False, "Доступ к инвестициям у вас уже открыт."
@@ -235,7 +240,8 @@ def access_request(uid: int, plan_amount: str = "", note: str = ""):
         c.execute("INSERT OR REPLACE INTO invest_access(user_id, status, plan_amount, note, created_at) "
                   "VALUES(?, 'pending', ?, ?, ?)", (uid, plan_amount, note, core.now().strftime(core.FMT)))
         e = core.employee(uid) or {}
-        text = f"🙋 Заявка на участие в инвестициях\n👤 {core.name(uid)}" + (f" · {e['role']}" if e.get("role") else "")
+        role = e.get("role") or ("Руководитель" if core.is_admin(uid) else "")
+        text = f"🙋 Заявка на участие в инвестициях\n👤 {core.name(uid)}" + (f" · {role}" if role else "")
         if plan_amount:
             text += f"\nПланирует инвестировать: {plan_amount}"
         if note:
@@ -269,8 +275,8 @@ def access_pending() -> list:
 
 
 def request(uid: int, amount):
-    if not core.employee(uid):
-        return False, "Инвестиции доступны только сотрудникам."
+    if not can_invest(uid):
+        return False, "Инвестиции доступны только сотрудникам компании."
     if access_status(uid) != "approved":
         return False, "Сначала подайте заявку на участие — руководитель откроет доступ."
     try:
