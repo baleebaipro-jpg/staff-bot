@@ -1297,7 +1297,7 @@ const SX = {
        keep_going: "Shunday davom eting!", you_are: "Siz — {r}! 🏆", left_to: "«{r}» unvonigacha {h} soat qoldi 💪",
        goal_done: "{h} soatlik maqsadga erishildi", soon: "Bo'lim tez orada ochiladi", soon_pill: "Tez orada ⏳",
        invest_soon: "💰 «Investitsiyalar» bo'limi tez orada ochiladi ⏳", lang_btn: "🌐 Перейти на русский", photo: "Rasm yuklanmoqda…",
-       earn_title: "Daromad", earn_page: "💵 Daromadim", earn_sub: "Kompaniyada qancha ishlab topganingiz",
+       earn_title: "Foyda", earn_page: "💵 Foydam", earn_sub: "Kompaniyada olgan foydangiz",
        earn_by_month: "Oylar bo'yicha", earn_total: "butun vaqt davomida", earn_year: "shu yili", earn_empty: "Hozircha yozuvlar yo'q",
        earn_folder: "Jami: {s}", cur: "so'm"},
 };
@@ -2032,7 +2032,9 @@ function earnSheet(uid, keep) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <label class="hint" style="font-size:12.5px">с<input type="date" id="ea-from" value="${first}"></label>
       <label class="hint" style="font-size:12.5px">по<input type="date" id="ea-to" value="${today}"></label></div>
-    <input id="ea-note" maxlength="200" placeholder="Комментарий: зарплата, бонус, премия…">
+    <input id="ea-note" maxlength="200" placeholder="Комментарий: Foyda, Bonus…">
+    <div class="quick" id="ea-quick" style="margin:-4px 0 10px">${["Foyda", "Bonus", "Premiya"].map(w =>
+      `<button data-note="${w}">${w}</button>`).join("")}</div>
     <button class="btn btn-main" style="width:100%" id="ea-add">Добавить</button>
     <div style="margin-top:12px">${earnSwitch("earn-sw-a", EARN_T.ru)}
       ${(earnView === "months" ? earnMonths(x.months, "сум", EARN_T.ru) : earnRows(x.items, "сум", true)) || '<div class="empty">Записей пока нет</div>'}
@@ -2040,6 +2042,10 @@ function earnSheet(uid, keep) {
     <button class="btn btn-soft" style="width:100%;margin-top:10px" id="is-cancel">Закрыть</button>`);
   if (keep) { $("ea-amount").value = prev.a || ""; if (prev.f) $("ea-from").value = prev.f; if (prev.t) $("ea-to").value = prev.t;
               $("ea-note").value = prev.n || ""; }
+  document.querySelectorAll("#ea-quick [data-note]").forEach(b => b.onclick = () => {
+    $("ea-note").value = b.dataset.note;
+    document.querySelectorAll("#ea-quick [data-note]").forEach(x => x.classList.toggle("on", x === b));
+  });
   $("ea-amount").oninput = () => { const v = +$("ea-amount").value.replace(/\D/g, "") || 0; $("ea-amount").value = v ? v.toLocaleString("ru-RU") : ""; };
   $("is-cancel").onclick = () => { earnOpen = null; invSheetClose(); };
   $("ea-add").onclick = () => {
