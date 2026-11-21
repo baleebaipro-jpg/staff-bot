@@ -9,7 +9,7 @@ from urllib.parse import parse_qsl
 
 import os
 
-from flask import Flask, abort, jsonify, request, send_file
+from flask import Flask, abort, g, jsonify, request, send_file
 
 import config
 import core
@@ -26,21 +26,36 @@ app = Flask(__name__)
 core.init_db()
 
 
+def _signed_by(token: str, check: str, received: str) -> bool:
+    if not token:
+        return False
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    return hmac.compare_digest(hmac.new(secret, check.encode(), hashlib.sha256).hexdigest(), received)
+
+
 def telegram_user_id():
-    """Проверить подпись Telegram и вернуть ID пользователя (или None)."""
+    """Проверить подпись Telegram и вернуть ID пользователя (или None).
+    Запоминает в g.via, из какого бота открыт кабинет: "staff" (BOT_TOKEN) или "client" (CLIENT_BOT_TOKEN)."""
     init_data = (request.get_json(silent=True) or {}).get("initData", "")
     pairs = dict(parse_qsl(init_data, keep_blank_values=True))
     received = pairs.pop("hash", None)
     if not received:
         return None
     check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
-    secret = hmac.new(b"WebAppData", config.BOT_TOKEN.encode(), hashlib.sha256).digest()
-    expected = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, received):
+    if _signed_by(config.BOT_TOKEN, check, received):
+        g.via = "staff"
+    elif _signed_by(getattr(config, "CLIENT_BOT_TOKEN", ""), check, received):
+        g.via = "client"
+    else:
         return None
     if time.time() - int(pairs.get("auth_date", 0)) > 86400:
         return None
     return json.loads(pairs.get("user", "{}")).get("id")
+
+
+def as_client(uid) -> bool:
+    """Показывать ли кабинет клиента: открыт из бота клиентов — всегда да; иначе — если это не сотрудник."""
+    return getattr(g, "via", "staff") == "client" or core.is_client(uid)
 
 
 def need_user(admin=False, staff=False):
@@ -51,6 +66,8 @@ def need_user(admin=False, staff=False):
             uid = telegram_user_id()
             if uid is None:
                 return jsonify(error="Откройте кабинет через Telegram-бота."), 401
+            if (admin or staff) and g.via == "client":  # служебные действия — только из бота сотрудников
+                return jsonify(error="Откройте кабинет через бота сотрудников."), 403
             if admin and not core.is_admin(uid):
                 return jsonify(error="Только для руководителя."), 403
             if staff and not (core.employee(uid) or core.is_admin(uid)):
@@ -119,7 +136,7 @@ def api_avatar(uid, data):
     os.replace(tmp, os.path.join(AVATAR_DIR, f"{uid}.jpg"))
     # отметка, что фото своё — бот не будет заменять его фото из Telegram
     open(os.path.join(AVATAR_DIR, f"{uid}.custom"), "w").close()
-    if not core.is_client(uid):
+    if not as_client(uid):
         return jsonify(ok=True, msg=st.s(L, "photo_updated"))
     lang = i18n.lang_of((core.get_client(uid) or {}).get("lang"))
     return jsonify(ok=True, msg={"uz": "Rasm yangilandi 📸", "ru": "Фото обновлено 📸", "en": "Photo updated 📸"}[lang])
@@ -137,7 +154,7 @@ def _ranks(uid):
 @need_user()
 def api_client_lang(uid, data):
     """Клиент меняет язык (uz / ru / en) — панель и бот переключаются сразу."""
-    if not core.is_client(uid):
+    if not as_client(uid):
         return jsonify(ok=False, msg="—")
     lang = i18n.lang_of(str(data.get("lang", "")))
     core.update_client(uid, lang=lang)
@@ -161,7 +178,9 @@ def api_staff_lang(uid, data):
 @app.post("/api/me")
 @need_user()
 def api_me(uid, data):
-    res = {"is_admin": core.is_admin(uid), "is_employee": bool(core.employee(uid)), "goal": config.GOAL_HOURS,
+    staff_view = g.via == "staff"  # из бота клиентов — всегда кабинет клиента, даже у сотрудника
+    res = {"is_admin": staff_view and core.is_admin(uid), "is_employee": staff_view and bool(core.employee(uid)),
+           "goal": config.GOAL_HOURS,
            "ranks": _ranks(uid),
            "today_wd": core.now().weekday()}
     if res["is_employee"]:
