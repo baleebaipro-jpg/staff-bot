@@ -1326,6 +1326,7 @@ async function load() {
   try {
     data = await api("/api/me");
     $("loading").classList.add("hidden");
+    $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); return; }
     if (data.is_employee) renderMe();
     if (data.invest) renderInvestMe();
@@ -1420,12 +1421,15 @@ $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOO
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
 function investSoon() {
+  // вызывается при каждом автообновлении кабинета — повторный вызов ничего не меняет
   ["go-inv", "go-inv-admin"].forEach(id => {
     const el = $(id);
+    if (!el) return;
     el.classList.add("soon");
-    el.querySelector(".f-sub").textContent = "Раздел скоро появится";
+    const sub = el.querySelector(".f-sub"); if (sub) sub.textContent = "Раздел скоро появится";
     const badge = el.querySelector("#inv-admin-badge"); if (badge) badge.innerHTML = "";
-    el.querySelector(".f-arrow").outerHTML = `<span class="soon-pill" style="margin-left:auto">Скоро ⏳</span>`;
+    const arrow = el.querySelector(".f-arrow");
+    if (arrow) arrow.outerHTML = `<span class="soon-pill" style="margin-left:auto">Скоро ⏳</span>`;
   });
   if (view === "invest" || view === "invest-admin") view = data.is_employee ? "me" : "team";
 }
