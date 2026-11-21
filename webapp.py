@@ -678,6 +678,23 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- КЛИЕНТЫ (отдельная страница руководителя: список клиентов и новости) -->
+  <div id="view-clients" class="hidden">
+    <div class="page-title">💎 Клиенты</div>
+    <div class="page-sub">Список клиентов, статусы и новости для клиентов</div>
+    <div class="card">
+      <div class="head"><h3>💎 Клиенты</h3><span class="hint" style="font-size:13px" id="cl-total"></span></div>
+      <input id="cl-search" placeholder="Поиск: имя или номер">
+      <div id="cl-list"></div>
+    </div>
+    <div class="card">
+      <div class="head"><h3>📰 Новости для клиентов</h3><span class="hint" style="font-size:13px" id="cl-count"></span></div>
+      <textarea id="n-text" rows="3" placeholder="Текст новости…" maxlength="2000"></textarea>
+      <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
+      <div id="n-list" style="margin-top:8px"></div>
+    </div>
+  </div>
+
   <!-- ИНВЕСТИЦИИ (отдельная страница руководителя) -->
   <div id="view-invest-admin" class="hidden">
     <div class="page-title">💰 Инвестиции сотрудников</div>
@@ -718,17 +735,11 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
-    <div class="card">
-      <div class="head"><h3>💎 Клиенты</h3><span class="hint" style="font-size:13px" id="cl-total"></span></div>
-      <input id="cl-search" placeholder="Поиск: имя или номер">
-      <div id="cl-list"></div>
-    </div>
-    <div class="card">
-      <div class="head"><h3>📰 Новости для клиентов</h3><span class="hint" style="font-size:13px" id="cl-count"></span></div>
-      <textarea id="n-text" rows="3" placeholder="Текст новости…" maxlength="2000"></textarea>
-      <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
-      <div id="n-list" style="margin-top:8px"></div>
-    </div>
+    <button class="card folder" id="go-clients">
+      <div class="f-ic" style="background:rgba(91,140,255,.18)">💎</div>
+      <div style="min-width:0"><b>Клиенты</b><div class="f-sub" id="clients-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder hidden" id="go-inv-own">
       <div class="f-ic">💼</div>
       <div style="min-width:0"><b>Мои инвестиции</b><div class="f-sub" id="inv-folder-sub-own"></div></div>
@@ -879,10 +890,10 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team"};  // страница → куда ведёт «назад»
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1403,6 +1414,8 @@ $("cl-search").oninput = () => renderClientsAdmin();
 
 function renderNewsAdmin() {
   $("cl-count").textContent = `клиентов: ${data.clients.total} (с номером: ${data.clients.with_phone})`;
+  $("clients-folder-sub").textContent = `${data.clients.total} ${plural(data.clients.total, "клиент", "клиента", "клиентов")}` +
+    ` · с номером: ${data.clients.with_phone} · новостей: ${data.news.length}`;
   $("n-list").innerHTML = newsHtml(data.news, true);
   document.querySelectorAll("[data-delnews]").forEach(b => b.onclick = () =>
     tg.showConfirm("Удалить новость?", ok => ok && action("/api/delete_news", {id: +b.dataset.delnews})));
@@ -1418,6 +1431,7 @@ $("all-btn").onclick = () => show("history");
 const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
 $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
+$("go-clients").onclick = () => show("clients");
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
 function investSoon() {
