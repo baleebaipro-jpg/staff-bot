@@ -174,7 +174,8 @@ def api_me(uid, data):
         res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
     res["is_client"] = not res["is_admin"] and not res["is_employee"]
     if res["is_client"]:
-        billz = erp.sync_client(uid) if erp.enabled() else {}  # покупки и бонусы (кэш 10 мин), статус по сумме
+        # покупки и бонусы из BILLZ: при открытии кабинета и по «🔄» — свежие (fresh), при автообновлении — из кэша
+        billz = erp.sync_client(uid, force=bool(data.get("fresh"))) if erp.enabled() else {}
         cl = core.get_client(uid) or {}
         tier = core.tier_of(cl)
         birth = cl.get("birth_date")
@@ -958,6 +959,8 @@ PAGE = r"""<!doctype html>
       <div class="stat s3 soon-stat" id="cl-st-bonus"><div class="ic">🎁</div><b id="cl-bonus">—</b><span data-t="bonuses"></span><em data-t="soon"></em></div>
     </div>
     <div class="hint hidden" style="font-size:12.5px;text-align:center;margin:-6px 0 12px" id="cl-billz-note"></div>
+    <div style="text-align:center;margin:-6px 0 12px" class="hidden" id="cl-refresh-row">
+      <button class="link" id="cl-refresh" style="font-size:13px"></button></div>
     <div style="display:none">
     </div>
     <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b data-t="invest"></b>
@@ -1856,9 +1859,9 @@ $("po-send").onclick = () => {
 };
 poCount();
 
-async function load() {
+async function load(fresh = false) {
   try {
-    data = await api("/api/me");
+    data = await api("/api/me", fresh ? {fresh: true} : {});
     $("loading").classList.add("hidden");
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); return; }
@@ -1892,21 +1895,21 @@ const CL_T = {
        finish_reg: "📱 Ro'yxatdan o'tishni bot bilan chatda yakunlang — shunda xaridlaringiz va bonuslaringizni topamiz.",
        birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…",
        billz_not_found: "Raqamingiz hali do'kon bazasida yo'q — birinchi xariddan keyin bu yerda xaridlar va bonuslar paydo bo'ladi",
-       billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi"},
+       billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi", refresh: "🔄 Yangilash", refreshing: "⏳ Yangilanmoqda…"},
   ru: {purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
        invest_soon: "Раздел скоро появится", soon_pill: "Скоро ⏳", news: "📰 Новости",
        no_news: "Новостей пока нет", no_phone: "номер не указан", client: "Клиент",
        finish_reg: "📱 Завершите регистрацию в чате с ботом — так мы найдём ваши покупки и бонусы.",
        birth: "🎂 День рождения", photo: "Загружаю фото…",
        billz_not_found: "Вашего номера пока нет в базе магазина — после первой покупки здесь появятся покупки и бонусы",
-       billz_error: "Сейчас не удалось получить данные, обновится позже"},
+       billz_error: "Сейчас не удалось получить данные, обновится позже", refresh: "🔄 Обновить", refreshing: "⏳ Обновляю…"},
   en: {purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
        invest_soon: "This section is coming soon", soon_pill: "Soon ⏳", news: "📰 News",
        no_news: "No news yet", no_phone: "no phone number", client: "Client",
        finish_reg: "📱 Please finish registration in the bot chat so we can find your purchases and bonuses.",
        birth: "🎂 Birthday", photo: "Uploading photo…",
        billz_not_found: "Your number isn't in the store database yet — purchases and bonuses will appear after your first purchase",
-       billz_error: "Couldn't get the data right now, it will update later"},
+       billz_error: "Couldn't get the data right now, it will update later", refresh: "🔄 Refresh", refreshing: "⏳ Refreshing…"},
 };
 const ct = k => (CL_T[(data && data.client && data.client.lang) || "uz"] || CL_T.uz)[k];
 function renderClient() {
@@ -1933,6 +1936,8 @@ function renderClient() {
   $("cl-bonus").textContent = bz.enabled && bz.linked ? money(bz.balance) : "—";
   const note = !bz.enabled ? "" : bz.error && !bz.linked ? ct("billz_error") : !bz.linked ? ct("billz_not_found") : "";
   $("cl-billz-note").textContent = note; $("cl-billz-note").classList.toggle("hidden", !note);
+  $("cl-refresh-row").classList.toggle("hidden", !bz.enabled);
+  $("cl-refresh").textContent = ct("refresh") + (bz.synced ? " · " + bz.synced.slice(11, 16) : "");
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
 }
 function renderClientsAdmin() {
@@ -2010,6 +2015,10 @@ $("ava-file").onchange = async (ev) => {
     await action("/api/avatar", {image: await squareJpeg(file)});
   } catch (e) { toast(e.message); }
 };
+$("cl-refresh").onclick = async () => {
+  $("cl-refresh").textContent = ct("refreshing");
+  await load(true);
+};
 $("cl-file").onchange = async (ev) => {
   const file = ev.target.files[0];
   ev.target.value = "";
@@ -2035,7 +2044,7 @@ $("f-add").onclick = () => {
 };
 
 if (!tg.initData) $("loading").textContent = "Откройте кабинет через кнопку в Telegram-боте.";
-else { load(); setInterval(load, 30000); }
+else { load(true); setInterval(() => load(), 30000); }  // при открытии — свежие данные из BILLZ
 </script>
 </body>
 </html>
