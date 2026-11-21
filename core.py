@@ -315,6 +315,10 @@ def init_db():
             c.execute("UPDATE tasks SET status='done' WHERE done_at IS NOT NULL")
         if "due_date" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
+        ecols = {r[1] for r in c.execute("PRAGMA table_info(earnings)")}
+        for col in ("date_from", "date_to"):
+            if col not in ecols:
+                c.execute(f"ALTER TABLE earnings ADD COLUMN {col} TEXT")
         if "template_id" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN template_id INTEGER")
         ccols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
@@ -607,7 +611,25 @@ def _sum(n) -> str:
     return f"{int(n):,}".replace(",", " ") + " сум"
 
 
-def add_earning(uid: int, amount, month: str = "", note: str = ""):
+MONTHS_RU_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+                 "ноября", "декабря"]
+
+
+def _period_title(d1: str, d2: str, lang=None) -> str:
+    """'2026-11-10','2026-11-20' → «10–20 ноября 2026» (uz: «10–20 noyabr 2026»)."""
+    a, b = datetime.strptime(d1, "%Y-%m-%d"), datetime.strptime(d2, "%Y-%m-%d")
+    names = MONTHS_UZ if st.lang_of(lang) == "uz" else MONTHS_RU_GEN
+    if a == b:
+        return f"{a.day} {names[a.month - 1]} {a.year}"
+    if (a.year, a.month) == (b.year, b.month):
+        return f"{a.day}–{b.day} {names[b.month - 1]} {b.year}"
+    if a.year == b.year:
+        return f"{a.day} {names[a.month - 1]} – {b.day} {names[b.month - 1]} {b.year}"
+    return f"{a.day} {names[a.month - 1]} {a.year} – {b.day} {names[b.month - 1]} {b.year}"
+
+
+def add_earning(uid: int, amount, month: str = "", note: str = "", date_from: str = "", date_to: str = ""):
+    """Заработок за период «с … по …» (date_from, date_to: YYYY-MM-DD) или, по-старому, за месяц (YYYY-MM)."""
     if not employee(uid):
         return False, "Сотрудник не найден."
     try:
@@ -616,15 +638,29 @@ def add_earning(uid: int, amount, month: str = "", note: str = ""):
         return False, "Введите сумму числом."
     if amount <= 0:
         return False, "Сумма должна быть больше нуля."
-    month = (month or now().strftime("%Y-%m"))[:7]
-    try:
-        datetime.strptime(month, "%Y-%m")
-    except ValueError:
-        return False, "Неверный месяц."
+    d1 = d2 = None
+    if date_from or date_to:
+        try:
+            d1 = datetime.strptime((date_from or date_to)[:10], "%Y-%m-%d")
+            d2 = datetime.strptime((date_to or date_from)[:10], "%Y-%m-%d")
+        except ValueError:
+            return False, "Неверная дата."
+        if d1 > d2:
+            return False, "Дата «с» позже даты «по»."
+        month = d2.strftime("%Y-%m")
+    else:
+        month = (month or now().strftime("%Y-%m"))[:7]
+        try:
+            datetime.strptime(month, "%Y-%m")
+        except ValueError:
+            return False, "Неверный месяц."
     with db() as c:
-        c.execute("INSERT INTO earnings(user_id, amount, month, note, created_at) VALUES(?, ?, ?, ?, ?)",
-                  (uid, amount, month, (note or "").strip()[:200], now().strftime(FMT)))
-    return True, f"💵 {name(uid)}: +{_sum(amount)} · {_month_title(month)}"
+        c.execute("INSERT INTO earnings(user_id, amount, month, note, created_at, date_from, date_to) "
+                  "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                  (uid, amount, month, (note or "").strip()[:200], now().strftime(FMT),
+                   d1 and d1.strftime("%Y-%m-%d"), d2 and d2.strftime("%Y-%m-%d")))
+    when = _period_title(d1.strftime("%Y-%m-%d"), d2.strftime("%Y-%m-%d")) if d1 else _month_title(month)
+    return True, f"💵 {name(uid)}: +{_sum(amount)} · {when}"
 
 
 def delete_earning(eid: int):
@@ -640,9 +676,11 @@ def earnings_of(uid: int, lang: str = None) -> dict:
     """Заработок сотрудника: всего за всё время, за этот год, по месяцам (новые сверху)."""
     year = now().strftime("%Y")
     with db() as c:
-        rows = c.execute("SELECT * FROM earnings WHERE user_id=? ORDER BY month DESC, id DESC", (uid,)).fetchall()
-    items = [{"id": r["id"], "month": r["month"], "title": _month_title(r["month"], lang), "amount": r["amount"],
-              "note": r["note"] or ""} for r in rows]
+        rows = c.execute("SELECT * FROM earnings WHERE user_id=? "
+                         "ORDER BY COALESCE(date_to, month || '-31') DESC, id DESC", (uid,)).fetchall()
+    items = [{"id": r["id"], "month": r["month"],
+              "title": _period_title(r["date_from"], r["date_to"], lang) if r["date_from"] else _month_title(r["month"], lang),
+              "amount": r["amount"], "note": r["note"] or ""} for r in rows]
     return {"total": sum(i["amount"] for i in items),
             "year": sum(i["amount"] for i in items if i["month"].startswith(year)),
             "items": items}

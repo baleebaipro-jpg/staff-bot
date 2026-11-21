@@ -296,7 +296,8 @@ def api_earning(uid, data):
         ok, msg = core.delete_earning(int(data.get("id") or 0))
     else:
         ok, msg = core.add_earning(int(data.get("user_id") or 0), data.get("amount", ""), str(data.get("month") or ""),
-                                   str(data.get("note") or ""))
+                                   str(data.get("note") or ""), str(data.get("date_from") or ""),
+                                   str(data.get("date_to") or ""))
     return jsonify(ok=ok, msg=msg)
 
 
@@ -1995,24 +1996,32 @@ let earnOpen = null;
 function earnSheet(uid, keep) {
   const x = data.earnings_team.find(e => e.id === uid); if (!x) return;
   earnOpen = uid;
-  const prev = keep ? {a: $("ea-amount") && $("ea-amount").value, m: $("ea-month") && $("ea-month").value, n: $("ea-note") && $("ea-note").value} : {};
-  const ym = new Date(); const cur = ym.getFullYear() + "-" + String(ym.getMonth() + 1).padStart(2, "0");
+  const prev = keep ? {a: $("ea-amount") && $("ea-amount").value, f: $("ea-from") && $("ea-from").value,
+                       t: $("ea-to") && $("ea-to").value, n: $("ea-note") && $("ea-note").value} : {};
+  const d = new Date(), p2 = n => String(n).padStart(2, "0");
+  const today = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, first = today.slice(0, 8) + "01";
   invSheet(`<h3>💵 ${esc(x.name)}</h3>
     <div class="inv-tiles" style="grid-template-columns:1fr 1fr"><div><b style="color:var(--green)">${money0(x.total, "сум")}</b><span>за всё время</span></div>
       <div><b>${money0(x.year, "сум")}</b><span>в этом году</span></div></div>
-    <div class="add-row" style="margin-bottom:10px"><input id="ea-amount" inputmode="numeric" placeholder="Сумма, сум" maxlength="15">
-      <input type="month" id="ea-month" value="${cur}" style="max-width:150px"></div>
+    <input id="ea-amount" inputmode="numeric" placeholder="Сумма, сум" maxlength="15">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <label class="hint" style="font-size:12.5px">с<input type="date" id="ea-from" value="${first}"></label>
+      <label class="hint" style="font-size:12.5px">по<input type="date" id="ea-to" value="${today}"></label></div>
     <input id="ea-note" maxlength="200" placeholder="Комментарий: зарплата, бонус, премия…">
     <button class="btn btn-main" style="width:100%" id="ea-add">Добавить</button>
     <div style="margin-top:10px">${earnRows(x.items, "сум", true) || '<div class="empty">Записей пока нет</div>'}</div>
     <button class="btn btn-soft" style="width:100%;margin-top:10px" id="is-cancel">Закрыть</button>`);
-  if (keep) { $("ea-amount").value = prev.a || ""; if (prev.m) $("ea-month").value = prev.m; $("ea-note").value = prev.n || ""; }
+  if (keep) { $("ea-amount").value = prev.a || ""; if (prev.f) $("ea-from").value = prev.f; if (prev.t) $("ea-to").value = prev.t;
+              $("ea-note").value = prev.n || ""; }
   $("ea-amount").oninput = () => { const v = +$("ea-amount").value.replace(/\D/g, "") || 0; $("ea-amount").value = v ? v.toLocaleString("ru-RU") : ""; };
   $("is-cancel").onclick = () => { earnOpen = null; invSheetClose(); };
   $("ea-add").onclick = () => {
     const amount = $("ea-amount").value.replace(/\D/g, "");
     if (!amount) return toast("Введите сумму");
-    action("/api/earning", {user_id: uid, amount, month: $("ea-month").value, note: $("ea-note").value.trim()})
+    const date_from = $("ea-from").value, date_to = $("ea-to").value;
+    if (!date_from || !date_to) return toast("Выберите период: с … по …");
+    if (date_from > date_to) return toast("Дата «с» позже даты «по»");
+    action("/api/earning", {user_id: uid, amount, date_from, date_to, note: $("ea-note").value.trim()})
       .then(() => { $("ea-amount").value = ""; $("ea-note").value = ""; earnSheet(uid, true); });
   };
   document.querySelectorAll("#inv-sheet [data-delearn]").forEach(b => b.onclick = () =>
