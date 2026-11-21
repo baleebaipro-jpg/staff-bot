@@ -188,6 +188,7 @@ def api_me(uid, data):
         res["profile"]["ava_v"] = ava_version(uid)
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
+        res["earnings"] = core.earnings_of(uid, core.staff_lang(uid))
     res["invest_enabled"] = invest.ENABLED
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
@@ -212,6 +213,7 @@ def api_me(uid, data):
                              "history": invest.history_public()}
     if res["is_admin"]:
         res["projects"] = projects.overview(uid)
+        res["earnings_team"] = core.earnings_team()
         res["posting"] = {"audience": posts.audience_info(), "history": posts.history()}
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
@@ -284,6 +286,18 @@ def api_add_task(uid, data):
     for t in targets:
         core.add_task(t, title)
     return jsonify(ok=True, msg="Задача поставлена: " + ", ".join(core.name(t) for t in targets))
+
+
+@app.post("/api/earning")
+@need_user(admin=True)
+def api_earning(uid, data):
+    """Заработок сотрудника: добавить (action=add) или удалить (action=delete) запись."""
+    if data.get("action") == "delete":
+        ok, msg = core.delete_earning(int(data.get("id") or 0))
+    else:
+        ok, msg = core.add_earning(int(data.get("user_id") or 0), data.get("amount", ""), str(data.get("month") or ""),
+                                   str(data.get("note") or ""))
+    return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/stop_recurring")
@@ -821,6 +835,11 @@ PAGE = r"""<!doctype html>
       <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span data-sx="cur_rank"></span></div>
     </div>
 
+    <button class="card folder" id="go-earn">
+      <div class="f-ic" style="background:rgba(52,211,153,.16)">💵</div>
+      <div style="min-width:0"><b data-sx="earn_title"></b><div class="f-sub" id="earn-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder" id="go-inv">
       <div class="f-ic">💰</div>
       <div style="min-width:0"><b data-sx="invest">Инвестиции</b><div class="f-sub" id="inv-folder-sub"></div></div>
@@ -901,6 +920,21 @@ PAGE = r"""<!doctype html>
         <button class="btn btn-main" id="np-add">＋</button></div>
       <div id="proj-list" style="margin-top:6px"></div>
     </div>
+  </div>
+
+  <!-- ЗАРАБОТОК (сотрудник видит свой) -->
+  <div id="view-earn" class="hidden">
+    <div class="page-title" data-sx="earn_page"></div>
+    <div class="page-sub" data-sx="earn_sub"></div>
+    <div class="inv-tiles" style="grid-template-columns:1fr 1fr" id="earn-tiles"></div>
+    <div class="card"><h3 data-sx="earn_by_month"></h3><div id="earn-list"></div></div>
+  </div>
+
+  <!-- ЗАРАБОТОК СОТРУДНИКОВ (руководитель вводит вручную) -->
+  <div id="view-earn-admin" class="hidden">
+    <div class="page-title">💵 Заработок сотрудников</div>
+    <div class="page-sub">Сколько каждый заработал за всё время в компании. Пока вводится вручную — нажмите на сотрудника.</div>
+    <div class="card"><div id="earn-team"></div></div>
   </div>
 
   <!-- ПОСТИНГ -->
@@ -1029,6 +1063,11 @@ PAGE = r"""<!doctype html>
     <button class="card folder" id="go-staff">
       <div class="f-ic" style="background:rgba(124,92,255,.2)">👥</div>
       <div style="min-width:0"><b>Команда<span id="staff-badge"></span></b><div class="f-sub" id="staff-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
+    <button class="card folder" id="go-earn-admin">
+      <div class="f-ic" style="background:rgba(52,211,153,.16)">💵</div>
+      <div style="min-width:0"><b>Заработок сотрудников</b><div class="f-sub" id="earn-admin-sub"></div></div>
       <div class="f-arrow">›</div>
     </button>
     <button class="card folder" id="go-posting">
@@ -1213,10 +1252,10 @@ async function action(path, body) {
 
 /* ---------- экраны ---------- */
 const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team",
-                  projects: "team", project: "projects", posting: "team"};  // страница → куда ведёт «назад»
+                  projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1238,7 +1277,10 @@ const SX = {
        no_tasks: "Задач нет 🎉", no_visits: "Посещений пока нет", to_rank: "до звания «{r}»",
        keep_going: "Продолжайте в том же духе!", you_are: "Вы — {r}! 🏆", left_to: "До звания «{r}» осталось {h} ч 💪",
        goal_done: "Цель {h} часов достигнута", soon: "Раздел скоро появится", soon_pill: "Скоро ⏳",
-       invest_soon: "💰 Раздел «Инвестиции» скоро появится ⏳", lang_btn: "🌐 O'zbekchaga o'tish", photo: "Загружаю фото…"},
+       invest_soon: "💰 Раздел «Инвестиции» скоро появится ⏳", lang_btn: "🌐 O'zbekchaga o'tish", photo: "Загружаю фото…",
+       earn_title: "Заработок", earn_page: "💵 Мой заработок", earn_sub: "Сколько вы заработали в компании",
+       earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
+       earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
        my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
@@ -1251,7 +1293,10 @@ const SX = {
        no_tasks: "Vazifa yo'q 🎉", no_visits: "Hozircha tashriflar yo'q", to_rank: "«{r}» unvonigacha",
        keep_going: "Shunday davom eting!", you_are: "Siz — {r}! 🏆", left_to: "«{r}» unvonigacha {h} soat qoldi 💪",
        goal_done: "{h} soatlik maqsadga erishildi", soon: "Bo'lim tez orada ochiladi", soon_pill: "Tez orada ⏳",
-       invest_soon: "💰 «Investitsiyalar» bo'limi tez orada ochiladi ⏳", lang_btn: "🌐 Перейти на русский", photo: "Rasm yuklanmoqda…"},
+       invest_soon: "💰 «Investitsiyalar» bo'limi tez orada ochiladi ⏳", lang_btn: "🌐 Перейти на русский", photo: "Rasm yuklanmoqda…",
+       earn_title: "Daromad", earn_page: "💵 Daromadim", earn_sub: "Kompaniyada qancha ishlab topganingiz",
+       earn_by_month: "Oylar bo'yicha", earn_total: "butun vaqt davomida", earn_year: "shu yili", earn_empty: "Hozircha yozuvlar yo'q",
+       earn_folder: "Jami: {s}", cur: "so'm"},
 };
 const meLang = () => (data && data.profile && data.profile.lang === "uz") ? "uz" : "ru";
 const sx = (k, v = {}) => (SX[meLang()][k] || SX.ru[k] || k).replace(/\{(\w+)\}/g, (_, n) => v[n] ?? "");
@@ -1921,20 +1966,75 @@ $("po-send").onclick = () => {
 };
 poCount();
 
+/* ---------- заработок ---------- */
+const money0 = (n, cur) => Math.round(n || 0).toLocaleString("ru-RU") + " " + cur;
+function earnRows(items, cur, admin) {
+  return items.length ? items.map(i => `<div class="pen"><div class="tt"><b>${esc(i.title)}</b>${i.note ? `<div class="hint" style="font-size:12.5px">${esc(i.note)}</div>` : ""}</div>
+      <b style="color:var(--green);white-space:nowrap">+${money0(i.amount, cur)}</b>
+      ${admin ? `<button class="btn btn-soft btn-sm" data-delearn="${i.id}">✕</button>` : ""}</div>`).join("") : "";
+}
+function renderEarn() {
+  const e = data.earnings, cur = sx("cur");
+  $("earn-folder-sub").textContent = sx("earn_folder", {s: money0(e.total, cur)});
+  $("earn-tiles").innerHTML = `<div><b style="color:var(--green)">${money0(e.total, cur)}</b><span>${sx("earn_total")}</span></div>
+    <div><b>${money0(e.year, cur)}</b><span>${sx("earn_year")}</span></div>`;
+  $("earn-list").innerHTML = earnRows(e.items, cur, false) || `<div class="empty">${sx("earn_empty")}</div>`;
+}
+function renderEarnAdmin() {
+  const t = data.earnings_team, total = t.reduce((a, x) => a + x.total, 0);
+  $("earn-admin-sub").textContent = `всего выплачено: ${money0(total, "сум")}`;
+  $("earn-team").innerHTML = t.map(x => `<div class="prow" data-earnemp="${x.id}">
+      <div class="f-ic" style="background:rgba(52,211,153,.14)">💵</div>
+      <div style="flex:1;min-width:0"><b>${esc(x.name)}</b><div class="pmeta"><span>записей: ${x.items.length}</span>
+        ${x.items.length ? `<span>посл.: ${esc(x.items[0].title)}</span>` : ""}</div></div>
+      <b style="color:var(--green);white-space:nowrap">${money0(x.total, "сум")}</b></div>`).join("");
+  document.querySelectorAll("[data-earnemp]").forEach(r => r.onclick = () => earnSheet(+r.dataset.earnemp));
+  if (earnOpen && !$("inv-sheet-bg").classList.contains("hidden")) earnSheet(earnOpen, true);
+}
+let earnOpen = null;
+function earnSheet(uid, keep) {
+  const x = data.earnings_team.find(e => e.id === uid); if (!x) return;
+  earnOpen = uid;
+  const prev = keep ? {a: $("ea-amount") && $("ea-amount").value, m: $("ea-month") && $("ea-month").value, n: $("ea-note") && $("ea-note").value} : {};
+  const ym = new Date(); const cur = ym.getFullYear() + "-" + String(ym.getMonth() + 1).padStart(2, "0");
+  invSheet(`<h3>💵 ${esc(x.name)}</h3>
+    <div class="inv-tiles" style="grid-template-columns:1fr 1fr"><div><b style="color:var(--green)">${money0(x.total, "сум")}</b><span>за всё время</span></div>
+      <div><b>${money0(x.year, "сум")}</b><span>в этом году</span></div></div>
+    <div class="add-row" style="margin-bottom:10px"><input id="ea-amount" inputmode="numeric" placeholder="Сумма, сум" maxlength="15">
+      <input type="month" id="ea-month" value="${cur}" style="max-width:150px"></div>
+    <input id="ea-note" maxlength="200" placeholder="Комментарий: зарплата, бонус, премия…">
+    <button class="btn btn-main" style="width:100%" id="ea-add">Добавить</button>
+    <div style="margin-top:10px">${earnRows(x.items, "сум", true) || '<div class="empty">Записей пока нет</div>'}</div>
+    <button class="btn btn-soft" style="width:100%;margin-top:10px" id="is-cancel">Закрыть</button>`);
+  if (keep) { $("ea-amount").value = prev.a || ""; if (prev.m) $("ea-month").value = prev.m; $("ea-note").value = prev.n || ""; }
+  $("ea-amount").oninput = () => { const v = +$("ea-amount").value.replace(/\D/g, "") || 0; $("ea-amount").value = v ? v.toLocaleString("ru-RU") : ""; };
+  $("is-cancel").onclick = () => { earnOpen = null; invSheetClose(); };
+  $("ea-add").onclick = () => {
+    const amount = $("ea-amount").value.replace(/\D/g, "");
+    if (!amount) return toast("Введите сумму");
+    action("/api/earning", {user_id: uid, amount, month: $("ea-month").value, note: $("ea-note").value.trim()})
+      .then(() => { $("ea-amount").value = ""; $("ea-note").value = ""; earnSheet(uid, true); });
+  };
+  document.querySelectorAll("#inv-sheet [data-delearn]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Удалить запись?", ok => ok && action("/api/earning", {action: "delete", id: +b.dataset.delearn})
+      .then(() => earnSheet(uid, true))));
+}
+
 async function load(fresh = false) {
   try {
     data = await api("/api/me", fresh ? {fresh: true} : {});
     $("loading").classList.add("hidden");
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); return; }
-    if (data.is_employee) renderMe();
+    if (data.is_employee) { renderMe(); renderEarn(); }
     if (data.invest) renderInvestMe();
     // руководитель без кабинета сотрудника открывает свои инвестиции с вкладки «Команда»
     $("go-inv-own").classList.toggle("hidden", !(data.invest_enabled && data.is_admin && !data.is_employee));
     if (!data.invest_enabled) investSoon();
     SUBPAGES.invest = data.is_employee ? "me" : "team";
     if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin();
-                         if (data.projects) renderProjects(); if (data.posting) renderPosting(); }
+                         if (data.projects) renderProjects(); if (data.posting) renderPosting();
+                         if (data.earnings_team) renderEarnAdmin(); }
     if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
@@ -2051,6 +2151,8 @@ $("go-clients").onclick = () => show("clients");
 $("go-staff").onclick = () => show("staff");
 $("go-projects").onclick = () => show("projects");
 $("go-posting").onclick = () => show("posting");
+$("go-earn").onclick = () => show("earn");
+$("go-earn-admin").onclick = () => show("earn-admin");
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
 function investSoon() {
