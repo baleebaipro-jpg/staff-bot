@@ -57,11 +57,13 @@ ADMINS = [
 ]
 # Постинг (кабинет → 📣 Постинг): группы и каналы, куда можно отправлять посты.
 # Бот должен быть в них администратором. thread_id — тема группы (или None).
+# lang — на каком языке пост уходит в эту группу: "uz", "ru" или "en".
+# (Клиенты получают пост на языке, который выбрали в боте, сотрудники — на русском.)
 POST_CHATS = [
-    {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None},
-    {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None},
-    {"title": "Xuping (Bronza) OPTOM", "chat_id": -1001214388881, "thread_id": None},
-    {"title": "Xuping Uzbekistan", "chat_id": -1002645398648, "thread_id": None},
+    {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None, "lang": "uz"},
+    {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None, "lang": "uz"},
+    {"title": "Xuping (Bronza) OPTOM", "chat_id": -1001214388881, "thread_id": None, "lang": "uz"},
+    {"title": "Xuping Uzbekistan", "chat_id": -1002645398648, "thread_id": None, "lang": "uz"},
 ]
 
 # Личные проекты руководителя (кабинет → 📁 Проекты): во сколько присылать

@@ -280,6 +280,10 @@ def init_db():
             c.execute("ALTER TABLE outbox ADD COLUMN thread_id INTEGER")
         if "photo" not in ocols:
             c.execute("ALTER TABLE outbox ADD COLUMN photo TEXT")
+        if "texts" not in {r[1] for r in c.execute("PRAGMA table_info(news)")}:
+            c.execute("ALTER TABLE news ADD COLUMN texts TEXT")
+        if "texts" not in {r[1] for r in c.execute("PRAGMA table_info(posts)")}:
+            c.execute("ALTER TABLE posts ADD COLUMN texts TEXT")
         if "post_id" not in ocols:
             c.execute("ALTER TABLE outbox ADD COLUMN post_id INTEGER")
         if "failed" not in ocols:
@@ -915,16 +919,32 @@ def clients_stats() -> dict:
 
 # ---------- новости для клиентов ----------
 
-def add_news(text: str) -> int:
+def add_news(text: str = "", texts: dict = None) -> int:
+    """Новость для клиентов. texts — {'uz': ..., 'ru': ..., 'en': ...}: каждый клиент видит свой язык."""
+    import json
+    import i18n
+    texts = {k: v[:2000] for k, v in i18n.clean_texts(texts).items()}
+    if not texts and text.strip():
+        texts = {i18n.DEFAULT: text.strip()[:2000]}
+    main = i18n.pick(texts, "ru")
     with db() as c:
-        return c.execute("INSERT INTO news(text, created_at) VALUES(?, ?)",
-                         (text.strip()[:2000], now().strftime(FMT))).lastrowid
+        return c.execute("INSERT INTO news(text, texts, created_at) VALUES(?, ?, ?)",
+                         (main, json.dumps(texts, ensure_ascii=False), now().strftime(FMT))).lastrowid
 
 
-def news_list(limit: int = 10) -> list:
+def news_list(limit: int = 10, lang: str = None) -> list:
+    """lang — язык клиента (текст на его языке); без lang — для руководителя (по-русски, если есть)."""
+    import json
+    import i18n
     with db() as c:
         rows = c.execute("SELECT * FROM news ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return [{"id": r["id"], "text": r["text"], "date": parse(r["created_at"]).strftime("%d.%m.%Y")} for r in rows]
+    out = []
+    for r in rows:
+        texts = json.loads(r["texts"]) if r["texts"] else {}
+        out.append({"id": r["id"], "text": (i18n.pick(texts, lang or "ru") if texts else r["text"]),
+                    "langs": [k for k in i18n.LANGS if texts.get(k)],
+                    "date": parse(r["created_at"]).strftime("%d.%m.%Y")})
+    return out
 
 
 def delete_news(news_id: int):
