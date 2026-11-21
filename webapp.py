@@ -121,6 +121,19 @@ def _ranks(uid):
     return ranks
 
 
+@app.post("/api/client_lang")
+@need_user()
+def api_client_lang(uid, data):
+    """Клиент меняет язык (uz / ru / en) — панель и бот переключаются сразу."""
+    if not core.is_client(uid):
+        return jsonify(ok=False, msg="—")
+    lang = i18n.lang_of(str(data.get("lang", "")))
+    core.update_client(uid, lang=lang)
+    with core.db() as c:  # бот пришлёт клавиатуру на новом языке
+        c.execute("INSERT INTO outbox(chat_id, text, markup) VALUES(?, ?, 'client_kb')", (uid, i18n.t(lang, "lang_set")))
+    return jsonify(ok=True, msg=i18n.t(lang, "lang_set"))
+
+
 @app.post("/api/staff_lang")
 @need_user(staff=True)
 def api_staff_lang(uid, data):
@@ -128,6 +141,8 @@ def api_staff_lang(uid, data):
     if not core.employee(uid):
         return jsonify(ok=False, msg="Только для сотрудников.")
     L = core.set_staff_lang(uid, str(data.get("lang", "")))
+    with core.db() as c:  # бот пришлёт кнопки на новом языке
+        c.execute("INSERT INTO outbox(chat_id, text, markup) VALUES(?, ?, 'staff_kb')", (uid, st.s(L, "lang_set")))
     return jsonify(ok=True, msg=st.s(L, "lang_set"))
 
 
@@ -663,6 +678,12 @@ PAGE = r"""<!doctype html>
   .quick button { background: var(--card2); border: 1.5px solid var(--line); border-radius: 99px; padding: 6px 12px; font-size: 13px; }
   .quick button.on { border-color: var(--accent); background: rgba(124,92,255,.2); }
   .day-h { font-size: 13px; font-weight: 700; margin: 12px 0 2px; }
+  /* переключатель языка в профиле */
+  .lang-switch { display: inline-flex; gap: 4px; margin-top: 10px; background: var(--card2); border: 1px solid var(--line);
+                 border-radius: 11px; padding: 3px; }
+  .lang-switch button { background: none; border-radius: 8px; padding: 5px 10px; font-size: 12.5px; font-weight: 700;
+                        color: var(--hint); white-space: nowrap; }
+  .lang-switch button.on { background: var(--accent); color: #fff; }
   /* тексты на трёх языках */
   .ltabs { display: flex; gap: 6px; margin-bottom: 8px; }
   .ltabs button { flex: 1; background: var(--card2); border: 1.5px solid var(--line); border-radius: 11px; padding: 8px 4px;
@@ -725,7 +746,7 @@ PAGE = r"""<!doctype html>
         <div class="pname" id="p-name"></div>
         <div class="prole" id="p-role"></div>
         <div class="lvl-pill" id="p-lvl"></div>
-        <div><button class="link" id="me-lang" style="font-size:13px;margin-top:8px"></button></div>
+        <div><div class="lang-switch" id="me-langsw"></div></div>
       </div>
     </div>
 
@@ -914,6 +935,7 @@ PAGE = r"""<!doctype html>
         <div class="prole" id="cl-phone"></div>
         <div class="hint hidden" style="font-size:13px;margin:-4px 0 8px" id="cl-birth"></div>
         <div class="tier-pill" id="cl-tier"></div>
+        <div><div class="lang-switch" id="cl-langsw"></div></div>
       </div>
     </div>
     <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)" data-t="finish_reg"></div>
@@ -1176,7 +1198,7 @@ function visitRow(h, full) {
 function renderMe() {
   const p = data.profile;
   document.querySelectorAll("[data-sx]").forEach(el => el.textContent = sx(el.dataset.sx));
-  $("me-lang").textContent = sx("lang_btn");
+  langSwitch("me-langsw", [["uz", "🇺🇿 UZ"], ["ru", "🇷🇺 RU"]], meLang(), l => action("/api/staff_lang", {lang: l}));
   const [lvl, idx, L] = levelOf(p.total_hours, p.goal);
   $("me-ava").innerHTML = avatar(p.id, p.name, p.ava_v);
   $("p-name").textContent = p.name;
@@ -1866,6 +1888,8 @@ const CL_T = {
 const ct = k => (CL_T[(data && data.client && data.client.lang) || "uz"] || CL_T.uz)[k];
 function renderClient() {
   const c = data.client;
+  langSwitch("cl-langsw", [["uz", "🇺🇿 UZ"], ["ru", "🇷🇺 RU"], ["en", "🇬🇧 EN"]], c.lang,
+             l => action("/api/client_lang", {lang: l}));
   $("cl-ava").innerHTML = avatar(c.id, c.name || "?", c.ava_v);
   $("cl-ring").className = "ava tier-ring " + c.tier;
   $("cl-badge").textContent = TIER_EMOJI[c.tier] || "💎";
@@ -1915,7 +1939,12 @@ $("n-add").onclick = () => {
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
-$("me-lang").onclick = () => action("/api/staff_lang", {lang: meLang() === "uz" ? "ru" : "uz"});
+/* Переключатель языка: кнопки, текущий язык подсвечен */
+function langSwitch(id, langs, cur, onPick) {
+  const box = $(id);
+  box.innerHTML = langs.map(([k, t]) => `<button data-lng="${k}" class="${k === cur ? "on" : ""}">${t}</button>`).join("");
+  box.querySelectorAll("[data-lng]").forEach(b => b.onclick = () => { if (b.dataset.lng !== cur) onPick(b.dataset.lng); });
+}
 const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
 $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(data.profile ? sx("invest_soon") : SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);

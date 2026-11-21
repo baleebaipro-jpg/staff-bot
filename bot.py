@@ -705,7 +705,11 @@ async def outbox_loop(app: Application) -> None:
                     if text.startswith("HTML:"):
                         text, mode = text[5:], "HTML"
                     markup = None
-                    if m.get("markup"):
+                    if m.get("markup") == "staff_kb":      # язык сменили в кабинете — новые кнопки
+                        markup = keyboard(m["chat_id"])
+                    elif m.get("markup") == "client_kb":
+                        markup = client_keyboard(m["chat_id"])
+                    elif m.get("markup"):
                         markup = InlineKeyboardMarkup([[
                             InlineKeyboardButton(t, url=d[4:]) if d.startswith("url:") else InlineKeyboardButton(t, callback_data=d)
                             for t, d in row] for row in json.loads(m["markup"])])
