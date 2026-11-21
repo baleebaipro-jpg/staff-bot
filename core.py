@@ -294,6 +294,8 @@ def init_db():
                 user_id INTEGER PRIMARY KEY, status TEXT, plan_amount TEXT, note TEXT,
                 created_at TEXT, decided_at TEXT);
             CREATE TABLE IF NOT EXISTS staff_lang(user_id INTEGER PRIMARY KEY, lang TEXT);
+            CREATE TABLE IF NOT EXISTS earnings(
+                id INTEGER PRIMARY KEY, user_id INTEGER, amount INTEGER, month TEXT, note TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS task_templates(
                 id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, repeat TEXT, weekday INTEGER,
                 created_at TEXT, active INTEGER DEFAULT 1);
@@ -585,6 +587,70 @@ def history(uid: int, limit: int = 30) -> list:
 
 PENALTY_CHAT_ID = getattr(config, "PENALTY_CHAT_ID", None)
 PENALTY_AMOUNT = getattr(config, "PENALTY_AMOUNT", "")
+
+
+# ---------- заработок сотрудников (пока вводит руководитель вручную) ----------
+
+MONTHS_RU = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
+             "ноябрь", "декабрь"]
+MONTHS_UZ = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust", "sentabr", "oktabr", "noyabr",
+             "dekabr"]
+
+
+def _month_title(ym: str, lang=None) -> str:
+    y, m = map(int, ym.split("-"))
+    names = MONTHS_UZ if st.lang_of(lang) == "uz" else MONTHS_RU
+    return f"{names[m - 1].capitalize()} {y}"
+
+
+def _sum(n) -> str:
+    return f"{int(n):,}".replace(",", " ") + " сум"
+
+
+def add_earning(uid: int, amount, month: str = "", note: str = ""):
+    if not employee(uid):
+        return False, "Сотрудник не найден."
+    try:
+        amount = int(str(amount).replace(" ", "").replace("\u00a0", "").replace(",", "").replace(".", ""))
+    except ValueError:
+        return False, "Введите сумму числом."
+    if amount <= 0:
+        return False, "Сумма должна быть больше нуля."
+    month = (month or now().strftime("%Y-%m"))[:7]
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        return False, "Неверный месяц."
+    with db() as c:
+        c.execute("INSERT INTO earnings(user_id, amount, month, note, created_at) VALUES(?, ?, ?, ?, ?)",
+                  (uid, amount, month, (note or "").strip()[:200], now().strftime(FMT)))
+    return True, f"💵 {name(uid)}: +{_sum(amount)} · {_month_title(month)}"
+
+
+def delete_earning(eid: int):
+    with db() as c:
+        r = c.execute("SELECT * FROM earnings WHERE id=?", (eid,)).fetchone()
+        if not r:
+            return False, "Запись не найдена."
+        c.execute("DELETE FROM earnings WHERE id=?", (eid,))
+    return True, f"Запись удалена: {name(r['user_id'])}, {_sum(r['amount'])}"
+
+
+def earnings_of(uid: int, lang: str = None) -> dict:
+    """Заработок сотрудника: всего за всё время, за этот год, по месяцам (новые сверху)."""
+    year = now().strftime("%Y")
+    with db() as c:
+        rows = c.execute("SELECT * FROM earnings WHERE user_id=? ORDER BY month DESC, id DESC", (uid,)).fetchall()
+    items = [{"id": r["id"], "month": r["month"], "title": _month_title(r["month"], lang), "amount": r["amount"],
+              "note": r["note"] or ""} for r in rows]
+    return {"total": sum(i["amount"] for i in items),
+            "year": sum(i["amount"] for i in items if i["month"].startswith(year)),
+            "items": items}
+
+
+def earnings_team() -> list:
+    """Для руководителя: итог по каждому сотруднику и записи."""
+    return [dict(earnings_of(uid), id=uid, name=name(uid)) for uid in config.EMPLOYEES]
 
 
 SHIFT_REMINDERS = getattr(config, "SHIFT_REMINDERS", True)
