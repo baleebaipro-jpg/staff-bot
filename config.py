@@ -55,6 +55,15 @@ AVATAR_DIR = os.path.join(DATA_DIR, "avatars")
 ADMINS = [
     2034048111,  # Abdullohbe
 ]
+# Постинг (кабинет → 📣 Постинг): группы и каналы, куда можно отправлять посты.
+# Бот должен быть в них администратором. thread_id — тема группы (или None).
+POST_CHATS = [
+    {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None},
+    {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None},
+    {"title": "Xuping (Bronza) OPTOM", "chat_id": -1001214388881, "thread_id": None},
+    {"title": "Xuping Uzbekistan", "chat_id": -1002645398648, "thread_id": None},
+]
+
 # Личные проекты руководителя (кабинет → 📁 Проекты): во сколько присылать
 # в бот список задач на день. None — не присылать.
 PROJECTS_DIGEST_TIME = "08:30"

@@ -252,6 +252,10 @@ def init_db():
             CREATE TABLE IF NOT EXISTS invest_access(
                 user_id INTEGER PRIMARY KEY, status TEXT, plan_amount TEXT, note TEXT,
                 created_at TEXT, decided_at TEXT);
+            CREATE TABLE IF NOT EXISTS posts(
+                id INTEGER PRIMARY KEY, owner_id INTEGER, text TEXT, photo TEXT, button_text TEXT,
+                button_url TEXT, audience TEXT, to_news INTEGER DEFAULT 0, status TEXT, send_at TEXT,
+                created_at TEXT, sent_at TEXT, total INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS projects(
                 id INTEGER PRIMARY KEY, owner_id INTEGER, title TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS ptasks(
@@ -276,6 +280,10 @@ def init_db():
             c.execute("ALTER TABLE outbox ADD COLUMN thread_id INTEGER")
         if "photo" not in ocols:
             c.execute("ALTER TABLE outbox ADD COLUMN photo TEXT")
+        if "post_id" not in ocols:
+            c.execute("ALTER TABLE outbox ADD COLUMN post_id INTEGER")
+        if "failed" not in ocols:
+            c.execute("ALTER TABLE outbox ADD COLUMN failed INTEGER DEFAULT 0")
         icols = {r[1] for r in c.execute("PRAGMA table_info(investments)")}
         for col in ("early_at", "early_info", "pay_method", "pay_report"):
             if col not in icols:
@@ -772,9 +780,9 @@ def pending_outbox(limit: int = 20) -> list:
         return [dict(r) for r in c.execute("SELECT * FROM outbox WHERE sent=0 ORDER BY id LIMIT ?", (limit,))]
 
 
-def mark_sent(msg_id: int):
+def mark_sent(msg_id: int, failed: bool = False):
     with db() as c:
-        c.execute("UPDATE outbox SET sent=1 WHERE id=?", (msg_id,))
+        c.execute("UPDATE outbox SET sent=1, failed=? WHERE id=?", (int(failed), msg_id))
 
 
 # ---------- счётчик альбомов фотографа ----------
