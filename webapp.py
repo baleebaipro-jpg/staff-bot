@@ -14,6 +14,7 @@ from flask import Flask, abort, jsonify, request, send_file
 import config
 import core
 import i18n
+import invest
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
 
@@ -110,6 +111,7 @@ def api_me(uid, data):
         res["profile"]["ava_v"] = ava_version(uid)
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
+        res["invest"] = invest.mine(uid)
     res["is_client"] = not res["is_admin"] and not res["is_employee"]
     if res["is_client"]:
         cl = core.get_client(uid) or {}
@@ -121,7 +123,13 @@ def api_me(uid, data):
                          "registered": cl.get("step") == "done",
                          "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None}
         res["news"] = core.news_list(10)
+    if res["is_employee"] or res["is_admin"]:
+        res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
+                             "max": invest.MAX_AMOUNT, "currency": invest.CURRENCY,
+                             "annual_min": invest.ANNUAL_MIN, "annual_max": invest.ANNUAL_MAX,
+                             "history": invest.history_public()}
     if res["is_admin"]:
+        res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
         res["clients"] = core.clients_stats()
         res["client_list"] = core.clients_list()
@@ -247,6 +255,40 @@ def api_delete_task(uid, data):
     return jsonify(ok=True, msg="Задача удалена.")
 
 
+
+@app.post("/api/invest_request")
+@need_user(staff=True)
+def api_invest_request(uid, data):
+    ok, msg = invest.request(uid, data.get("amount", ""))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/invest_cancel")
+@need_user(staff=True)
+def api_invest_cancel(uid, data):
+    ok, msg = invest.cancel(uid, int(data.get("id", 0)))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/invest_decide")
+@need_user(admin=True)
+def api_invest_decide(uid, data):
+    ok, msg = invest.decide(int(data.get("id", 0)), bool(data.get("approve")))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/invest_rate")
+@need_user(admin=True)
+def api_invest_rate(uid, data):
+    ok, msg = invest.set_level(str(data.get("month", "")), str(data.get("level", "")))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/invest_paid")
+@need_user(admin=True)
+def api_invest_paid(uid, data):
+    ok, msg = invest.mark_paid(int(data.get("id", 0)))
+    return jsonify(ok=ok, msg=msg)
 
 
 PAGE = r"""<!doctype html>
@@ -416,6 +458,58 @@ PAGE = r"""<!doctype html>
   select, input { width: 100%; font: inherit; color: var(--text); background: var(--card2); border: 1px solid var(--line);
                   border-radius: 12px; padding: 12px; margin-bottom: 10px; outline: none; }
 
+  /* инвестиции */
+  .inv-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .inv-tiles > div { background: var(--card2); border-radius: 14px; padding: 10px 6px; text-align: center; min-width: 0; }
+  .inv-tiles b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .inv-tiles span { color: var(--hint); font-size: 11.5px; }
+  .inv { padding: 11px 0; border-top: 1px solid var(--line); }
+  .inv-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .inv-top b { font-variant-numeric: tabular-nums; }
+  .chip { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 99px; white-space: nowrap; }
+  .chip.pending { background: rgba(251,191,36,.16); color: var(--orange); }
+  .chip.active { background: rgba(124,92,255,.22); color: #cfc6ff; }
+  .chip.matured { background: rgba(52,211,153,.18); color: var(--green); }
+  .chip.paid, .chip.rejected { background: var(--card2); color: var(--hint); }
+  .inv .mini-bar > div { background: linear-gradient(90deg, var(--green), #10b981); box-shadow: none; }
+  .inv-sub { font-size: 12.5px; margin-top: 4px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .inv-act { display: flex; gap: 8px; margin-top: 8px; }
+  .inv-act .btn { flex: 1; }
+  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .plans button { background: var(--card2); border: 1.5px solid var(--line); border-radius: 12px; padding: 9px 4px; line-height: 1.3; }
+  .plans button b { display: block; font-size: 15px; }
+  .plans button span { font-size: 12px; color: var(--hint); }
+  .plans button.on { border-color: var(--accent); background: rgba(124,92,255,.18); }
+  .inv-calc { background: var(--card2); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.6; }
+  .inv-calc b { color: var(--green); }
+  .inv-h { font-size: 13px; color: var(--hint); font-weight: 600; margin: 12px 0 2px; }
+  .lvl-row { padding: 10px 0; border-top: 1px solid var(--line); }
+  .lvl-row:first-of-type { border-top: none; }
+  .lvl-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+  .lvl-btns button { background: var(--card2); border: 1.5px solid var(--line); border-radius: 11px; padding: 8px 2px;
+                     font-size: 13px; font-weight: 700; line-height: 1.25; }
+  .lvl-btns button span { display: block; font-size: 11px; font-weight: 500; color: var(--hint); }
+  .lvl-btns button.on { border-color: var(--accent); background: rgba(124,92,255,.2); }
+  .mchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .mchips span { background: var(--card2); border-radius: 9px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+  .chip.rating { background: rgba(251,191,36,.16); color: var(--orange); }
+  details.inv-months summary { font-size: 12.5px; color: #8b7bff; cursor: pointer; margin-top: 6px; }
+  details.inv-form summary { list-style: none; cursor: pointer; }
+  .folder { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; color: var(--text);
+            background: linear-gradient(110deg, rgba(52,211,153,.16), rgba(124,92,255,.14) 60%, var(--card));
+            border: 1px solid rgba(52,211,153,.25); }
+  .folder:active { transform: scale(.985); }
+  .folder .f-ic { width: 48px; height: 48px; border-radius: 14px; flex: none; display: flex; align-items: center;
+                  justify-content: center; font-size: 26px; background: rgba(52,211,153,.16); }
+  .folder b { display: block; font-size: 16.5px; }
+  .folder .f-sub { color: var(--hint); font-size: 13px; margin-top: 2px; }
+  .folder .f-arrow { margin-left: auto; font-size: 26px; color: var(--hint); flex: none; }
+  .f-badge { background: var(--red); color: #fff; font-size: 12px; font-weight: 800; border-radius: 99px;
+             padding: 2px 8px; margin-left: 6px; vertical-align: 2px; }
+  .page-title { font-size: 22px; font-weight: 800; margin: 4px 0 4px; }
+  .page-sub { color: var(--hint); font-size: 13.5px; margin-bottom: 14px; }
+  details.inv-form summary::-webkit-details-marker { display: none; }
+
   .toast { position: fixed; left: 14px; right: 14px; bottom: 18px; background: #2a2d4d; border: 1px solid var(--line);
            padding: 13px 15px; border-radius: 14px; white-space: pre-line; display: none; z-index: 9; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
 </style>
@@ -455,8 +549,11 @@ PAGE = r"""<!doctype html>
       <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span>текущее звание</span></div>
     </div>
 
-    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
-      <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
+    <button class="card folder" id="go-inv">
+      <div class="f-ic">💰</div>
+      <div style="min-width:0"><b>Инвестиции</b><div class="f-sub" id="inv-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <div class="card status">
       <div>
         <div id="st-text"></div>
@@ -492,6 +589,31 @@ PAGE = r"""<!doctype html>
       <div class="cup">🏆</div>
       <div><b id="m-title"></b><span class="hint" id="m-sub"></span></div>
     </div>
+  </div>
+
+  <!-- ИНВЕСТИЦИИ (отдельная страница сотрудника) -->
+  <div id="view-invest" class="hidden">
+    <div class="page-title">💰 Мои инвестиции</div>
+    <div class="page-sub" id="inv-page-sub"></div>
+    <div class="card">
+      <div id="inv-me"></div>
+      <details class="inv-form" id="inv-form">
+        <summary class="btn btn-main" style="display:block;text-align:center;margin-top:10px">➕ Открыть вклад</summary>
+        <div style="margin-top:12px">
+          <input id="inv-amount" inputmode="numeric" autocomplete="off" placeholder="Сумма">
+          <div class="inv-calc" id="inv-calc"></div>
+          <button class="btn btn-main" style="width:100%" id="inv-send">Подать заявку</button>
+          <div class="hint" style="font-size:12.5px;margin-top:10px;line-height:1.45" id="inv-rules"></div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <!-- ИНВЕСТИЦИИ (отдельная страница руководителя) -->
+  <div id="view-invest-admin" class="hidden">
+    <div class="page-title">💰 Инвестиции сотрудников</div>
+    <div class="page-sub">Заявки, оценка месяца и выплаты</div>
+    <div class="card"><div id="inv-admin"></div></div>
   </div>
 
   <!-- ПАНЕЛЬ КЛИЕНТА -->
@@ -538,8 +660,12 @@ PAGE = r"""<!doctype html>
       <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
       <div id="n-list" style="margin-top:8px"></div>
     </div>
-    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
-      <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
+    <button class="card folder" id="go-inv-admin">
+      <div class="f-ic">💰</div>
+      <div style="min-width:0"><b>Инвестиции сотрудников<span id="inv-admin-badge"></span></b>
+        <div class="f-sub" id="inv-admin-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <div class="card">
       <h3>Новая задача</h3>
       <select id="t-user"></select>
@@ -678,14 +804,16 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
-  if (v === "history") tg.BackButton.show(); else tg.BackButton.hide();
+  if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
   window.scrollTo(0, 0);
 }
-tg.BackButton.onClick(() => show("me"));
+tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 
 function visitRow(h, full) {
   return `<div class="visit ${full ? "" : "short"}">
@@ -846,15 +974,158 @@ function renderTeam() {
     tg.showConfirm("Удалить задачу?", ok => ok && action("/api/delete_task", {id: +b.dataset.del})));
 }
 
+/* ---------- инвестиции ---------- */
+const INV_STATUS = {pending: "⏳ ждёт", active: "📈 работает", rating: "⏳ ждёт оценки", matured: "🎉 к выплате",
+                    paid: "✔️ выплачен", rejected: "отклонён"};
+const sum = n => Math.round(Number(n || 0)).toLocaleString("ru-RU") + " " + ((data && data.invest_cfg && data.invest_cfg.currency) || "");
+const pc = x => (Math.round(x * 100) / 100).toLocaleString("ru-RU") + "%";
+const daysWord = n => n + " " + plural(n, "день", "дня", "дней");
+const LVL = () => Object.fromEntries(data.invest_cfg.levels.map(l => [l.key, l]));
+const lvlTag = k => { const l = LVL()[k]; return l ? `${l.emoji} ${l.title.toLowerCase()}` : "—"; };
+function invTiles(items) {
+  return `<div class="inv-tiles">${items.map(([v, label, color]) =>
+    `<div><b style="${color ? "color:" + color : ""}">${typeof v === "string" ? v : sum(v)}</b><span>${label}</span></div>`).join("")}</div>`;
+}
+function invItem(r, admin) {
+  let sub = "", act = "", months = "";
+  if (r.status === "pending") {
+    sub = `<span>подана ${r.created} · на ${r.months} мес.</span><span>доход ${sum(r.min_total)} – ${sum(r.max_total)}</span>`;
+    act = admin ? `<div class="inv-act"><button class="btn btn-main btn-sm" data-inv-ok="${r.id}">✅ Деньги получил</button>
+                   <button class="btn btn-soft btn-sm" data-inv-no="${r.id}">✕ Отклонить</button></div>`
+                : `<div class="inv-act"><button class="btn btn-soft btn-sm" data-inv-cancel="${r.id}">Отменить заявку</button></div>`;
+  } else if (["active", "rating", "matured"].includes(r.status)) {
+    sub = `<span>${r.start} → ${r.end}</span><span style="color:var(--green)">+${sum(r.accrued)} (${pc(r.percent)})</span>`;
+    if (r.status === "active") sub += `<span style="width:100%">ещё ${daysWord(r.days_left)} · в конце: ${sum(r.amount + r.min_total)} – ${sum(r.amount + r.max_total)}</span>`;
+    else if (r.status === "rating") sub += `<span style="width:100%;color:var(--orange)">Срок закончился — ждём оценку последнего месяца</span>`;
+    else sub += `<span style="width:100%;color:var(--green)">Срок закончился — к выплате <b>${sum(r.payout)}</b></span>`;
+    if (admin && r.status === "matured")
+      act = `<div class="inv-act"><button class="btn btn-main btn-sm" data-inv-paid="${r.id}">💸 Выплачено ${sum(r.payout)}</button></div>`;
+    if (r.months_list.length) months = `<details class="inv-months"><summary>Начисления по месяцам</summary><div class="mchips">${
+      r.months_list.map(m => `<span>${esc(m.title.split(" ")[0].slice(0, 3).toLowerCase())}${m.share < 100 ? ` (${m.share}%)` : ""} ${
+        m.level ? LVL()[m.level].emoji + " +" + sum(m.earned) : "⏳"}</span>`).join("")}</div></details>`;
+  } else if (r.status === "paid") {
+    sub = `<span>${r.start} → ${r.end}</span><span>доход ${sum(r.accrued)} (${pc(r.percent)})</span>`;
+  } else {
+    sub = `<span>${r.created}</span>`;
+  }
+  const bar = ["active", "rating", "matured"].includes(r.status)
+    ? `<div class="bar mini-bar"><div style="width:${r.progress}%"></div></div>` : "";
+  return `<div class="inv"><div class="inv-top"><b>${admin ? esc(r.name) + " · " : ""}${sum(r.amount)}</b>
+    <span class="chip ${r.status}">${INV_STATUS[r.status] || r.status}</span></div>
+    ${bar}<div class="inv-sub hint">${sub}</div>${months}${act}</div>`;
+}
+function bindInvest() {
+  document.querySelectorAll("[data-inv-ok]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Подтвердить, что деньги получены? С сегодняшнего дня начнутся начисления.",
+      ok => ok && action("/api/invest_decide", {id: +b.dataset.invOk, approve: true})));
+  document.querySelectorAll("[data-inv-no]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Отклонить заявку?", ok => ok && action("/api/invest_decide", {id: +b.dataset.invNo, approve: false})));
+  document.querySelectorAll("[data-inv-paid]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Отметить вклад как выплаченный?", ok => ok && action("/api/invest_paid", {id: +b.dataset.invPaid})));
+  document.querySelectorAll("[data-inv-cancel]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Отменить заявку на вклад?", ok => ok && action("/api/invest_cancel", {id: +b.dataset.invCancel})));
+  document.querySelectorAll("[data-lvl]").forEach(b => b.onclick = () => {
+    const [month, level] = b.dataset.lvl.split("|");
+    if (b.classList.contains("on")) return;
+    tg.showConfirm(`${b.dataset.title}: ${lvlTag(level)} месяц?`, ok => ok && action("/api/invest_rate", {month, level}));
+  });
+}
+
+const invAmount = () => +($("inv-amount").value.replace(/\D/g, "")) || 0;
+function addMonths(d, m) {
+  const r = new Date(d.getFullYear(), d.getMonth() + m, 1);
+  r.setDate(Math.min(d.getDate(), new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate()));
+  return r;
+}
+function renderInvCalc() {
+  const cfg = data.invest_cfg, a = invAmount();
+  if (!a) { $("inv-calc").innerHTML = `Сумма от ${sum(cfg.min)} до ${sum(cfg.max)}`; return; }
+  const lo = a * cfg.annual_min / 100 * cfg.term / 12, hi = a * cfg.annual_max / 100 * cfg.term / 12;
+  const end = addMonths(new Date(), cfg.term).toLocaleDateString("ru-RU");
+  $("inv-calc").innerHTML = `Доход за ${cfg.term} мес.: <b>+${sum(lo)} – ${sum(hi)}</b><br>
+    К выплате: <b>${sum(a + lo)} – ${sum(a + hi)}</b> · примерно ${end}` +
+    (a < cfg.min ? `<br><span style="color:var(--orange)">Мин. сумма — ${sum(cfg.min)}</span>` : "") +
+    (a > cfg.max ? `<br><span style="color:var(--orange)">Макс. сумма — ${sum(cfg.max)}</span>` : "");
+}
+function renderInvestMe() {
+  const m = data.invest, cfg = data.invest_cfg;
+  const live = m.items.filter(r => ["active", "rating", "matured"].includes(r.status));
+  const hist = cfg.history.slice(0, 6);
+  $("inv-me").innerHTML = (live.length ? invTiles([[m.invested, "вложено"], ["+" + sum(m.accrued), "начислено", "var(--green)"],
+      [m.payout, "сейчас стоит"]]) : "")
+    + (m.items.length ? m.items.slice(0, 10).map(r => invItem(r, false)).join("")
+       : `<div class="empty">Вкладывайте в компанию на ${cfg.term} мес. и получайте ${pc(cfg.annual_min)}–${pc(cfg.annual_max)} 📈</div>`)
+    + (hist.length ? `<div class="inv-h">Как прошли месяцы</div><div class="mchips">${hist.map(h =>
+        `<span>${esc(h.title.toLowerCase())} ${lvlTag(h.level)}</span>`).join("")}</div>` : "")
+    + (m.earned ? `<div class="hint" style="font-size:13px;margin-top:8px">Всего заработано на вкладах: <b style="color:var(--green)">${sum(m.earned)}</b></div>` : "");
+  $("inv-rules").innerHTML = `Вклад на ${cfg.term} мес. Каждый месяц руководитель подводит итог — от него зависит ваша доля:<br>` +
+    cfg.levels.map(l => `${l.emoji} ${l.title.toLowerCase()} — ${pc(l.monthly)} за месяц (${pc(l.annual)} годовых)`).join("<br>") +
+    `<br>Деньги передаются руководителю лично, начисления идут со дня подтверждения. Забрать вклад можно только после окончания срока — вместе со всем доходом.`;
+  const pend = m.items.some(r => r.status === "pending"), ready = m.items.some(r => r.status === "matured");
+  $("inv-folder-sub").innerHTML = live.length
+    ? `Вложено ${sum(m.invested)} · <span style="color:var(--green)">+${sum(m.accrued)}</span>${ready ? " · 🎉 к выплате" : ""}`
+    : pend ? "⏳ Заявка ждёт руководителя" : `Доход ${pc(cfg.annual_min)}–${pc(cfg.annual_max)} за ${cfg.term} мес.`;
+  $("inv-page-sub").textContent = `Вклад на ${cfg.term} мес. · доход ${pc(cfg.annual_min)}–${pc(cfg.annual_max)} — зависит от итогов каждого месяца`;
+  renderInvCalc();
+  bindInvest();
+}
+$("inv-amount").oninput = () => {
+  const a = invAmount();
+  $("inv-amount").value = a ? a.toLocaleString("ru-RU") : "";
+  renderInvCalc();
+};
+$("inv-send").onclick = () => {
+  const a = invAmount(), cfg = data.invest_cfg;
+  if (!a) return toast("Введите сумму");
+  tg.showConfirm(`Открыть вклад ${sum(a)} на ${cfg.term} мес.?`, ok => ok &&
+    action("/api/invest_request", {amount: a}).then(() => {
+      if (data.invest.items.some(r => r.status === "pending")) { $("inv-amount").value = ""; $("inv-form").open = false; }
+    }));
+};
+function lvlButtons(month, title, current) {
+  return `<div class="lvl-btns">${data.invest_cfg.levels.map(l => `<button class="${l.key === current ? "on" : ""}"
+    data-lvl="${month}|${l.key}" data-title="${esc(title)}">${l.emoji} ${esc(l.title)}<span>${pc(l.monthly)}</span></button>`).join("")}</div>`;
+}
+function renderInvestAdmin() {
+  const o = data.invest_admin;
+  const block = (title, rows) => rows.length ? `<div class="inv-h">${title}</div>` + rows.map(r => invItem(r, true)).join("") : "";
+  const any = o.pending.length + o.matured.length + o.active.length + o.paid.length;
+  let rate = "";
+  if (o.to_rate.length) {
+    rate = o.to_rate.map(t => `<div class="lvl-row"><b style="color:var(--orange)">⚠️ Оцените: ${esc(t.title.toLowerCase())}</b>
+      ${lvlButtons(t.month, t.title, null)}</div>`).join("");
+  } else if (o.last_rated) {
+    rate = `<div class="lvl-row"><b>${esc(o.last_rated.title)}</b> <span class="hint" style="font-size:12.5px">· можно изменить</span>
+      ${lvlButtons(o.last_rated.month, o.last_rated.title, o.last_rated.level)}</div>`;
+  }
+  if (!o.current.level && !o.to_rate.some(t => t.month === o.current.month))
+    rate += `<div class="hint" style="font-size:12.5px;margin-top:6px">📅 ${esc(o.current.title)} можно будет оценить ${o.current.opens}</div>`;
+  $("inv-admin").innerHTML = `<div class="inv-calc" style="margin-bottom:12px"><b style="color:var(--text)">📊 Итог месяца</b>${rate}</div>`
+    + invTiles([[o.invested, "вложено"], ["+" + sum(o.accrued), "начислено", "var(--green)"],
+      [`${sum(o.obligations_min)} –<br>${sum(o.obligations_max)}`, "вернуть всего", "var(--orange)"]])
+    + block(`⏳ Ждут подтверждения (${o.pending.length})`, o.pending)
+    + block(`🎉 Пора выплатить — ${sum(o.to_pay_now)}`, o.matured)
+    + block(`📈 Работают (${o.active.length})`, o.active)
+    + block("✔️ Выплачены", o.paid)
+    + (any ? "" : `<div class="empty">Вкладов пока нет</div>`);
+  const todo = o.pending.length + o.matured.length + o.to_rate.length;
+  $("inv-admin-badge").innerHTML = todo ? `<span class="f-badge">${todo}</span>` : "";
+  $("inv-admin-folder-sub").textContent = [
+    o.to_rate.length ? "⚠️ оцените месяц" : "",
+    o.pending.length ? `заявок: ${o.pending.length}` : "",
+    o.matured.length ? `к выплате: ${o.matured.length}` : "",
+    `вложено ${sum(o.invested)}`].filter(Boolean).join(" · ");
+  bindInvest();
+}
+
 async function load() {
   try {
     data = await api("/api/me");
     $("loading").classList.add("hidden");
     if (data.is_client) { renderClient(); show("client"); return; }
-    if (data.is_employee) renderMe();
-    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); }
-    $("seg").classList.toggle("hidden", !(data.is_admin && data.is_employee));
-    if (!data.is_employee) view = "team";
+    if (data.is_employee) { renderMe(); renderInvestMe(); }
+    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); renderInvestAdmin(); }
+    if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
     $("loading").classList.add("hidden");
@@ -934,6 +1205,8 @@ $("n-add").onclick = () => {
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
+$("go-inv").onclick = () => show("invest");
+$("go-inv-admin").onclick = () => show("invest-admin");
 $("ava-file").onchange = async (ev) => {
   const file = ev.target.files[0];
   ev.target.value = "";

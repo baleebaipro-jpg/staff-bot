@@ -30,6 +30,7 @@ import config
 import core
 import erp
 import i18n
+import invest as invest_mod
 import relay
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
@@ -462,9 +463,70 @@ async def bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not known(update.effective_user.id):
+    uid = update.effective_user.id
+    if not known(uid):
         return await client_text(update, context)
-    await reply(update, "💰 Раздел «Инвестиции» скоро появится ⏳")
+    M = invest_mod.money
+    lines = []
+    if core.employee(uid):
+        m = invest_mod.mine(uid)
+        lines.append("💰 Мои инвестиции")
+        if m["invested"]:
+            lines.append(f"Вложено: {M(m['invested'])}\n"
+                         f"Начислено: +{M(m['accrued'])}")
+        for r in m["items"]:
+            if r["status"] == "pending":
+                lines.append(f"⏳ Заявка {M(r['amount'])} — ждёт руководителя")
+            elif r["status"] == "active":
+                lines.append(f"📈 {M(r['amount'])} · +{M(r['accrued'])} · до {r['end']} (ещё {r['days_left']} дн.)")
+            elif r["status"] == "rating":
+                lines.append(f"📈 {M(r['amount'])} · срок закончился, ждём оценку последнего месяца")
+            elif r["status"] == "matured":
+                lines.append(f"🎉 {M(r['amount'])} · к выплате {M(r['payout'])}")
+        if len(lines) == 1:
+            lines.append("Вкладов пока нет.")
+        hist = invest_mod.history_public(3)
+        if hist:
+            lv = invest_mod.LEVELS
+            lines.append("\nПоследние месяцы: " + ", ".join(
+                f"{h['title'].split()[0].lower()} {lv[h['level']]['emoji']}" for h in hist))
+        lines.append(f"\nВклад на {invest_mod.TERM} мес., доход {invest_mod.pct(invest_mod.ANNUAL_MIN)}–"
+                     f"{invest_mod.pct(invest_mod.ANNUAL_MAX)} — зависит от того, как пройдёт каждый месяц.\n"
+                     f"Оформить вклад — в «{BTN_CABINET}».")
+    if core.is_admin(uid):
+        o = invest_mod.overview()
+        lines.append(f"{chr(10) if lines else ''}📊 Инвестиции команды\n"
+                     f"Вложено: {M(o['invested'])}\n"
+                     f"Начислено: {M(o['accrued'])}\n"
+                     f"Вернуть в конце сроков: {M(o['obligations_min'])} – {M(o['obligations_max'])}\n"
+                     f"Заявок ждут: {len(o['pending'])} · к выплате сейчас: {len(o['matured'])}")
+        for t in o["to_rate"]:
+            lines.append(f"⚠️ Не оценён месяц: {t['title'].lower()}")
+    buttons = None
+    if core.is_admin(uid):
+        if o["to_rate"]:
+            ym = o["to_rate"][0]["month"]
+            buttons = InlineKeyboardMarkup([[InlineKeyboardButton(f"{v['emoji']} {v['title']}", callback_data=f"inv_lvl:{ym}:{k}")
+                                             for k, v in invest_mod.LEVELS.items()]])
+    await reply(update, "\n".join(lines), reply_markup=buttons or keyboard(uid))
+
+
+async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кнопки под сообщениями: «Деньги получил / Отклонить» и оценка месяца."""
+    q = update.callback_query
+    if not core.is_admin(q.from_user.id):
+        return await q.answer("Нет доступа.", show_alert=True)
+    kind, a, b = q.data.split(":")
+    if kind == "inv":
+        ok, msg = invest_mod.decide(int(b), a == "ok")
+    else:
+        ok, msg = invest_mod.set_level(a, b)
+    await q.answer(msg[:190], show_alert=not ok)
+    if ok or kind == "inv":
+        try:
+            await q.edit_message_text(q.message.text + "\n\n" + msg)
+        except TelegramError:
+            pass
 
 
 async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -491,6 +553,11 @@ async def outbox_loop(app: Application) -> None:
                 await app.bot.send_message(uid, "⌛ Время на кружок вышло, приход не засчитан.\nНажмите «✅ Пришёл» ещё раз.")
         except Exception:
             logging.exception("Ошибка при проверке кружков")
+        try:
+            invest_mod.check_rating_day()
+            invest_mod.check_matured()
+        except Exception:
+            logging.exception("Ошибка при проверке сроков вкладов")
         try:
             await relay.daily_check(app.bot)
         except Exception:
@@ -543,6 +610,7 @@ def main() -> None:
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
+    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+)$"))
     app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))

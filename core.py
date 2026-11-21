@@ -238,6 +238,12 @@ def init_db():
                 id INTEGER PRIMARY KEY, text TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS investments(
+                id INTEGER PRIMARY KEY, user_id INTEGER, amount INTEGER, months INTEGER, rate REAL,
+                status TEXT DEFAULT 'pending', created_at TEXT, start_date TEXT, end_date TEXT,
+                decided_at TEXT, paid_at TEXT, paid_amount INTEGER);
+            CREATE TABLE IF NOT EXISTS invest_months(
+                month TEXT PRIMARY KEY, level TEXT, set_at TEXT);
             """
         )
         if "status" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
