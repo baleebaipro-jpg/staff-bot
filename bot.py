@@ -141,6 +141,7 @@ def client_keyboard(uid: int):
         [i18n.t(lang, "btn_news"), i18n.t(lang, "btn_invest")],
         [KeyboardButton(i18n.t(lang, "btn_cabinet"), web_app=WebAppInfo(url=config.WEBAPP_URL)),
          i18n.t(lang, "btn_lang")],
+        [i18n.t(lang, "btn_logout")],
     ], resize_keyboard=True)
 
 
@@ -182,6 +183,30 @@ async def choose_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except TelegramError:
         pass
     await client_menu(update, greet=True)
+
+
+async def client_logout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Подтверждение «Выйти»: сбросить данные клиента и начать заново."""
+    q = update.callback_query
+    uid = q.from_user.id
+    lang = (core.get_client(uid) or {}).get("lang")
+    if known(uid):
+        return await q.answer()
+    if q.data.endswith(":no"):
+        await q.answer()
+        try:
+            await q.edit_message_text(i18n.t(lang, "logout_cancel"))
+        except TelegramError:
+            pass
+        return await client_menu(update)
+    core.reset_client(uid)
+    await q.answer(i18n.t(lang, "logout_done"))
+    try:
+        await q.edit_message_reply_markup(None)  # убрать кнопки «Да / Нет» под вопросом
+    except TelegramError:
+        pass
+    await reply(update, i18n.t(lang, "logout_done"), reply_markup=ReplyKeyboardRemove())
+    await client_menu(update, greet=True)  # заново: выбор языка → номер → данные
 
 
 async def got_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -249,6 +274,10 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 logging.exception("BILLZ: не удалось создать клиента")
         await reply(update, i18n.t(lang, "registered"))
         return await client_menu(update)
+    if text in i18n.all_variants("btn_logout"):
+        return await reply(update, i18n.t(lang, "logout_confirm"), reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(i18n.t(lang, "logout_yes"), callback_data="clogout:yes"),
+            InlineKeyboardButton(i18n.t(lang, "logout_no"), callback_data="clogout:no")]]))
     if text in i18n.all_variants("btn_lang"):
         return await reply(update, i18n.t(None, "choose_lang"), reply_markup=lang_buttons())
     if not lang or not cl.get("phone"):
@@ -802,6 +831,7 @@ def main() -> None:
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
+    app.add_handler(CallbackQueryHandler(client_logout, pattern=r"^clogout:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(choose_staff_lang, pattern=r"^slang:(uz|ru)$"))
     app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+|inv_pay:\d+:(online|offline)|inv_acc:(ok|no):\d+)$"))
     # кнопки сотрудника — на любом из языков (uz / ru)
