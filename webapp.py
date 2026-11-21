@@ -262,8 +262,19 @@ def api_add_task(uid, data):
     title = str(data.get("title", "")).strip()
     if not core.employee(target) or not title:
         return jsonify(ok=False, msg="Выберите сотрудника и введите задачу.")
+    repeat = str(data.get("repeat") or "once")
+    if repeat in ("daily", "weekly"):  # повторяющаяся: каждый рабочий день / каждую неделю
+        ok, msg = core.add_recurring(target, title, repeat, data.get("weekday"))
+        return jsonify(ok=ok, msg=msg)
     core.add_task(target, title)
     return jsonify(ok=True, msg=f"Задача поставлена: {core.name(target)}")
+
+
+@app.post("/api/stop_recurring")
+@need_user(admin=True)
+def api_stop_recurring(uid, data):
+    ok, msg = core.stop_recurring(int(data.get("id") or 0))
+    return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/add_penalty")
@@ -1037,6 +1048,14 @@ PAGE = r"""<!doctype html>
         <div style="margin-top:12px">
           <select id="t-user"></select>
           <input id="t-title" placeholder="Что нужно сделать?" maxlength="500">
+          <div class="quick" id="t-repeat" style="margin:0 0 10px">
+            <button data-rep="once" class="on">Один раз</button><button data-rep="daily">🔁 Каждый день</button>
+            <button data-rep="weekly">🔁 Каждую неделю</button></div>
+          <select id="t-wd" class="hidden">
+            <option value="0">по понедельникам</option><option value="1">по вторникам</option><option value="2">по средам</option>
+            <option value="3">по четвергам</option><option value="4">по пятницам</option><option value="5">по субботам</option>
+            <option value="6">по воскресеньям</option></select>
+          <div class="hint hidden" style="font-size:12.5px;margin:-4px 0 10px" id="t-rep-hint"></div>
           <button class="btn btn-main" style="width:100%" id="t-add">Поставить задачу</button>
         </div>
       </details>
@@ -1283,7 +1302,7 @@ function renderMe() {
 
   const open = data.tasks.filter(t => !t.done), done = data.tasks.filter(t => t.done).slice(0, 3);
   $("tasks").innerHTML = (open.length || done.length) ? [...open, ...done].map(t => `
-    <div class="task ${t.done ? "done" : ""}"><div class="tt">${esc(t.title)}<div class="hint" style="font-size:12px">${t.created}</div></div>
+    <div class="task ${t.done ? "done" : ""}"><div class="tt">${t.repeat ? "🔁 " : ""}${esc(t.title)}<div class="hint" style="font-size:12px">${t.created}</div></div>
     ${t.done ? "✔️" : t.due ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("due", {d: t.due})}</span>`
       : t.status === "review" ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("review")}</span>`
       : `<button class="btn btn-main btn-sm" data-done="${t.id}">${sx("done")}</button>`}</div>`).join("")
@@ -1375,7 +1394,10 @@ function renderTeam() {
       <div style="font-size:13px;margin-top:4px;color:${e.penalties_total ? "var(--red)" : "var(--hint)"}">🔴 Штрафов: всего ${e.penalties_total} · за месяц ${e.penalties_month}</div>
       ${e.penalties.map(x => `<div class="pen"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
         <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div>`).join("")}
-      ${e.tasks.map(t => `<div class="task"><div class="tt">📌 ${esc(t.title)}${t.due
+      ${(e.recurring || []).length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🔁 Повторяющиеся задачи:</div>` +
+        e.recurring.map(r => `<div class="task"><div class="tt">🔁 ${esc(r.title)}<div style="font-size:12px" class="hint">${esc(r.when)}</div></div>
+          <button class="btn btn-soft btn-sm" data-stoprep="${r.id}" title="Остановить повтор">✕</button></div>`).join("") : ""}
+      ${e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : "📌"} ${esc(t.title)}${t.due
           ? `<div style="font-size:12px" class="hint">📅 на ${t.due}</div>`
           : t.status === "review" ? `<div style="font-size:12px;color:var(--orange)">⏳ ждёт вашей проверки</div>` : ""}</div>
         ${t.status === "review" && !t.due ? `<button class="btn btn-main btn-sm" data-review="${t.id}" data-act="ok">✅</button>
@@ -1390,6 +1412,9 @@ function renderTeam() {
     tg.showConfirm("Отменить штраф?", ok => ok && action("/api/delete_penalty", {id: +b.dataset.delpen})));
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = () =>
     tg.showConfirm("Удалить задачу?", ok => ok && action("/api/delete_task", {id: +b.dataset.del})));
+  document.querySelectorAll("[data-stoprep]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Остановить повтор? Новые задачи перестанут появляться (уже созданные останутся).",
+      ok => ok && action("/api/stop_recurring", {id: +b.dataset.stoprep})));
 }
 
 /* ---------- инвестиции ---------- */
@@ -2048,10 +2073,22 @@ $("cl-file").onchange = async (ev) => {
   } catch (e) { toast(e.message); }
 };
 $("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin");
+let tRepeat = "once";
+document.querySelectorAll("#t-repeat [data-rep]").forEach(b => b.onclick = () => {
+  tRepeat = b.dataset.rep;
+  document.querySelectorAll("#t-repeat [data-rep]").forEach(x => x.classList.toggle("on", x === b));
+  $("t-wd").classList.toggle("hidden", tRepeat !== "weekly");
+  $("t-rep-hint").classList.toggle("hidden", tRepeat === "once");
+  $("t-rep-hint").textContent = tRepeat === "daily"
+    ? "Задача будет появляться каждый рабочий день сотрудника (по графику) в 07:00."
+    : "Задача будет появляться раз в неделю в выбранный день в 07:00.";
+});
 $("t-add").onclick = () => {
   const title = $("t-title").value.trim();
   if (!title) return toast("Введите задачу");
-  action("/api/add_task", {user_id: +$("t-user").value, title}).then(() => $("t-title").value = "");
+  const body = {user_id: +$("t-user").value, title, repeat: tRepeat};
+  if (tRepeat === "weekly") body.weekday = +$("t-wd").value;
+  action("/api/add_task", body).then(() => $("t-title").value = "");
 };
 
 $("f-add").onclick = () => {
