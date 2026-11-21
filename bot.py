@@ -123,11 +123,11 @@ def known(uid: int) -> bool:
 
 # ---------- два бота: сотрудники (BOT_TOKEN) и клиенты (CLIENT_BOT_TOKEN, необязательно) ----------
 
-CLIENT_BOT = {"username": None}
+CLIENT_BOT = {"username": None, "ok": None}  # ok=False — токен задан, но бот клиентов не запустился
 
 
 def client_bot_on() -> bool:
-    return bool(getattr(config, "CLIENT_BOT_TOKEN", ""))
+    return bool(getattr(config, "CLIENT_BOT_TOKEN", "")) and CLIENT_BOT["ok"] is not False
 
 
 def in_client_bot(context) -> bool:
@@ -883,23 +883,34 @@ def build_client_app() -> Application:
 
 
 async def _run_both(app: Application, capp: Application) -> None:
-    """Запустить оба бота в одной программе (общая база, кабинет и очередь сообщений)."""
-    async with app, capp:  # initialize … shutdown
-        CLIENT_BOT["username"] = capp.bot.username
+    """Запустить оба бота в одной программе (общая база, кабинет и очередь сообщений).
+    Если бот клиентов не запускается (неверный или отозванный CLIENT_BOT_TOKEN) — бот сотрудников
+    и кабинет продолжают работать, а клиентам сообщения идут через бота сотрудников."""
+    async with app:
+        try:
+            await capp.initialize()
+        except Exception as e:  # noqa: BLE001 — любой сбой бота клиентов не должен ронять бота сотрудников
+            logging.error("❌ Бот клиентов не запустился (проверьте CLIENT_BOT_TOKEN): %s — работаю одним ботом", e)
+            CLIENT_BOT["ok"] = False  # клиентов обслуживает бот сотрудников, как раньше
+            capp = None
         await app.start()
-        await capp.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        if capp:
+            CLIENT_BOT.update(username=capp.bot.username, ok=True)
+            await capp.start()
+            await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         outbox = asyncio.create_task(outbox_loop(app, capp))
-        print(f"Боты запущены: сотрудники @{app.bot.username}, клиенты @{capp.bot.username}")
+        print(f"Боты запущены: сотрудники @{app.bot.username}, клиенты @{CLIENT_BOT['username'] or '— (не запущен)'}")
         try:
             await asyncio.Event().wait()
         finally:
             outbox.cancel()
+            if capp:
+                await capp.updater.stop()
+                await capp.stop()
+                await capp.shutdown()
             await app.updater.stop()
-            await capp.updater.stop()
             await app.stop()
-            await capp.stop()
 
 
 def main() -> None:
