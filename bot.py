@@ -337,6 +337,20 @@ async def staff_lang_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await reply(update, st.s(None, "choose_lang"), reply_markup=staff_lang_buttons())
 
 
+async def billz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/billz [номер] — руководитель проверяет подключение к BILLZ."""
+    if not core.is_admin(update.effective_user.id):
+        return await other(update, context)
+    phone = " ".join(context.args) if context.args else None
+    await reply(update, "⏳ Проверяю BILLZ…")
+    try:
+        text = await asyncio.to_thread(erp.diagnose, phone)
+    except Exception as e:
+        logging.exception("BILLZ диагностика")
+        text = f"❌ Ошибка проверки: {e}"
+    await reply(update, text)
+
+
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     await reply(update, st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "your_id", id=uid))
@@ -782,6 +796,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("chatid", chat_id))
+    app.add_handler(CommandHandler("billz", billz_cmd))
     app.add_handler(CommandHandler("investchat", invest_chat_cmd))
     app.add_handler(CommandHandler("task", task_cmd))
     app.add_handler(CommandHandler("fine", fine_cmd))

@@ -33,6 +33,7 @@ TIMEOUT = 15
 
 _lock = threading.Lock()
 _token = {"value": None, "until": 0.0}
+last_error = {"text": None, "at": None}  # последняя ошибка — показывает команда /billz
 
 
 class BillzError(Exception):
@@ -191,8 +192,50 @@ def sync_client(uid: int, force: bool = False) -> dict:
             core.auto_tier(uid, purchases)
     except BillzError as e:
         logging.warning("BILLZ: не удалось обновить клиента %s: %s", uid, e)
+        last_error.update(text=f"клиент {uid}: {e}", at=core.now().strftime("%d.%m %H:%M"))
         return dict(_stats(cl), error=True)
     return _stats(core.get_client(uid) or {})
+
+
+def diagnose(phone: str = None) -> str:
+    """Проверка подключения по шагам — для руководителя (команда /billz). Ключ в отчёт не попадает."""
+    lines = [f"🔌 BILLZ: {BASE}"]
+    if not enabled():
+        return lines[0] + "\n❌ Ключ не задан: нет переменной BILLZ_SECRET_TOKEN в Railway."
+    key = _secret()
+    lines.append(f"🔑 Ключ: задан, длина {len(key)} симв." + (" ⚠️ есть пробелы/кавычки по краям?" if key != key.strip(" '\"") else ""))
+    # 1. вход
+    try:
+        code, res = _http("POST", "/v1/auth/login", body={"secret_token": key})
+    except BillzError as e:
+        return "\n".join(lines + [f"❌ 1. Вход: нет связи — {e}"])
+    data = (res or {}).get("data") or {}
+    if code != 200 or not data.get("access_token"):
+        return "\n".join(lines + [f"❌ 1. Вход: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}",
+                                   "Похоже, ключ неверный или отключён в BILLZ."])
+    _token.update(value=data["access_token"], until=time.time() + max(60, int(data.get("expires_in") or 3600) - 3600))
+    lines.append("✅ 1. Вход по ключу — успешно")
+    # 2. список клиентов
+    code, res = _http("GET", "/v1/client", params={"page": 1, "limit": 1}, token=_token["value"])
+    if code != 200:
+        return "\n".join(lines + [f"❌ 2. Чтение клиентов: {code} — {(res or {}).get('message')} / {(res or {}).get('error')}",
+                                   "У роли ключа нет права на клиентов — включите его в BILLZ (права роли ключа)."])
+    lines.append(f"✅ 2. Чтение клиентов — доступно (всего в базе: {(res or {}).get('count')})")
+    # 3. поиск по номеру
+    if phone:
+        found = None
+        for p in _phone_variants(phone):
+            code, res = _http("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 1}, token=_token["value"])
+            if code == 200 and (res or {}).get("clients"):
+                found = res["clients"][0]
+                lines.append(f"✅ 3. Номер {p} найден: {found.get('first_name') or ''} {found.get('last_name') or ''}".rstrip())
+                break
+        if not found:
+            lines.append(f"ℹ️ 3. Номер {phone} в BILLZ не найден (пробовал: {', '.join(_phone_variants(phone))})")
+    lines.append(f"➕ Заводить новых клиентов в BILLZ: {'да' if CREATE_CLIENTS else 'нет'}")
+    if last_error["text"]:
+        lines.append(f"⚠️ Последняя ошибка ({last_error['at']}): {last_error['text']}")
+    return "\n".join(lines)
 
 
 def _stats(cl: dict) -> dict:
