@@ -17,7 +17,7 @@
 ## 4. Панель клиента
 - сделано: роли, номер телефона, новости, заглушки «скоро»
 - сделано: сумма покупок и бонусы из BILLZ (нужен BILLZ_SECRET_TOKEN в Railway), рассылка (Постинг)
-- нужно: пороги Silver/Gold (CLIENT_TIERS → min_purchases), решить про BILLZ_CREATE_CLIENTS
+- решено: Silver/Gold пока вручную; клиенты из бота заводятся в BILLZ (BILLZ_CREATE_CLIENTS = True)
 
 ## Отложено
 - Перезапуск xuping-bot на Railway (проверить Billing)

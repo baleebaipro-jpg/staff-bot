@@ -36,7 +36,9 @@ _token = {"value": None, "until": 0.0}
 
 
 class BillzError(Exception):
-    pass
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code
 
 
 def _secret() -> str:
@@ -93,7 +95,7 @@ def _api(method: str, path: str, params: dict = None, body: dict = None):
             tok = _login()
         code, res = _http(method, path, params, body, tok)
     if code >= 400:
-        raise BillzError(f"BILLZ {method} {path}: {code} {(res or {}).get('message')}")
+        raise BillzError(f"BILLZ {method} {path}: {code} {(res or {}).get('message')}", code)
     return res
 
 
@@ -164,9 +166,18 @@ def sync_client(uid: int, force: bool = False) -> dict:
             found = find_client(cl["phone"])
             if found:
                 bid, balance = found["billz_id"], found["balance"]
+            elif CREATE_CLIENTS and cl.get("step") == "done":
+                # клиент прошёл регистрацию в боте, но в BILLZ его нет — заводим (один раз: дальше есть billz_id)
+                bid = create_client(uid)
+                balance = 0.0 if bid else None
         purchases = None
         if bid:
-            info = _api("GET", f"/v1/customer/{bid}")
+            try:
+                info = _api("GET", f"/v1/customer/{bid}")
+            except BillzError as e:
+                if e.code != 404:
+                    raise
+                info = {}  # клиент только что заведён — покупок ещё нет
             purchases = float((info or {}).get("purchase_amount") or 0)
             if balance is None:
                 for p in _phone_variants(cl.get("phone")):
