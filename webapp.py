@@ -555,6 +555,11 @@ PAGE = r"""<!doctype html>
   .chip.rating { background: rgba(251,191,36,.16); color: var(--orange); }
   details.inv-months summary { font-size: 12.5px; color: #8b7bff; cursor: pointer; margin-top: 6px; }
   details.inv-form summary { list-style: none; cursor: pointer; }
+  .staff-act { padding: 14px 16px; }
+  .staff-act summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+  .staff-act summary::-webkit-details-marker { display: none; }
+  .staff-act summary .hint { font-size: 22px; transition: transform .2s; }
+  .staff-act[open] summary .hint { transform: rotate(90deg); }
   .folder { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; color: var(--text);
             background: linear-gradient(110deg, rgba(52,211,153,.16), rgba(124,92,255,.14) 60%, var(--card));
             border: 1px solid rgba(52,211,153,.25); }
@@ -735,6 +740,11 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
+    <button class="card folder" id="go-staff">
+      <div class="f-ic" style="background:rgba(124,92,255,.2)">👥</div>
+      <div style="min-width:0"><b>Команда<span id="staff-badge"></span></b><div class="f-sub" id="staff-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder" id="go-clients">
       <div class="f-ic" style="background:rgba(91,140,255,.18)">💎</div>
       <div style="min-width:0"><b>Клиенты</b><div class="f-sub" id="clients-folder-sub"></div></div>
@@ -751,18 +761,30 @@ PAGE = r"""<!doctype html>
         <div class="f-sub" id="inv-admin-folder-sub"></div></div>
       <div class="f-arrow">›</div>
     </button>
-    <div class="card">
-      <h3>Новая задача</h3>
-      <select id="t-user"></select>
-      <input id="t-title" placeholder="Что нужно сделать?" maxlength="500">
-      <button class="btn btn-main" style="width:100%" id="t-add">Поставить задачу</button>
-    </div>
-    <div class="card">
-      <h3>🔴 Выписать штраф</h3>
-      <select id="f-user"></select>
-      <input id="f-amount" placeholder="Сумма, например 50 000 сум (можно пусто)" maxlength="50">
-      <input id="f-reason" placeholder="Причина" maxlength="300">
-      <button class="btn btn-danger" style="width:100%" id="f-add">Выписать штраф</button>
+  </div>
+
+  <!-- КОМАНДА: сотрудники, задачи и штрафы (отдельная страница руководителя) -->
+  <div id="view-staff" class="hidden">
+    <div class="page-title">👥 Команда</div>
+    <div class="page-sub" id="staff-page-sub"></div>
+    <div class="staff-actions">
+      <details class="card staff-act">
+        <summary><b>📌 Новая задача</b><span class="hint">›</span></summary>
+        <div style="margin-top:12px">
+          <select id="t-user"></select>
+          <input id="t-title" placeholder="Что нужно сделать?" maxlength="500">
+          <button class="btn btn-main" style="width:100%" id="t-add">Поставить задачу</button>
+        </div>
+      </details>
+      <details class="card staff-act">
+        <summary><b>🔴 Выписать штраф</b><span class="hint">›</span></summary>
+        <div style="margin-top:12px">
+          <select id="f-user"></select>
+          <input id="f-amount" placeholder="Сумма, например 50 000 сум (можно пусто)" maxlength="50">
+          <input id="f-reason" placeholder="Причина" maxlength="300">
+          <button class="btn btn-danger" style="width:100%" id="f-add">Выписать штраф</button>
+        </div>
+      </details>
     </div>
     <div id="team"></div>
   </div>
@@ -890,10 +912,10 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team"};  // страница → куда ведёт «назад»
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1024,7 +1046,17 @@ $("sheet-save").onclick = async () => {
   await action("/api/set_week", {user_id: uid, week});
 };
 
+function renderStaffFolder() {
+  const t = data.team, here = t.filter(e => e.icon === "🟢").length, absent = t.filter(e => e.icon === "🔴").length;
+  const review = t.reduce((n, e) => n + e.tasks.filter(x => x.status === "review" && !x.due).length, 0);
+  const txt = `${t.length} ${plural(t.length, "сотрудник", "сотрудника", "сотрудников")} · на месте: ${here}` +
+    (absent ? ` · не пришли: ${absent}` : "") + (review ? ` · на проверке: ${review}` : "");
+  $("staff-folder-sub").textContent = txt;
+  $("staff-page-sub").textContent = txt;
+  $("staff-badge").innerHTML = review ? `<span class="f-badge">${review}</span>` : "";
+}
 function renderTeam() {
+  renderStaffFolder();
   $("t-user").innerHTML = $("f-user").innerHTML = data.team.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
   $("team").innerHTML = data.team.map(e => {
     const [lvl] = levelOf(e.total_hours, data.goal);
@@ -1432,6 +1464,7 @@ const SOON = "💰 Раздел «Инвестиции» скоро появит
 $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-clients").onclick = () => show("clients");
+$("go-staff").onclick = () => show("staff");
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
 function investSoon() {
