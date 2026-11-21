@@ -45,6 +45,44 @@ _annual = [v["annual"] for v in LEVELS.values()]
 ANNUAL_MIN, ANNUAL_MAX = min(_annual), max(_annual)
 
 
+# ---------- куда слать заявки: группа или руководителям в личку ----------
+# Группу подключают командой /investchat прямо в группе (запоминается в базе).
+# Если группа не подключена — берётся INVEST_CHAT_ID из config.py, иначе — личка руководителей.
+
+def group(c=None) -> tuple:
+    """(chat_id, thread_id) группы для заявок или (None, None)."""
+    try:
+        if c is not None:
+            r = c.execute("SELECT value FROM flags WHERE name='invest_chat'").fetchone()
+        else:
+            with core.db() as c2:
+                r = c2.execute("SELECT value FROM flags WHERE name='invest_chat'").fetchone()
+    except Exception:
+        r = None
+    if r and r["value"]:
+        chat, _, thread = r["value"].partition(":")
+        return int(chat), (int(thread) if thread else None)
+    if r is not None:  # отключено командой /investchat off
+        return None, None
+    return getattr(config, "INVEST_CHAT_ID", None), getattr(config, "INVEST_THREAD_ID", None)
+
+
+def set_group(chat_id, thread_id=None) -> None:
+    value = f"{chat_id}:{thread_id or ''}" if chat_id else ""
+    with core.db() as c:
+        c.execute("INSERT OR REPLACE INTO flags(name, value) VALUES('invest_chat', ?)", (value,))
+
+
+def notify_team(c, text: str, buttons=None) -> None:
+    """Сообщение по инвестициям: в группу, если подключена, иначе руководителям."""
+    chat, _ = group(c)
+    if not chat:
+        return core.notify_admins(c, text, buttons)
+    import json
+    markup = json.dumps(buttons, ensure_ascii=False) if buttons else None
+    c.execute("INSERT INTO outbox(chat_id, text, markup) VALUES(?, ?, ?)", (chat, text, markup))
+
+
 # ---------- вспомогательное ----------
 
 def money(n) -> str:
@@ -167,7 +205,7 @@ def request(uid: int, amount):
             (uid, amount, TERM, core.now().strftime(core.FMT)))
         inv_id = cur.lastrowid
         lo, hi = amount * ANNUAL_MIN / 100, amount * ANNUAL_MAX / 100
-        core.notify_admins(
+        notify_team(
             c,
             f"💰 Заявка на вклад №{inv_id}\n"
             f"👤 {core.name(uid)}\n"
@@ -188,7 +226,7 @@ def cancel(uid: int, inv_id: int):
             return False, "Подтверждённый вклад отменить нельзя — он выплачивается после окончания срока."
         c.execute("UPDATE investments SET status='cancelled', decided_at=? WHERE id=?",
                   (core.now().strftime(core.FMT), inv_id))
-        core.notify_admins(c, f"↩️ {core.name(uid)} отменил(а) заявку на вклад №{inv_id} ({money(r['amount'])}).")
+        notify_team(c, f"↩️ {core.name(uid)} отменил(а) заявку на вклад №{inv_id} ({money(r['amount'])}).")
     return True, "Заявка отменена."
 
 
@@ -353,7 +391,7 @@ def check_rating_day() -> None:
     if not core.flag_once(f"inv_rate:{ym}"):
         return
     with core.db() as c:
-        core.notify_admins(
+        notify_team(
             c, f"📊 Пора оценить месяц: {month_title(ym).lower()}.\nКак он прошёл? От этого зависит доход инвесторов.",
             [[(f"{v['emoji']} {v['title']}", f"inv_lvl:{ym}:{k}") for k, v in LEVELS.items()]])
 
@@ -372,5 +410,5 @@ def check_matured() -> None:
             core.notify(c, r["user_id"], f"🎉 Срок вашего вклада №{r['id']} закончился!\n"
                                          f"К выплате: {money(row['payout'])} (доход +{money(row['accrued'])}, "
                                          f"{pct(row['percent'])}). Руководитель получил уведомление.")
-            core.notify_admins(c, f"⏰ Пора выплатить вклад №{r['id']}: {core.name(r['user_id'])} — "
+            notify_team(c, f"⏰ Пора выплатить вклад №{r['id']}: {core.name(r['user_id'])} — "
                                   f"{money(row['payout'])}.\nПосле выплаты отметьте в кабинете → Инвестиции.")
