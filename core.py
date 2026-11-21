@@ -245,6 +245,8 @@ def init_db():
             c.execute("UPDATE tasks SET status='done' WHERE done_at IS NOT NULL")
         if "due_date" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
+        if "tier" not in {r[1] for r in c.execute("PRAGMA table_info(clients)")}:
+            c.execute("ALTER TABLE clients ADD COLUMN tier TEXT DEFAULT 'bronza'")
         if "markup" not in {r[1] for r in c.execute("PRAGMA table_info(outbox)")}:
             c.execute("ALTER TABLE outbox ADD COLUMN markup TEXT")
         if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
@@ -886,3 +888,37 @@ def news_list(limit: int = 10) -> list:
 def delete_news(news_id: int):
     with db() as c:
         c.execute("DELETE FROM news WHERE id=?", (news_id,))
+
+
+CLIENT_TIERS = getattr(config, "CLIENT_TIERS", {"bronza": {"title": "Bronza", "emoji": "🥉"}})
+
+
+def tier_of(cl) -> str:
+    key = (cl or {}).get("tier") or "bronza"
+    return key if key in CLIENT_TIERS else next(iter(CLIENT_TIERS))
+
+
+def tier_title(key: str) -> str:
+    t = CLIENT_TIERS.get(key, {})
+    return f"{t.get('emoji', '')} {t.get('title', key)}".strip()
+
+
+def set_client_tier(uid: int, tier: str):
+    if tier not in CLIENT_TIERS:
+        return False, "Такого статуса нет."
+    with db() as c:
+        r = c.execute("SELECT tier, first_name FROM clients WHERE user_id=?", (uid,)).fetchone()
+        if not r:
+            return False, "Клиент не найден."
+        c.execute("UPDATE clients SET tier=? WHERE user_id=?", (tier, uid))
+        if (r["tier"] or "bronza") != tier:
+            notify(c, uid, f"🎉 Ваш статус клиента: {tier_title(tier)}")
+    return True, f"{r['first_name'] or uid}: {tier_title(tier)}"
+
+
+def clients_list(limit: int = 200) -> list:
+    with db() as c:
+        rows = c.execute("SELECT * FROM clients ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [{"id": r["user_id"], "name": r["first_name"] or "", "username": r["username"] or "",
+             "phone": r["phone"], "tier": tier_of(dict(r)),
+             "since": parse(r["created_at"]).strftime("%d.%m.%Y")} for r in rows]

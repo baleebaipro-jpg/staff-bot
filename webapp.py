@@ -111,11 +111,16 @@ def api_me(uid, data):
     res["is_client"] = not res["is_admin"] and not res["is_employee"]
     if res["is_client"]:
         cl = core.get_client(uid) or {}
-        res["client"] = {"id": uid, "name": cl.get("first_name") or "", "phone": cl.get("phone")}
+        tier = core.tier_of(cl)
+        res["client"] = {"id": uid, "name": cl.get("first_name") or "", "phone": cl.get("phone"),
+                         "tier": tier, "tier_title": core.CLIENT_TIERS[tier]["title"],
+                         "ava_v": ava_version(uid)}
         res["news"] = core.news_list(10)
     if res["is_admin"]:
         res["news"] = core.news_list(10)
         res["clients"] = core.clients_stats()
+        res["client_list"] = core.clients_list()
+        res["tiers"] = {k: v["title"] for k, v in core.CLIENT_TIERS.items()}
         res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
         res["shifts"][core.OFF] = "Выходной"
         res["team"] = core.team()
@@ -203,6 +208,13 @@ def api_task_review(uid, data):
     if act not in ("ok", "back", "later"):
         return jsonify(ok=False, msg="Неизвестное действие.")
     ok, msg = core.review_task(int(data.get("id", 0)), act)
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/set_tier")
+@need_user(admin=True)
+def api_set_tier(uid, data):
+    ok, msg = core.set_client_tier(int(data.get("user_id", 0)), str(data.get("tier", "")))
     return jsonify(ok=ok, msg=msg)
 
 
@@ -294,6 +306,23 @@ PAGE = r"""<!doctype html>
   .btn { border-radius: 14px; padding: 13px 16px; font-weight: 700; white-space: nowrap; }
   .btn-main { background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; }
   .btn-soft { background: var(--card2); }
+  .tier-ring.bronza { background: linear-gradient(135deg, #f0b27a, #8a4f24); box-shadow: 0 0 22px rgba(205,127,50,.45); }
+  .tier-ring.silver { background: linear-gradient(135deg, #f4f6fa, #8e98a8); box-shadow: 0 0 22px rgba(200,210,225,.45); }
+  .tier-ring.gold   { background: linear-gradient(135deg, #ffe680, #c58a10); box-shadow: 0 0 24px rgba(255,200,60,.55); }
+  .tier-ring #cl-ava > div, .tier-ring #cl-ava > img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover;
+         background: var(--card2); display: flex; align-items: center; justify-content: center; font-size: 34px;
+         font-weight: 700; border: 3px solid var(--bg); }
+  .tier-badge { position: absolute; right: -2px; bottom: -2px; width: 34px; height: 34px; border-radius: 50%;
+                border: 3px solid var(--bg); display: flex; align-items: center; justify-content: center; font-size: 17px;
+                background: var(--card2); }
+  .tier-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: 99px;
+               font-weight: 800; font-size: 14px; letter-spacing: .02em; color: #1a1306; }
+  .tier-pill.bronza { background: linear-gradient(90deg, #f0b27a, #b26a32); }
+  .tier-pill.silver { background: linear-gradient(90deg, #ffffff, #a9b3c2); }
+  .tier-pill.gold   { background: linear-gradient(90deg, #fff0a8, #e0a21c); }
+  .cl-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+  .cl-row:first-child { border-top: none; }
+  .cl-row select { width: auto; margin: 0; padding: 7px 8px; font-size: 13px; }
   .soon-stat { position: relative; opacity: .7; }
   .soon-stat em { position: absolute; top: 8px; right: 10px; font-style: normal; font-size: 11px; color: var(--hint); }
   textarea { width: 100%; font: inherit; color: var(--text); background: var(--card2); border: 1px solid var(--line);
@@ -462,11 +491,12 @@ PAGE = r"""<!doctype html>
   <!-- ПАНЕЛЬ КЛИЕНТА -->
   <div id="view-client" class="hidden">
     <div class="profile">
-      <div class="ava" id="cl-ava"></div>
+      <div class="ava tier-ring" id="cl-ring"><span id="cl-ava" style="display:contents"></span>
+        <span class="tier-badge" id="cl-badge"></span></div>
       <div style="min-width:0">
         <div class="pname" id="cl-name"></div>
         <div class="prole" id="cl-phone"></div>
-        <div class="lvl-pill" style="padding:4px 12px">💎 Клиент RADI & Xuping</div>
+        <div class="tier-pill" id="cl-tier"></div>
       </div>
     </div>
     <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)">
@@ -488,6 +518,11 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
+    <div class="card">
+      <div class="head"><h3>💎 Клиенты</h3><span class="hint" style="font-size:13px" id="cl-total"></span></div>
+      <input id="cl-search" placeholder="Поиск: имя или номер">
+      <div id="cl-list"></div>
+    </div>
     <div class="card">
       <div class="head"><h3>📰 Новости для клиентов</h3><span class="hint" style="font-size:13px" id="cl-count"></span></div>
       <textarea id="n-text" rows="3" placeholder="Текст новости…" maxlength="2000"></textarea>
@@ -808,7 +843,7 @@ async function load() {
     $("loading").classList.add("hidden");
     if (data.is_client) { renderClient(); show("client"); return; }
     if (data.is_employee) renderMe();
-    if (data.is_admin) { renderTeam(); renderNewsAdmin(); }
+    if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); }
     $("seg").classList.toggle("hidden", !(data.is_admin && data.is_employee));
     if (!data.is_employee) view = "team";
     show(view);
@@ -824,14 +859,36 @@ function newsHtml(items, admin) {
       <span>🗓 ${n.date}</span>${admin ? `<button class="link" data-delnews="${n.id}">удалить</button>` : ""}</div>${esc(n.text)}</div>`).join("")
     : `<div class="empty">Новостей пока нет</div>`;
 }
+const TIER_EMOJI = {bronza: "🥉", silver: "🥈", gold: "🥇"};
 function renderClient() {
   const c = data.client;
-  $("cl-ava").innerHTML = avatar(c.id, c.name || "?", 0);
+  $("cl-ava").innerHTML = avatar(c.id, c.name || "?", c.ava_v);
+  $("cl-ring").className = "ava tier-ring " + c.tier;
+  $("cl-badge").textContent = TIER_EMOJI[c.tier] || "💎";
+  $("cl-tier").className = "tier-pill " + c.tier;
+  $("cl-tier").textContent = (TIER_EMOJI[c.tier] || "") + " " + c.tier_title;
   $("cl-name").textContent = c.name || "Клиент";
   $("cl-phone").textContent = c.phone || "номер не указан";
   $("cl-nophone").classList.toggle("hidden", !!c.phone);
   $("cl-news").innerHTML = newsHtml(data.news, false);
 }
+function renderClientsAdmin() {
+  const q = ($("cl-search").value || "").trim().toLowerCase();
+  const list = (data.client_list || []).filter(c =>
+    !q || (c.name + " " + (c.phone || "") + " " + c.username).toLowerCase().includes(q));
+  $("cl-total").textContent = `всего: ${data.client_list.length}`;
+  $("cl-list").innerHTML = list.length ? list.slice(0, 100).map(c => `
+    <div class="cl-row"><div style="font-size:20px">${TIER_EMOJI[c.tier] || ""}</div>
+      <div style="flex:1;min-width:0"><b>${esc(c.name || "Без имени")}</b>
+        <div class="hint" style="font-size:12px">${esc(c.phone || "номер не указан")} · с ${c.since}</div></div>
+      <select data-tier="${c.id}">${Object.entries(data.tiers).map(([k, t]) =>
+        `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("")}</select></div>`).join("")
+    : `<div class="empty">${q ? "Никого не нашли" : "Клиентов пока нет"}</div>`;
+  document.querySelectorAll("[data-tier]").forEach(s => s.onchange = () =>
+    action("/api/set_tier", {user_id: +s.dataset.tier, tier: s.value}));
+}
+$("cl-search").oninput = () => renderClientsAdmin();
+
 function renderNewsAdmin() {
   $("cl-count").textContent = `клиентов: ${data.clients.total} (с номером: ${data.clients.with_phone})`;
   $("n-list").innerHTML = newsHtml(data.news, true);

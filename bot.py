@@ -139,7 +139,8 @@ async def client_menu(update: Update, greet: bool = False) -> None:
                     "нажмите кнопку ниже 👇",
                     reply_markup=client_keyboard(u.id))
         return
-    text = (f"Assalomu alaykum, {u.first_name}! 👋\n\n" if greet else "") + "Выберите раздел 👇"
+    text = ((f"Assalomu alaykum, {u.first_name}! 👋\n" if greet else "")
+            + f"Ваш статус: {core.tier_title(core.tier_of(cl))}\n\nВыберите раздел 👇")
     await reply(update, text, reply_markup=client_keyboard(u.id))
 
 
