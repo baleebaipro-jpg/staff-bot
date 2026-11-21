@@ -258,16 +258,32 @@ def api_task_done(uid, data):
 @app.post("/api/add_task")
 @need_user(admin=True)
 def api_add_task(uid, data):
-    target = int(data.get("user_id", 0))
+    """Задача одному или сразу нескольким сотрудникам (user_ids) — каждому своя."""
+    raw = data.get("user_ids") or ([data.get("user_id")] if data.get("user_id") else [])
+    targets = []
+    for t in raw:
+        try:
+            t = int(t)
+        except (TypeError, ValueError):
+            continue
+        if core.employee(t) and t not in targets:
+            targets.append(t)
     title = str(data.get("title", "")).strip()
-    if not core.employee(target) or not title:
-        return jsonify(ok=False, msg="Выберите сотрудника и введите задачу.")
+    if not targets or not title:
+        return jsonify(ok=False, msg="Выберите сотрудников и введите задачу.")
     repeat = str(data.get("repeat") or "once")
     if repeat in ("daily", "weekly"):  # повторяющаяся: каждый рабочий день / каждую неделю
-        ok, msg = core.add_recurring(target, title, repeat, data.get("weekday"))
-        return jsonify(ok=ok, msg=msg)
-    core.add_task(target, title)
-    return jsonify(ok=True, msg=f"Задача поставлена: {core.name(target)}")
+        results = [core.add_recurring(t, title, repeat, data.get("weekday")) for t in targets]
+        if not all(ok for ok, _ in results):
+            return jsonify(ok=False, msg=next(m for ok, m in results if not ok))
+        if len(targets) == 1:
+            return jsonify(ok=True, msg=results[0][1])
+        when = "каждый рабочий день" if repeat == "daily" else "каждую неделю"
+        return jsonify(ok=True, msg=f"🔁 Задача {when} поставлена {len(targets)} сотрудникам: " +
+                                    ", ".join(core.name(t) for t in targets))
+    for t in targets:
+        core.add_task(t, title)
+    return jsonify(ok=True, msg="Задача поставлена: " + ", ".join(core.name(t) for t in targets))
 
 
 @app.post("/api/stop_recurring")
@@ -1046,7 +1062,8 @@ PAGE = r"""<!doctype html>
       <details class="card staff-act">
         <summary><b>📌 Новая задача</b><span class="hint">›</span></summary>
         <div style="margin-top:12px">
-          <select id="t-user"></select>
+          <div class="hint" style="font-size:13px;margin-bottom:6px">Кому (можно несколько):</div>
+          <div class="quick" id="t-users" style="margin:0 0 10px"></div>
           <input id="t-title" placeholder="Что нужно сделать?" maxlength="500">
           <div class="quick" id="t-repeat" style="margin:0 0 10px">
             <button data-rep="once" class="on">Один раз</button><button data-rep="daily">🔁 Каждый день</button>
@@ -1376,7 +1393,8 @@ function renderStaffFolder() {
 }
 function renderTeam() {
   renderStaffFolder();
-  $("t-user").innerHTML = $("f-user").innerHTML = data.team.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
+  $("f-user").innerHTML = data.team.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
+  renderTaskUsers();
   $("team").innerHTML = data.team.map(e => {
     const [lvl] = levelOf(e.total_hours, data.goal);
     const pct = Math.min(100, e.total_hours / data.goal * 100);
@@ -2074,6 +2092,22 @@ $("cl-file").onchange = async (ev) => {
 };
 $("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin");
 let tRepeat = "once";
+const tUsers = new Set();  // кому ставим задачу (выбор сохраняется при автообновлении)
+function renderTaskUsers() {
+  const all = data.team.length && data.team.every(e => tUsers.has(e.id));
+  $("t-users").innerHTML = `<button data-tu="all" class="${all ? "on" : ""}">✅ Все</button>` +
+    data.team.map(e => `<button data-tu="${e.id}" class="${tUsers.has(e.id) ? "on" : ""}">${esc(e.name)}</button>`).join("");
+  document.querySelectorAll("#t-users [data-tu]").forEach(b => b.onclick = () => {
+    if (b.dataset.tu === "all") {
+      const allOn = data.team.every(e => tUsers.has(e.id));
+      data.team.forEach(e => allOn ? tUsers.delete(e.id) : tUsers.add(e.id));
+    } else {
+      const id = +b.dataset.tu; tUsers.has(id) ? tUsers.delete(id) : tUsers.add(id);
+    }
+    renderTaskUsers();
+  });
+  $("t-add").textContent = tUsers.size > 1 ? `Поставить задачу (${tUsers.size})` : "Поставить задачу";
+}
 document.querySelectorAll("#t-repeat [data-rep]").forEach(b => b.onclick = () => {
   tRepeat = b.dataset.rep;
   document.querySelectorAll("#t-repeat [data-rep]").forEach(x => x.classList.toggle("on", x === b));
@@ -2086,7 +2120,8 @@ document.querySelectorAll("#t-repeat [data-rep]").forEach(b => b.onclick = () =>
 $("t-add").onclick = () => {
   const title = $("t-title").value.trim();
   if (!title) return toast("Введите задачу");
-  const body = {user_id: +$("t-user").value, title, repeat: tRepeat};
+  if (!tUsers.size) return toast("Выберите, кому поставить задачу");
+  const body = {user_ids: [...tUsers], title, repeat: tRepeat};
   if (tRepeat === "weekly") body.weekday = +$("t-wd").value;
   action("/api/add_task", body).then(() => $("t-title").value = "");
 };
