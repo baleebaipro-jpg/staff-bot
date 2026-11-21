@@ -15,6 +15,7 @@ import config
 import core
 import i18n
 import invest
+import posts
 import projects
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
@@ -140,6 +141,7 @@ def api_me(uid, data):
                              "history": invest.history_public()}
     if res["is_admin"]:
         res["projects"] = projects.overview(uid)
+        res["posting"] = {"audience": posts.audience_info(), "history": posts.history()}
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
@@ -266,6 +268,37 @@ def api_delete_task(uid, data):
     core.delete_task(int(data.get("id", 0)))
     return jsonify(ok=True, msg="Задача удалена.")
 
+
+
+# ---------- постинг ----------
+
+@app.post("/api/post")
+@need_user(admin=True)
+def api_post(uid, data):
+    act = data.get("action")
+    if act == "cancel":
+        ok, msg = posts.cancel(uid, int(data.get("id") or 0))
+        return jsonify(ok=ok, msg=msg)
+    photo = None
+    raw = str(data.get("image") or "")
+    if raw:
+        if "," in raw:
+            raw = raw.split(",", 1)[1]
+        try:
+            img = base64.b64decode(raw, validate=True)
+        except Exception:
+            img = b""
+        if not img.startswith(b"\xff\xd8\xff") or len(img) > 5_000_000:
+            return jsonify(ok=False, msg="Не удалось прочитать фото.")
+        photo = posts.save_photo(img)
+    args = (data.get("text"), photo, data.get("button_text"), data.get("button_url"))
+    if act == "test":
+        ok, msg = posts.test(uid, *args)
+    elif act == "create":
+        ok, msg = posts.create(uid, *args, data.get("audience") or [], bool(data.get("to_news")), data.get("send_at") or "")
+    else:
+        ok, msg = False, "Неизвестное действие."
+    return jsonify(ok=ok, msg=msg)
 
 
 # ---------- личные проекты руководителя ----------
@@ -607,6 +640,14 @@ PAGE = r"""<!doctype html>
   .quick button { background: var(--card2); border: 1.5px solid var(--line); border-radius: 99px; padding: 6px 12px; font-size: 13px; }
   .quick button.on { border-color: var(--accent); background: rgba(124,92,255,.2); }
   .day-h { font-size: 13px; font-weight: 700; margin: 12px 0 2px; }
+  /* постинг */
+  .po-lbl { font-size: 13px; color: var(--hint); margin: 12px 0 6px; }
+  .po-post { padding: 11px 0; border-top: 1px solid var(--line); }
+  .po-post:first-child { border-top: none; }
+  .po-post .pt { white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3;
+                 -webkit-box-orient: vertical; overflow: hidden; margin: 4px 0; }
+  .chk { display: flex; gap: 10px; align-items: center; margin-top: 12px; font-size: 14px; cursor: pointer; }
+  .chk input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--accent); }
   .day-h:first-child { margin-top: 0; }
   .staff-act summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
   .staff-act summary::-webkit-details-marker { display: none; }
@@ -748,6 +789,40 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- ПОСТИНГ -->
+  <div id="view-posting" class="hidden">
+    <div class="page-title">📣 Постинг</div>
+    <div class="page-sub">Посты от имени бота — клиентам, сотрудникам, в группы и каналы</div>
+    <div class="card">
+      <textarea id="po-text" rows="6" maxlength="4000" placeholder="Текст поста…"></textarea>
+      <div class="hint" style="font-size:12px;text-align:right;margin:-6px 0 8px" id="po-count"></div>
+      <label class="btn btn-soft" style="display:block;text-align:center" id="po-photo-btn">📷 Добавить фото
+        <input type="file" id="po-file" accept="image/*" hidden></label>
+      <div id="po-photo-box" class="hidden" style="position:relative;margin-top:10px">
+        <img id="po-prev" style="width:100%;max-height:300px;object-fit:contain;border-radius:12px;background:var(--card2)">
+        <button class="btn btn-soft btn-sm" id="po-photo-del" style="position:absolute;top:8px;right:8px">✕ Убрать</button>
+      </div>
+      <details class="staff-act" style="padding:0;margin-top:12px">
+        <summary><span style="font-size:14px">🔗 Кнопка-ссылка под постом</span><span class="hint">›</span></summary>
+        <div style="margin-top:10px">
+          <input id="po-btn-text" maxlength="60" placeholder="Текст кнопки, например: Заказать">
+          <input id="po-btn-url" maxlength="500" placeholder="Ссылка: https://t.me/xupingSilver" inputmode="url">
+        </div>
+      </details>
+      <div class="po-lbl">Кому</div>
+      <div class="quick" id="po-aud" style="margin:0"></div>
+      <label class="chk"><input type="checkbox" id="po-news">📰 Показать и в «Новостях» в панели клиентов</label>
+      <div class="po-lbl">Когда</div>
+      <div class="quick" id="po-when" style="margin:0"><button data-w="now" class="on">Сейчас</button><button data-w="later">🕒 Запланировать</button></div>
+      <input type="datetime-local" id="po-at" class="hidden" style="margin-top:10px">
+      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:10px;margin-top:14px">
+        <button class="btn btn-soft" id="po-test">👁 Себе</button>
+        <button class="btn btn-main" id="po-send">📣 Опубликовать</button>
+      </div>
+    </div>
+    <div class="card"><h3>История постов</h3><div id="po-history"></div></div>
+  </div>
+
   <!-- ОДИН ПРОЕКТ -->
   <div id="view-project" class="hidden">
     <div style="display:flex;align-items:flex-start;gap:10px">
@@ -833,6 +908,11 @@ PAGE = r"""<!doctype html>
     <button class="card folder" id="go-staff">
       <div class="f-ic" style="background:rgba(124,92,255,.2)">👥</div>
       <div style="min-width:0"><b>Команда<span id="staff-badge"></span></b><div class="f-sub" id="staff-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
+    <button class="card folder" id="go-posting">
+      <div class="f-ic" style="background:rgba(52,211,153,.16)">📣</div>
+      <div style="min-width:0"><b>Постинг</b><div class="f-sub" id="posting-folder-sub"></div></div>
       <div class="f-arrow">›</div>
     </button>
     <button class="card folder" id="go-clients">
@@ -1003,10 +1083,10 @@ async function action(path, body) {
 
 /* ---------- экраны ---------- */
 const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team",
-                  projects: "team", project: "projects"};  // страница → куда ведёт «назад»
+                  projects: "team", project: "projects", posting: "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1568,6 +1648,77 @@ function editPtask(id) {
   $("et-del").onclick = () => tg.showConfirm("Удалить задачу?", ok => { if (ok) { invSheetClose(); projAct({action: "delete_task", id}); } });
 }
 
+/* ---------- постинг ---------- */
+let poPhoto = null, poWhen = "now";
+const poAud = new Set();
+function renderPosting() {
+  const a = data.posting.audience, h = data.posting.history;
+  const opts = [["clients", `👥 Клиенты (${a.clients})`], ["staff", `🧑‍💼 Сотрудники (${a.staff})`],
+                ...a.chats.map(c => ["chat:" + c.id, "📢 " + c.title])];
+  $("po-aud").innerHTML = opts.map(([k, t]) => `<button data-aud="${k}" class="${poAud.has(k) ? "on" : ""}">${esc(t)}</button>`).join("");
+  document.querySelectorAll("[data-aud]").forEach(b => b.onclick = () => {
+    poAud.has(b.dataset.aud) ? poAud.delete(b.dataset.aud) : poAud.add(b.dataset.aud);
+    b.classList.toggle("on", poAud.has(b.dataset.aud));
+  });
+  const planned = h.filter(p => p.status === "scheduled").length;
+  $("posting-folder-sub").textContent = `клиентов: ${a.clients} · групп: ${a.chats.length}` +
+    (planned ? ` · запланировано: ${planned}` : h.length ? ` · постов: ${h.length}` : "");
+  $("po-history").innerHTML = h.length ? h.map(p => {
+    const st = p.status === "scheduled" ? `<span class="chip pending">🕒 ${p.when}</span>`
+      : `<span class="chip ${p.queued ? "active" : "matured"}">${p.queued ? "📤 отправляется" : "✅ отправлен"}</span>`;
+    const stats = p.status === "scheduled" ? "" : `<span>доставлено: ${p.delivered} из ${p.total}</span>` +
+      (p.failed ? `<span class="late">не доставлено: ${p.failed}</span>` : "") + (p.queued ? `<span>в очереди: ${p.queued}</span>` : "");
+    return `<div class="po-post"><div class="inv-top"><span class="hint" style="font-size:12.5px">${p.status === "scheduled" ? "Запланирован" : p.when}${p.has_photo ? " · 📷" : ""}${p.button_text ? " · 🔗" : ""}</span>${st}</div>
+      <div class="pt">${esc(p.text || "(только фото)")}</div>
+      <div class="pmeta"><span>→ ${esc(p.audience_titles.join(", "))}</span>${stats}</div>
+      ${p.status === "scheduled" ? `<div class="inv-act"><button class="btn btn-soft btn-sm" data-pocancel="${p.id}">Отменить</button></div>` : ""}</div>`;
+  }).join("") : `<div class="empty">Постов пока нет</div>`;
+  document.querySelectorAll("[data-pocancel]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Отменить запланированный пост?", ok => ok && action("/api/post", {action: "cancel", id: +b.dataset.pocancel})));
+}
+const poCount = () => { const n = $("po-text").value.length, max = poPhoto ? 1024 : 4000;
+  $("po-count").innerHTML = `<span style="color:${n > max ? "var(--red)" : "inherit"}">${n} / ${max}</span>`; };
+$("po-text").oninput = poCount;
+$("po-file").onchange = async ev => {
+  const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;
+  try { poPhoto = await reportJpeg(f); $("po-prev").src = poPhoto; $("po-photo-box").classList.remove("hidden");
+        $("po-photo-btn").classList.add("hidden"); poCount(); } catch (e) { toast(e.message); }
+};
+$("po-photo-del").onclick = () => { poPhoto = null; $("po-photo-box").classList.add("hidden"); $("po-photo-btn").classList.remove("hidden"); poCount(); };
+document.querySelectorAll("#po-when button").forEach(b => b.onclick = () => {
+  poWhen = b.dataset.w;
+  document.querySelectorAll("#po-when button").forEach(x => x.classList.toggle("on", x === b));
+  $("po-at").classList.toggle("hidden", poWhen !== "later");
+});
+function poBody() {
+  return {text: $("po-text").value.trim(), image: poPhoto || "", button_text: $("po-btn-text").value.trim(),
+          button_url: $("po-btn-url").value.trim()};
+}
+function poReset() {
+  $("po-text").value = ""; $("po-btn-text").value = ""; $("po-btn-url").value = ""; $("po-at").value = "";
+  $("po-news").checked = false; poAud.clear(); $("po-photo-del").onclick(); poCount();
+}
+$("po-test").onclick = () => {
+  const b = poBody(); if (!b.text && !b.image) return toast("Напишите текст или добавьте фото");
+  toast("Отправляю…"); api("/api/post", Object.assign({action: "test"}, b)).then(r => toast(r.msg)).catch(e => toast(e.message));
+};
+$("po-send").onclick = () => {
+  const b = poBody();
+  if (!b.text && !b.image) return toast("Напишите текст или добавьте фото");
+  if (!poAud.size) return toast("Выберите, кому отправить");
+  if (poWhen === "later" && !$("po-at").value) return toast("Выберите дату и время");
+  const names = [...document.querySelectorAll("[data-aud].on")].map(x => x.textContent).join(", ");
+  const when = poWhen === "later" ? `\nКогда: ${$("po-at").value.replace("T", " ")}` : "\nОтправить сейчас.";
+  tg.showConfirm(`Опубликовать пост?\nКому: ${names}${when}`, ok => {
+    if (!ok) return;
+    toast("Отправляю…");
+    api("/api/post", Object.assign({action: "create", audience: [...poAud], to_news: $("po-news").checked,
+        send_at: poWhen === "later" ? $("po-at").value : ""}, b))
+      .then(r => { toast(r.msg); if (r.ok) poReset(); return load(); }).catch(e => toast(e.message));
+  });
+};
+poCount();
+
 async function load() {
   try {
     data = await api("/api/me");
@@ -1581,7 +1732,7 @@ async function load() {
     if (!data.invest_enabled) investSoon();
     SUBPAGES.invest = data.is_employee ? "me" : "team";
     if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin();
-                         if (data.projects) renderProjects(); }
+                         if (data.projects) renderProjects(); if (data.posting) renderPosting(); }
     if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
@@ -1670,6 +1821,7 @@ $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOO
 $("go-clients").onclick = () => show("clients");
 $("go-staff").onclick = () => show("staff");
 $("go-projects").onclick = () => show("projects");
+$("go-posting").onclick = () => show("posting");
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */
 function investSoon() {

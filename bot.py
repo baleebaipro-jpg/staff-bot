@@ -13,7 +13,7 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-from telegram.error import BadRequest, NetworkError, TelegramError
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -31,6 +31,7 @@ import core
 import erp
 import i18n
 import invest as invest_mod
+import posts
 import projects
 import relay
 
@@ -640,6 +641,10 @@ async def outbox_loop(app: Application) -> None:
         except Exception:
             logging.exception("Ошибка при проверке кружков")
         try:
+            posts.dispatch_due()
+        except Exception:
+            logging.exception("Ошибка запланированных постов")
+        try:
             projects.morning_digest()
         except Exception:
             logging.exception("Ошибка утреннего списка задач")
@@ -662,8 +667,9 @@ async def outbox_loop(app: Application) -> None:
                         text, mode = text[5:], "HTML"
                     markup = None
                     if m.get("markup"):
-                        markup = InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in row]
-                                                       for row in json.loads(m["markup"])])
+                        markup = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(t, url=d[4:]) if d.startswith("url:") else InlineKeyboardButton(t, callback_data=d)
+                            for t, d in row] for row in json.loads(m["markup"])])
                     if m.get("photo"):
                         p = m["photo"]
                         src = p[3:] if p.startswith("tg:") else open(p, "rb")
@@ -677,18 +683,22 @@ async def outbox_loop(app: Application) -> None:
                         await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode,
                                                    reply_markup=markup)
                     core.mark_sent(m["id"])
+                except RetryAfter as e:
+                    await asyncio.sleep(float(getattr(e, "retry_after", 5)) + 1)  # Telegram просит подождать
+                    break
                 except BadRequest as e:
                     logging.warning("Сообщение отклонено %s: %s", m["chat_id"], e)
-                    core.mark_sent(m["id"])
+                    core.mark_sent(m["id"], failed=True)
                 except NetworkError:
                     break  # сеть сбоит — попробуем позже
                 except TelegramError as e:
-                    # например, человек ни разу не нажимал /start у бота
+                    # например, человек ни разу не нажимал /start у бота или заблокировал его
                     logging.warning("Не доставлено %s: %s", m["chat_id"], e)
-                    core.mark_sent(m["id"])
+                    core.mark_sent(m["id"], failed=True)
         except Exception:
             logging.exception("Ошибка в очереди уведомлений")
-        await asyncio.sleep(10)
+        # пока идёт рассылка — разбираем очередь быстрее
+        await asyncio.sleep(1 if len(core.pending_outbox(1)) else 10)
 
 
 async def post_init(app: Application) -> None:
