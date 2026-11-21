@@ -128,6 +128,7 @@ SHIFTS = {
 EMPLOYEES = {
     9211646422: {"name": "Silver manager", "role": "Менеджер", "shift": "9-18", "days": [0, 1, 2, 3, 4], "hours_before": 0},
     7711346965: {"name": "Admin Silver", "role": "Админ", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
+    6834141071: {"name": "Aziza Tursunbaeva", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
 }
 
 
