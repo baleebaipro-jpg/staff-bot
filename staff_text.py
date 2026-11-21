@@ -152,6 +152,14 @@ S = {
     "any_time": {"ru": "в любое время", "uz": "istalgan vaqtda"},
     "range": {"ru": "С {a} до {b}", "uz": "{a} dan {b} gacha"},
     "week_updated": {"ru": "🗓 Ваш график на неделю обновлён:", "uz": "🗓 Haftalik grafigingiz yangilandi:"},
+    "remind_in": {
+        "ru": "⏰ Через {m} мин начало смены ({start}).\nОтметьте приход — «{btn}» — до {until}.",
+        "uz": "⏰ {m} daqiqadan keyin smena boshlanadi ({start}).\nKelganingizni belgilang — «{btn}» — soat {until} gacha.",
+    },
+    "remind_out": {
+        "ru": "⏰ Через {m} мин конец смены ({end}).\nНе забудьте отметить уход — «{btn}».",
+        "uz": "⏰ {m} daqiqadan keyin smena tugaydi ({end}).\nKetishni belgilashni unutmang — «{btn}».",
+    },
 
     # ---------- кабинет (ответы сервера) ----------
     "photo_updated": {"ru": "Фото обновлено 📸", "uz": "Rasm yangilandi 📸"},
