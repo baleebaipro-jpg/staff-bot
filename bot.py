@@ -535,16 +535,57 @@ async def invest_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         "Нажимать кнопки может только руководитель.")
 
 
+class _WaitingReport(filters.MessageFilter):
+    """Сообщение-фото от руководителя, от которого ждём фото-отчёт о выплате."""
+    def filter(self, message) -> bool:
+        return bool(message.from_user and core.is_admin(message.from_user.id)
+                    and invest_mod.waiting_report(message.from_user.id))
+
+
+async def invest_report_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    uid = update.effective_user.id
+    wait = invest_mod.waiting_report(uid)
+    if not wait:
+        return
+    inv_id, method = wait
+    file_id = msg.photo[-1].file_id if msg.photo else msg.document.file_id
+    in_group = update.effective_chat.id == invest_mod.group()
+    ok, text = invest_mod.early_pay(inv_id, method, "tg:" + file_id, post_to_group=not in_group)
+    invest_mod.stop_waiting(uid)
+    await msg.reply_text(("✅ " if ok else "⚠️ ") + text)
+
+
 async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Кнопки под сообщениями: «Деньги получил / Отклонить» и оценка месяца."""
     q = update.callback_query
     if not core.is_admin(q.from_user.id):
         return await q.answer("Нет доступа.", show_alert=True)
     kind, a, b = q.data.split(":")
+    if kind == "inv_early" and a == "ok":
+        # шаг 1: как платили?
+        await q.answer()
+        try:
+            await q.edit_message_reply_markup(InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Онлайн", callback_data=f"inv_pay:{b}:online"),
+                 InlineKeyboardButton("💵 Офлайн", callback_data=f"inv_pay:{b}:offline")],
+                [InlineKeyboardButton("✕ Отклонить", callback_data=f"inv_early:no:{b}")]]))
+        except TelegramError:
+            pass
+        return
+    if kind == "inv_pay":
+        # шаг 2: ждём фото-отчёт
+        inv_id, method = int(a), b
+        invest_mod.wait_report(q.from_user.id, inv_id, method)
+        await q.answer()
+        await q.message.reply_text(
+            f"📸 {q.from_user.first_name}, пришлите фото-отчёт ({invest_mod.REPORT_HINT[method]}) "
+            f"по вкладу №{inv_id} — ответом на это сообщение или боту в личку. Жду 30 минут.")
+        return
     if kind == "inv":
         ok, msg = invest_mod.decide(int(b), a == "ok")
     elif kind == "inv_early":
-        ok, msg = invest_mod.early_decide(int(b), a == "ok")
+        ok, msg = invest_mod.early_reject(int(b))
     else:
         ok, msg = invest_mod.set_level(a, b)
     await q.answer(msg[:190], show_alert=not ok)
@@ -601,8 +642,18 @@ async def outbox_loop(app: Application) -> None:
                     if m.get("markup"):
                         markup = InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in row]
                                                        for row in json.loads(m["markup"])])
-                    await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode,
-                                               reply_markup=markup)
+                    if m.get("photo"):
+                        p = m["photo"]
+                        src = p[3:] if p.startswith("tg:") else open(p, "rb")
+                        try:
+                            await app.bot.send_photo(m["chat_id"], src, caption=text[:1024], message_thread_id=thread,
+                                                     parse_mode=mode, reply_markup=markup)
+                        finally:
+                            if not isinstance(src, str):
+                                src.close()
+                    else:
+                        await app.bot.send_message(m["chat_id"], text, message_thread_id=thread, parse_mode=mode,
+                                                   reply_markup=markup)
                     core.mark_sent(m["id"])
                 except BadRequest as e:
                     logging.warning("Сообщение отклонено %s: %s", m["chat_id"], e)
@@ -625,6 +676,7 @@ async def post_init(app: Application) -> None:
 def main() -> None:
     core.init_db()
     app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & _WaitingReport(), invest_report_photo))
     app.add_handler(MessageHandler(
         (filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.StatusUpdate.ALL & ~filters.COMMAND,
         relay.on_group_message,
@@ -639,7 +691,7 @@ def main() -> None:
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
-    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+)$"))
+    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+|inv_pay:\d+:(online|offline))$"))
     app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
