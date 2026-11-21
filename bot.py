@@ -8,6 +8,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    LinkPreviewOptions,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
@@ -287,7 +288,7 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not erp.enabled():
             key = "soon_purchases" if purchases else "soon_bonus"
             return await reply(update, i18n.t(lang, key), reply_markup=client_keyboard(u.id))
-        stats = await asyncio.to_thread(erp.sync_client, u.id)
+        stats = await asyncio.to_thread(erp.sync_client, u.id, True)  # по кнопке — всегда свежие данные
         value = stats.get("purchases" if purchases else "balance")
         if not stats.get("linked"):
             msg = i18n.t(lang, "billz_error") if stats.get("error") else i18n.t(lang, "billz_not_found")
@@ -377,7 +378,8 @@ async def billz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logging.exception("BILLZ диагностика")
         text = f"❌ Ошибка проверки: {e}"
-    await reply(update, text)
+    # без превью ссылки: иначе Telegram открывает адрес API и показывает его ответ как «.json»
+    await reply(update, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
 
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
