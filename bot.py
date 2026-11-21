@@ -9,6 +9,7 @@ from telegram import (
     InlineKeyboardMarkup,
     KeyboardButton,
     LinkPreviewOptions,
+    MenuButtonWebApp,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
@@ -58,12 +59,14 @@ def keyboard(uid: int) -> ReplyKeyboardMarkup:
         L = core.staff_lang(uid)
         rows.append([st.s(L, "btn_in"), st.s(L, "btn_out")])
         rows.append([st.s(L, "btn_tasks"), st.s(L, "btn_invest")])
-        rows.append([KeyboardButton(st.s(L, "btn_cabinet"), web_app=WebAppInfo(url=config.WEBAPP_URL)),
+        # кабинет — обычной кнопкой: мини-приложение с клавиатуры Telegram открывает без данных о пользователе,
+        # поэтому по нажатию бот присылает кнопку «Открыть кабинет» под сообщением (она данные передаёт)
+        rows.append([st.s(L, "btn_cabinet"),
                      st.s(L, "btn_lang")])
     if core.is_admin(uid):
         rows.append([BTN_TEAM] + ([] if core.employee(uid) else [BTN_INVEST]))
         if not core.employee(uid):
-            rows.append([KeyboardButton(BTN_CABINET, web_app=WebAppInfo(url=config.WEBAPP_URL))])
+            rows.append([BTN_CABINET])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -165,7 +168,7 @@ def client_keyboard(uid: int):
     return ReplyKeyboardMarkup([
         [i18n.t(lang, "btn_purchases"), i18n.t(lang, "btn_bonus")],
         [i18n.t(lang, "btn_news"), i18n.t(lang, "btn_invest")],
-        [KeyboardButton(i18n.t(lang, "btn_cabinet"), web_app=WebAppInfo(url=config.WEBAPP_URL)),
+        [i18n.t(lang, "btn_cabinet"),
          i18n.t(lang, "btn_lang")],
         [i18n.t(lang, "btn_logout")],
     ], resize_keyboard=True)
@@ -302,6 +305,8 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 logging.exception("BILLZ: не удалось создать клиента")
         await reply(update, i18n.t(lang, "registered"))
         return await client_menu(update)
+    if text in i18n.all_variants("btn_cabinet"):
+        return await reply(update, i18n.t(lang, "open_cabinet"), reply_markup=cabinet_button(i18n.t(lang, "open_cabinet_btn")))
     if text in i18n.all_variants("btn_logout"):
         return await reply(update, i18n.t(lang, "logout_confirm"), reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(i18n.t(lang, "logout_yes"), callback_data="clogout:yes"),
@@ -854,7 +859,30 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         await asyncio.sleep(1 if len(core.pending_outbox(1)) else 10)
 
 
+def cabinet_button(title: str) -> InlineKeyboardMarkup:
+    """Кнопка под сообщением, открывающая кабинет (передаёт данные пользователя, в отличие от кнопки клавиатуры)."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton(title, web_app=WebAppInfo(url=config.WEBAPP_URL))]])
+
+
+async def open_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Нажата кнопка «🏠 Личный кабинет» на клавиатуре сотрудника/руководителя."""
+    uid = update.effective_user.id
+    if not known(uid):
+        return await (to_client_bot(update) if client_bot_on() else client_text(update, context))
+    L = core.staff_lang(uid) if core.employee(uid) else "ru"
+    await reply(update, st.s(L, "open_cabinet"), reply_markup=cabinet_button(st.s(L, "open_cabinet_btn")))
+
+
+async def set_menu_button(app: Application, title: str = "Kabinet") -> None:
+    """Кнопка меню слева от поля ввода — сразу открывает кабинет (с данными пользователя)."""
+    try:
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(title, WebAppInfo(url=config.WEBAPP_URL)))
+    except TelegramError as e:
+        logging.warning("Не удалось поставить кнопку меню: %s", e)
+
+
 async def post_init(app: Application) -> None:
+    await set_menu_button(app)
     app.bot_data["outbox"] = asyncio.create_task(outbox_loop(app))
 
 
@@ -889,14 +917,16 @@ async def _run_both(app: Application, capp: Application) -> None:
     async with app:
         try:
             await capp.initialize()
+            CLIENT_BOT.update(username=capp.bot.username, ok=True)  # до старта бота сотрудников — для ссылок
         except Exception as e:  # noqa: BLE001 — любой сбой бота клиентов не должен ронять бота сотрудников
             logging.error("❌ Бот клиентов не запустился (проверьте CLIENT_BOT_TOKEN): %s — работаю одним ботом", e)
             CLIENT_BOT["ok"] = False  # клиентов обслуживает бот сотрудников, как раньше
             capp = None
         await app.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await set_menu_button(app)
         if capp:
-            CLIENT_BOT.update(username=capp.bot.username, ok=True)
+            await set_menu_button(capp)
             await capp.start()
             await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         outbox = asyncio.create_task(outbox_loop(app, capp))
@@ -945,6 +975,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text([BTN_TEAM]), team))
     app.add_handler(MessageHandler(filters.Text(list(dict.fromkeys([BTN_INVEST] + st.variants("btn_invest")))), invest))
     app.add_handler(MessageHandler(filters.Text(st.variants("btn_lang")), staff_lang_cmd))
+    app.add_handler(MessageHandler(filters.Text(list(dict.fromkeys([BTN_CABINET] + st.variants("btn_cabinet")))), open_cabinet))
     app.add_handler(CommandHandler("news", news_cmd))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))

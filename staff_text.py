@@ -33,6 +33,8 @@ S = {
     "btn_out": {"ru": "🚪 Ушёл", "uz": "🚪 Ketdim"},
     "btn_tasks": {"ru": "📋 Мои задачи", "uz": "📋 Vazifalarim"},
     "btn_cabinet": {"ru": "🏠 Личный кабинет", "uz": "🏠 Shaxsiy kabinet"},
+    "open_cabinet": {"ru": "🏠 Откройте личный кабинет 👇", "uz": "🏠 Shaxsiy kabinetingizni oching 👇"},
+    "open_cabinet_btn": {"ru": "🏠 Открыть кабинет", "uz": "🏠 Kabinetni ochish"},
     "btn_invest": {"ru": "💰 Инвестиции", "uz": "💰 Investitsiyalar"},
     "btn_lang": {"ru": "🌐 Til / Язык", "uz": "🌐 Til / Язык"},
     "btn_done_task": {"ru": "Готово", "uz": "Bajarildi"},

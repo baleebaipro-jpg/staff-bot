@@ -2062,7 +2062,10 @@ $("f-add").onclick = () => {
     .then(() => { $("f-reason").value = ""; $("f-amount").value = ""; }));
 };
 
-if (!tg.initData) $("loading").textContent = "Откройте кабинет через кнопку в Telegram-боте.";
+if (!tg.initData) $("loading").innerHTML = "Kabinetni bot ichidagi tugma orqali oching: pastdagi «🏠» tugmasini bosing va " +
+  "kelgan xabardagi «🏠 Kabinetni ochish» tugmasini bosing yoki maydon chap tomonidagi «Kabinet» tugmasini bosing.<br><br>" +
+  "Откройте кабинет через бота: нажмите «🏠» внизу, затем «🏠 Открыть кабинет» в сообщении бота — или кнопку «Kabinet» слева от поля ввода.<br><br>" +
+  "Open your account from the bot: tap «🏠» below, then «🏠 Open account» in the bot's message — or the «Kabinet» button left of the input field.";
 else { load(true); setInterval(() => load(), 30000); }  // при открытии — свежие данные из BILLZ
 </script>
 </body>

@@ -101,6 +101,8 @@ T = {
     "btn_news": {"uz": "📰 Yangiliklar", "ru": "📰 Новости", "en": "📰 News"},
     "btn_invest": {"uz": "💰 Investitsiyalar", "ru": "💰 Инвестиции", "en": "💰 Investments"},
     "btn_cabinet": {"uz": "🏠 Kabinetim", "ru": "🏠 Мой кабинет", "en": "🏠 My account"},
+    "open_cabinet": {"uz": "🏠 Kabinetingizni oching 👇", "ru": "🏠 Откройте ваш кабинет 👇", "en": "🏠 Open your account 👇"},
+    "open_cabinet_btn": {"uz": "🏠 Kabinetni ochish", "ru": "🏠 Открыть кабинет", "en": "🏠 Open account"},
     "btn_lang": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
     "btn_logout": {"uz": "🚪 Chiqish", "ru": "🚪 Выйти", "en": "🚪 Log out"},
     "logout_confirm": {
