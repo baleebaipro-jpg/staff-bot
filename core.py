@@ -244,6 +244,9 @@ def init_db():
                 decided_at TEXT, paid_at TEXT, paid_amount INTEGER);
             CREATE TABLE IF NOT EXISTS invest_months(
                 month TEXT PRIMARY KEY, level TEXT, set_at TEXT);
+            CREATE TABLE IF NOT EXISTS invest_access(
+                user_id INTEGER PRIMARY KEY, status TEXT, plan_amount TEXT, note TEXT,
+                created_at TEXT, decided_at TEXT);
             """
         )
         if "status" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:

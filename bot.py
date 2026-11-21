@@ -471,39 +471,46 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if core.employee(uid):
         m = invest_mod.mine(uid)
         lines.append("💰 Мои инвестиции")
+        if m["access"] != "approved":
+            lines.append({"pending": "⏳ Ваша заявка на участие на рассмотрении у руководителя.",
+                          "rejected": "Заявка на участие отклонена. Можно подать снова в «🏠 Личный кабинет» → «💰 Инвестиции»."}
+                         .get(m["access"], "Инвестиции в товар компании — по заявке.\n"
+                                           "Подайте заявку на участие в «🏠 Личный кабинет» → «💰 Инвестиции»."))
+            return await reply(update, "\n".join(lines), reply_markup=keyboard(uid))
         if m["invested"]:
-            lines.append(f"Вложено: {M(m['invested'])}\n"
-                         f"Начислено: +{M(m['accrued'])}")
+            lines.append(f"Капитал в товаре: {M(m['invested'])}\n"
+                         f"Доля прибыли: +{M(m['accrued'])}")
         for r in m["items"]:
             if r["status"] == "pending":
                 lines.append(f"⏳ Заявка {M(r['amount'])} — ждёт руководителя")
             elif r["status"] == "active":
                 lines.append(f"📈 {M(r['amount'])} · +{M(r['accrued'])} · до {r['end']} (ещё {r['days_left']} дн.)"
-                             + (" · ⏳ заявка на досрочный вывод" if r["early"] else ""))
+                             + (" · ⏳ заявка на досрочный выход" if r["early"] else ""))
             elif r["status"] == "rating":
                 lines.append(f"📈 {M(r['amount'])} · срок закончился, ждём оценку последнего месяца")
             elif r["status"] == "matured":
                 lines.append(f"🎉 {M(r['amount'])} · к выплате {M(r['payout'])}")
         if len(lines) == 1:
-            lines.append("Вкладов пока нет.")
+            lines.append("Инвестиций пока нет.")
         hist = invest_mod.history_public(3)
         if hist:
             lv = invest_mod.LEVELS
             lines.append("\nПоследние месяцы: " + ", ".join(
                 f"{h['title'].split()[0].lower()} {lv[h['level']]['emoji']}" for h in hist))
-        lines.append(f"\nВклад на {invest_mod.TERM} мес., доход {invest_mod.pct(invest_mod.ANNUAL_MIN)}–"
-                     f"{invest_mod.pct(invest_mod.ANNUAL_MAX)} — зависит от того, как пройдёт каждый месяц.\n"
-                     f"Оформить вклад — в «{BTN_CABINET}».")
+        lines.append(f"\nИнвестиция в товар на {invest_mod.TERM} мес. Доля прибыли зависит от итогов продаж "
+                     f"каждого месяца.\nИнвестировать — в «{BTN_CABINET}».")
     if core.is_admin(uid):
         o = invest_mod.overview()
         lines.append(f"{chr(10) if lines else ''}📊 Инвестиции команды\n"
-                     f"Вложено: {M(o['invested'])}\n"
-                     f"Начислено: {M(o['accrued'])}\n"
-                     f"Вернуть в конце сроков: {M(o['obligations_min'])} – {M(o['obligations_max'])}\n"
-                     f"Заявок ждут: {len(o['pending'])} · досрочный вывод: {len(o['early'])} · "
+                     f"Капитал в товаре: {M(o['invested'])}\n"
+                     f"Доля прибыли инвесторов: {M(o['accrued'])}\n"
+                     f"Ожидается к выплате: {M(o['obligations_min'])} – {M(o['obligations_max'])}\n"
+                     f"Заявок ждут: {len(o['pending'])} · досрочный выход: {len(o['early'])} · "
                      f"к выплате сейчас: {len(o['matured'])}")
         for t in o["to_rate"]:
             lines.append(f"⚠️ Не оценён месяц: {t['title'].lower()}")
+        if o["access"]:
+            lines.append(f"🙋 Заявок на участие: {len(o['access'])}")
     buttons = None
     if core.is_admin(uid):
         if o["to_rate"]:
@@ -530,8 +537,9 @@ async def invest_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     invest_mod.set_group(chat.id)
     t = invest_mod.TOPICS
     await reply(update, "✅ Группа подключена. Темы:\n"
+                        f"• заявки на участие — {t.get('access', '—')}\n"
                         f"• новые заявки — {t.get('new', '—')}\n• выплаты по сроку — {t.get('payout', '—')}\n"
-                        f"• досрочный вывод — {t.get('early', '—')}\n• оценка месяца — {t.get('rating', '—')}\n"
+                        f"• досрочный выход — {t.get('early', '—')}\n• оценка месяца — {t.get('rating', '—')}\n"
                         "Нажимать кнопки может только руководитель.")
 
 
@@ -580,16 +588,18 @@ async def invest_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await q.answer()
         await q.message.reply_text(
             f"📸 {q.from_user.first_name}, пришлите фото-отчёт ({invest_mod.REPORT_HINT[method]}) "
-            f"по вкладу №{inv_id} — ответом на это сообщение или боту в личку. Жду 30 минут.")
+            f"по инвестиции №{inv_id} — ответом на это сообщение или боту в личку. Жду 30 минут.")
         return
-    if kind == "inv":
+    if kind == "inv_acc":
+        ok, msg = invest_mod.access_decide(int(b), a == "ok")
+    elif kind == "inv":
         ok, msg = invest_mod.decide(int(b), a == "ok")
     elif kind == "inv_early":
         ok, msg = invest_mod.early_reject(int(b))
     else:
         ok, msg = invest_mod.set_level(a, b)
     await q.answer(msg[:190], show_alert=not ok)
-    if ok or kind in ("inv", "inv_early"):
+    if ok or kind in ("inv", "inv_early", "inv_acc"):
         if q.message.chat.type != "private":
             msg += f" — {q.from_user.first_name}"
         try:
@@ -626,7 +636,7 @@ async def outbox_loop(app: Application) -> None:
             invest_mod.check_rating_day()
             invest_mod.check_matured()
         except Exception:
-            logging.exception("Ошибка при проверке сроков вкладов")
+            logging.exception("Ошибка при проверке сроков инвестиций")
         try:
             await relay.daily_check(app.bot)
         except Exception:
@@ -691,7 +701,7 @@ def main() -> None:
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
     app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
-    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+|inv_pay:\d+:(online|offline))$"))
+    app.add_handler(CallbackQueryHandler(invest_button, pattern=r"^(inv(_early)?:(ok|no):\d+|inv_lvl:\d{4}-\d{2}:\w+|inv_pay:\d+:(online|offline)|inv_acc:(ok|no):\d+)$"))
     app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
