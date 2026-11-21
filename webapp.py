@@ -935,8 +935,8 @@ PAGE = r"""<!doctype html>
 
   <!-- ЗАРАБОТОК СОТРУДНИКОВ (руководитель вводит вручную) -->
   <div id="view-earn-admin" class="hidden">
-    <div class="page-title">💵 Заработок сотрудников</div>
-    <div class="page-sub">Сколько каждый заработал за всё время в компании. Пока вводится вручную — нажмите на сотрудника.</div>
+    <div class="page-title">💵 Foyda сотрудников</div>
+    <div class="page-sub">Сколько прибыли получил каждый за всё время в компании. Пока вводится вручную — нажмите на сотрудника.</div>
     <div class="card"><div id="earn-team"></div></div>
   </div>
 
@@ -1070,7 +1070,7 @@ PAGE = r"""<!doctype html>
     </button>
     <button class="card folder" id="go-earn-admin">
       <div class="f-ic" style="background:rgba(52,211,153,.16)">💵</div>
-      <div style="min-width:0"><b>Заработок сотрудников</b><div class="f-sub" id="earn-admin-sub"></div></div>
+      <div style="min-width:0"><b>Foyda сотрудников</b><div class="f-sub" id="earn-admin-sub"></div></div>
       <div class="f-arrow">›</div>
     </button>
     <button class="card folder" id="go-posting">
@@ -1281,7 +1281,7 @@ const SX = {
        keep_going: "Продолжайте в том же духе!", you_are: "Вы — {r}! 🏆", left_to: "До звания «{r}» осталось {h} ч 💪",
        goal_done: "Цель {h} часов достигнута", soon: "Раздел скоро появится", soon_pill: "Скоро ⏳",
        invest_soon: "💰 Раздел «Инвестиции» скоро появится ⏳", lang_btn: "🌐 O'zbekchaga o'tish", photo: "Загружаю фото…",
-       earn_title: "Заработок", earn_page: "💵 Мой заработок", earn_sub: "Сколько вы заработали в компании",
+       earn_title: "Foydam", earn_page: "💵 Foydam", earn_sub: "Ваша прибыль в компании",
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
@@ -1297,7 +1297,7 @@ const SX = {
        keep_going: "Shunday davom eting!", you_are: "Siz — {r}! 🏆", left_to: "«{r}» unvonigacha {h} soat qoldi 💪",
        goal_done: "{h} soatlik maqsadga erishildi", soon: "Bo'lim tez orada ochiladi", soon_pill: "Tez orada ⏳",
        invest_soon: "💰 «Investitsiyalar» bo'limi tez orada ochiladi ⏳", lang_btn: "🌐 Перейти на русский", photo: "Rasm yuklanmoqda…",
-       earn_title: "Foyda", earn_page: "💵 Foydam", earn_sub: "Kompaniyada olgan foydangiz",
+       earn_title: "Foydam", earn_page: "💵 Foydam", earn_sub: "Kompaniyada olgan foydangiz",
        earn_by_month: "Oylar bo'yicha", earn_total: "butun vaqt davomida", earn_year: "shu yili", earn_empty: "Hozircha yozuvlar yo'q",
        earn_folder: "Jami: {s}", cur: "so'm"},
 };
