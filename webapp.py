@@ -495,6 +495,19 @@ PAGE = r"""<!doctype html>
   .chip.rating { background: rgba(251,191,36,.16); color: var(--orange); }
   details.inv-months summary { font-size: 12.5px; color: #8b7bff; cursor: pointer; margin-top: 6px; }
   details.inv-form summary { list-style: none; cursor: pointer; }
+  .folder { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; color: var(--text);
+            background: linear-gradient(110deg, rgba(52,211,153,.16), rgba(124,92,255,.14) 60%, var(--card));
+            border: 1px solid rgba(52,211,153,.25); }
+  .folder:active { transform: scale(.985); }
+  .folder .f-ic { width: 48px; height: 48px; border-radius: 14px; flex: none; display: flex; align-items: center;
+                  justify-content: center; font-size: 26px; background: rgba(52,211,153,.16); }
+  .folder b { display: block; font-size: 16.5px; }
+  .folder .f-sub { color: var(--hint); font-size: 13px; margin-top: 2px; }
+  .folder .f-arrow { margin-left: auto; font-size: 26px; color: var(--hint); flex: none; }
+  .f-badge { background: var(--red); color: #fff; font-size: 12px; font-weight: 800; border-radius: 99px;
+             padding: 2px 8px; margin-left: 6px; vertical-align: 2px; }
+  .page-title { font-size: 22px; font-weight: 800; margin: 4px 0 4px; }
+  .page-sub { color: var(--hint); font-size: 13.5px; margin-bottom: 14px; }
   details.inv-form summary::-webkit-details-marker { display: none; }
 
   .toast { position: fixed; left: 14px; right: 14px; bottom: 18px; background: #2a2d4d; border: 1px solid var(--line);
@@ -536,19 +549,11 @@ PAGE = r"""<!doctype html>
       <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span>текущее звание</span></div>
     </div>
 
-    <div class="card">
-      <div class="head"><h3>💰 Мои инвестиции</h3></div>
-      <div id="inv-me"></div>
-      <details class="inv-form" id="inv-form">
-        <summary class="btn btn-main" style="display:block;text-align:center;margin-top:10px">➕ Открыть вклад</summary>
-        <div style="margin-top:12px">
-          <input id="inv-amount" inputmode="numeric" autocomplete="off" placeholder="Сумма">
-          <div class="inv-calc" id="inv-calc"></div>
-          <button class="btn btn-main" style="width:100%" id="inv-send">Подать заявку</button>
-          <div class="hint" style="font-size:12.5px;margin-top:10px;line-height:1.45" id="inv-rules"></div>
-        </div>
-      </details>
-    </div>
+    <button class="card folder" id="go-inv">
+      <div class="f-ic">💰</div>
+      <div style="min-width:0"><b>Инвестиции</b><div class="f-sub" id="inv-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <div class="card status">
       <div>
         <div id="st-text"></div>
@@ -584,6 +589,31 @@ PAGE = r"""<!doctype html>
       <div class="cup">🏆</div>
       <div><b id="m-title"></b><span class="hint" id="m-sub"></span></div>
     </div>
+  </div>
+
+  <!-- ИНВЕСТИЦИИ (отдельная страница сотрудника) -->
+  <div id="view-invest" class="hidden">
+    <div class="page-title">💰 Мои инвестиции</div>
+    <div class="page-sub" id="inv-page-sub"></div>
+    <div class="card">
+      <div id="inv-me"></div>
+      <details class="inv-form" id="inv-form">
+        <summary class="btn btn-main" style="display:block;text-align:center;margin-top:10px">➕ Открыть вклад</summary>
+        <div style="margin-top:12px">
+          <input id="inv-amount" inputmode="numeric" autocomplete="off" placeholder="Сумма">
+          <div class="inv-calc" id="inv-calc"></div>
+          <button class="btn btn-main" style="width:100%" id="inv-send">Подать заявку</button>
+          <div class="hint" style="font-size:12.5px;margin-top:10px;line-height:1.45" id="inv-rules"></div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <!-- ИНВЕСТИЦИИ (отдельная страница руководителя) -->
+  <div id="view-invest-admin" class="hidden">
+    <div class="page-title">💰 Инвестиции сотрудников</div>
+    <div class="page-sub">Заявки, оценка месяца и выплаты</div>
+    <div class="card"><div id="inv-admin"></div></div>
   </div>
 
   <!-- ПАНЕЛЬ КЛИЕНТА -->
@@ -630,10 +660,12 @@ PAGE = r"""<!doctype html>
       <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
       <div id="n-list" style="margin-top:8px"></div>
     </div>
-    <div class="card">
-      <div class="head"><h3>💰 Инвестиции сотрудников</h3></div>
-      <div id="inv-admin"></div>
-    </div>
+    <button class="card folder" id="go-inv-admin">
+      <div class="f-ic">💰</div>
+      <div style="min-width:0"><b>Инвестиции сотрудников<span id="inv-admin-badge"></span></b>
+        <div class="f-sub" id="inv-admin-folder-sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <div class="card">
       <h3>Новая задача</h3>
       <select id="t-user"></select>
@@ -772,14 +804,16 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
-  if (v === "history") tg.BackButton.show(); else tg.BackButton.hide();
+  if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
   window.scrollTo(0, 0);
 }
-tg.BackButton.onClick(() => show("me"));
+tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 
 function visitRow(h, full) {
   return `<div class="visit ${full ? "" : "short"}">
@@ -1027,6 +1061,11 @@ function renderInvestMe() {
   $("inv-rules").innerHTML = `Вклад на ${cfg.term} мес. Каждый месяц руководитель подводит итог — от него зависит ваша доля:<br>` +
     cfg.levels.map(l => `${l.emoji} ${l.title.toLowerCase()} — ${pc(l.monthly)} за месяц (${pc(l.annual)} годовых)`).join("<br>") +
     `<br>Деньги передаются руководителю лично, начисления идут со дня подтверждения. Забрать вклад можно только после окончания срока — вместе со всем доходом.`;
+  const pend = m.items.some(r => r.status === "pending"), ready = m.items.some(r => r.status === "matured");
+  $("inv-folder-sub").innerHTML = live.length
+    ? `Вложено ${sum(m.invested)} · <span style="color:var(--green)">+${sum(m.accrued)}</span>${ready ? " · 🎉 к выплате" : ""}`
+    : pend ? "⏳ Заявка ждёт руководителя" : `Доход ${pc(cfg.annual_min)}–${pc(cfg.annual_max)} за ${cfg.term} мес.`;
+  $("inv-page-sub").textContent = `Вклад на ${cfg.term} мес. · доход ${pc(cfg.annual_min)}–${pc(cfg.annual_max)} — зависит от итогов каждого месяца`;
   renderInvCalc();
   bindInvest();
 }
@@ -1069,6 +1108,13 @@ function renderInvestAdmin() {
     + block(`📈 Работают (${o.active.length})`, o.active)
     + block("✔️ Выплачены", o.paid)
     + (any ? "" : `<div class="empty">Вкладов пока нет</div>`);
+  const todo = o.pending.length + o.matured.length + o.to_rate.length;
+  $("inv-admin-badge").innerHTML = todo ? `<span class="f-badge">${todo}</span>` : "";
+  $("inv-admin-folder-sub").textContent = [
+    o.to_rate.length ? "⚠️ оцените месяц" : "",
+    o.pending.length ? `заявок: ${o.pending.length}` : "",
+    o.matured.length ? `к выплате: ${o.matured.length}` : "",
+    `вложено ${sum(o.invested)}`].filter(Boolean).join(" · ");
   bindInvest();
 }
 
@@ -1079,8 +1125,7 @@ async function load() {
     if (data.is_client) { renderClient(); show("client"); return; }
     if (data.is_employee) { renderMe(); renderInvestMe(); }
     if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); renderInvestAdmin(); }
-    $("seg").classList.toggle("hidden", !(data.is_admin && data.is_employee));
-    if (!data.is_employee) view = "team";
+    if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
     $("loading").classList.add("hidden");
@@ -1160,6 +1205,8 @@ $("n-add").onclick = () => {
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");
+$("go-inv").onclick = () => show("invest");
+$("go-inv-admin").onclick = () => show("invest-admin");
 $("ava-file").onchange = async (ev) => {
   const file = ev.target.files[0];
   ev.target.value = "";
