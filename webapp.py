@@ -13,6 +13,7 @@ from flask import Flask, abort, jsonify, request, send_file
 
 import config
 import core
+import i18n
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
 
@@ -73,7 +74,7 @@ def ava_version(uid) -> int:
 
 
 @app.post("/api/avatar")
-@need_user(staff=True)
+@need_user()
 def api_avatar(uid, data):
     """Сотрудник загружает своё фото (уже сжатое в браузере до JPEG)."""
     raw = str(data.get("image", ""))
@@ -94,7 +95,8 @@ def api_avatar(uid, data):
     os.replace(tmp, os.path.join(AVATAR_DIR, f"{uid}.jpg"))
     # отметка, что фото своё — бот не будет заменять его фото из Telegram
     open(os.path.join(AVATAR_DIR, f"{uid}.custom"), "w").close()
-    return jsonify(ok=True, msg="Фото обновлено 📸")
+    lang = i18n.lang_of((core.get_client(uid) or {}).get("lang")) if core.is_client(uid) else "ru"
+    return jsonify(ok=True, msg={"uz": "Rasm yangilandi 📸", "ru": "Фото обновлено 📸", "en": "Photo updated 📸"}[lang])
 
 
 @app.post("/api/me")
@@ -112,9 +114,12 @@ def api_me(uid, data):
     if res["is_client"]:
         cl = core.get_client(uid) or {}
         tier = core.tier_of(cl)
-        res["client"] = {"id": uid, "name": cl.get("first_name") or "", "phone": cl.get("phone"),
+        birth = cl.get("birth_date")
+        res["client"] = {"id": uid, "name": core.client_full_name(cl), "phone": cl.get("phone"),
                          "tier": tier, "tier_title": core.CLIENT_TIERS[tier]["title"],
-                         "ava_v": ava_version(uid)}
+                         "ava_v": ava_version(uid), "lang": i18n.lang_of(cl.get("lang")),
+                         "registered": cl.get("step") == "done",
+                         "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None}
         res["news"] = core.news_list(10)
     if res["is_admin"]:
         res["news"] = core.news_list(10)
@@ -312,6 +317,7 @@ PAGE = r"""<!doctype html>
   .tier-ring #cl-ava > div, .tier-ring #cl-ava > img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover;
          background: var(--card2); display: flex; align-items: center; justify-content: center; font-size: 34px;
          font-weight: 700; border: 3px solid var(--bg); }
+  .cl-edit { right: auto; left: -2px; width: 30px; height: 30px; font-size: 14px; }
   .tier-badge { position: absolute; right: -2px; bottom: -2px; width: 34px; height: 34px; border-radius: 50%;
                 border: 3px solid var(--bg); display: flex; align-items: center; justify-content: center; font-size: 17px;
                 background: var(--card2); }
@@ -491,24 +497,27 @@ PAGE = r"""<!doctype html>
   <!-- ПАНЕЛЬ КЛИЕНТА -->
   <div id="view-client" class="hidden">
     <div class="profile">
-      <div class="ava tier-ring" id="cl-ring"><span id="cl-ava" style="display:contents"></span>
-        <span class="tier-badge" id="cl-badge"></span></div>
+      <label class="ava tier-ring" id="cl-ring">
+        <span id="cl-ava" style="display:contents"></span>
+        <span class="tier-badge" id="cl-badge"></span>
+        <span class="ava-edit cl-edit">📷</span>
+        <input type="file" id="cl-file" accept="image/*" hidden>
+      </label>
       <div style="min-width:0">
         <div class="pname" id="cl-name"></div>
         <div class="prole" id="cl-phone"></div>
+        <div class="hint hidden" style="font-size:13px;margin:-4px 0 8px" id="cl-birth"></div>
         <div class="tier-pill" id="cl-tier"></div>
       </div>
     </div>
-    <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)">
-      📱 Поделитесь номером телефона в чате с ботом — так мы найдём ваши покупки и бонусы.
-    </div>
+    <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)" data-t="finish_reg"></div>
     <div class="stats" style="grid-template-columns:1fr 1fr">
-      <div class="stat s1 soon-stat"><div class="ic">🛍</div><b>—</b><span>сумма покупок</span><em>скоро</em></div>
-      <div class="stat s3 soon-stat"><div class="ic">🎁</div><b>—</b><span>бонусы</span><em>скоро</em></div>
+      <div class="stat s1 soon-stat"><div class="ic">🛍</div><b>—</b><span data-t="purchases"></span><em data-t="soon"></em></div>
+      <div class="stat s3 soon-stat"><div class="ic">🎁</div><b>—</b><span data-t="bonuses"></span><em data-t="soon"></em></div>
     </div>
-    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
-      <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
-    <div class="card"><h3>📰 Новости</h3><div id="cl-news"></div></div>
+    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b data-t="invest"></b>
+      <div class="hint" style="font-size:13px" data-t="invest_soon"></div></div><span class="soon-pill" data-t="soon_pill"></span></div>
+    <div class="card"><h3 data-t="news"></h3><div id="cl-news"></div></div>
   </div>
 
   <!-- ВСЯ ИСТОРИЯ -->
@@ -860,6 +869,24 @@ function newsHtml(items, admin) {
     : `<div class="empty">Новостей пока нет</div>`;
 }
 const TIER_EMOJI = {bronza: "🥉", silver: "🥈", gold: "🥇"};
+const CL_T = {
+  uz: {purchases: "xaridlar summasi", bonuses: "bonuslar", soon: "tez orada", invest: "Investitsiyalar",
+       invest_soon: "Bo'lim tez orada paydo bo'ladi", soon_pill: "Tez orada ⏳", news: "📰 Yangiliklar",
+       no_news: "Hozircha yangiliklar yo'q", no_phone: "raqam ko'rsatilmagan", client: "Mijoz",
+       finish_reg: "📱 Ro'yxatdan o'tishni bot bilan chatda yakunlang — shunda xaridlaringiz va bonuslaringizni topamiz.",
+       birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…"},
+  ru: {purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
+       invest_soon: "Раздел скоро появится", soon_pill: "Скоро ⏳", news: "📰 Новости",
+       no_news: "Новостей пока нет", no_phone: "номер не указан", client: "Клиент",
+       finish_reg: "📱 Завершите регистрацию в чате с ботом — так мы найдём ваши покупки и бонусы.",
+       birth: "🎂 День рождения", photo: "Загружаю фото…"},
+  en: {purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
+       invest_soon: "This section is coming soon", soon_pill: "Soon ⏳", news: "📰 News",
+       no_news: "No news yet", no_phone: "no phone number", client: "Client",
+       finish_reg: "📱 Please finish registration in the bot chat so we can find your purchases and bonuses.",
+       birth: "🎂 Birthday", photo: "Uploading photo…"},
+};
+const ct = k => (CL_T[(data && data.client && data.client.lang) || "uz"] || CL_T.uz)[k];
 function renderClient() {
   const c = data.client;
   $("cl-ava").innerHTML = avatar(c.id, c.name || "?", c.ava_v);
@@ -867,10 +894,13 @@ function renderClient() {
   $("cl-badge").textContent = TIER_EMOJI[c.tier] || "💎";
   $("cl-tier").className = "tier-pill " + c.tier;
   $("cl-tier").textContent = (TIER_EMOJI[c.tier] || "") + " " + c.tier_title;
-  $("cl-name").textContent = c.name || "Клиент";
-  $("cl-phone").textContent = c.phone || "номер не указан";
-  $("cl-nophone").classList.toggle("hidden", !!c.phone);
-  $("cl-news").innerHTML = newsHtml(data.news, false);
+  document.querySelectorAll("#view-client [data-t]").forEach(el => el.textContent = ct(el.dataset.t));
+  $("cl-name").textContent = c.name || ct("client");
+  $("cl-phone").textContent = c.phone || ct("no_phone");
+  $("cl-birth").textContent = c.birth ? `${ct("birth")}: ${c.birth}` : "";
+  $("cl-birth").classList.toggle("hidden", !c.birth);
+  $("cl-nophone").classList.toggle("hidden", !!(c.phone && c.registered));
+  $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
 }
 function renderClientsAdmin() {
   const q = ($("cl-search").value || "").trim().toLowerCase();
@@ -880,7 +910,8 @@ function renderClientsAdmin() {
   $("cl-list").innerHTML = list.length ? list.slice(0, 100).map(c => `
     <div class="cl-row"><div style="font-size:20px">${TIER_EMOJI[c.tier] || ""}</div>
       <div style="flex:1;min-width:0"><b>${esc(c.name || "Без имени")}</b>
-        <div class="hint" style="font-size:12px">${esc(c.phone || "номер не указан")} · с ${c.since}</div></div>
+        <div class="hint" style="font-size:12px">${esc(c.phone || "номер не указан")}${c.birth ? " · 🎂 " + c.birth : ""}
+          · ${(c.lang || "—").toUpperCase()} · с ${c.since}</div></div>
       <select data-tier="${c.id}">${Object.entries(data.tiers).map(([k, t]) =>
         `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("")}</select></div>`).join("")
     : `<div class="empty">${q ? "Никого не нашли" : "Клиентов пока нет"}</div>`;
@@ -909,6 +940,15 @@ $("ava-file").onchange = async (ev) => {
   if (!file) return;
   try {
     toast("Загружаю фото…");
+    await action("/api/avatar", {image: await squareJpeg(file)});
+  } catch (e) { toast(e.message); }
+};
+$("cl-file").onchange = async (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  try {
+    toast(ct("photo"));
     await action("/api/avatar", {image: await squareJpeg(file)});
   } catch (e) { toast(e.message); }
 };

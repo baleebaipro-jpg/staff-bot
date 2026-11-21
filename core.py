@@ -245,8 +245,11 @@ def init_db():
             c.execute("UPDATE tasks SET status='done' WHERE done_at IS NOT NULL")
         if "due_date" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
-        if "tier" not in {r[1] for r in c.execute("PRAGMA table_info(clients)")}:
-            c.execute("ALTER TABLE clients ADD COLUMN tier TEXT DEFAULT 'bronza'")
+        ccols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
+        for col, ddl in (("tier", "TEXT DEFAULT 'bronza'"), ("lang", "TEXT"), ("last_name", "TEXT"),
+                         ("birth_date", "TEXT"), ("step", "TEXT")):
+            if col not in ccols:
+                c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
         if "markup" not in {r[1] for r in c.execute("PRAGMA table_info(outbox)")}:
             c.execute("ALTER TABLE outbox ADD COLUMN markup TEXT")
         if "code" not in {r[1] for r in c.execute("PRAGMA table_info(proof_pending)")}:
@@ -851,13 +854,16 @@ def get_client(uid: int):
 
 
 def save_client(uid: int, phone: str = None, first_name: str = "", username: str = "") -> bool:
-    """Запомнить клиента. Возвращает True, если это новый клиент."""
+    """Запомнить клиента. Возвращает True, если это новый клиент.
+    Имя из Telegram записывается, только пока клиент не ввёл своё."""
     phone = ("+" + phone.lstrip("+")) if phone else None
     with db() as c:
         old = c.execute("SELECT phone FROM clients WHERE user_id=?", (uid,)).fetchone()
         if old:
-            c.execute("UPDATE clients SET phone=COALESCE(?, phone), first_name=?, username=? WHERE user_id=?",
-                      (phone, first_name, username, uid))
+            c.execute("UPDATE clients SET phone=COALESCE(?, phone), "
+                      "first_name=CASE WHEN last_name IS NULL AND ?<>'' THEN ? ELSE first_name END, "
+                      "username=COALESCE(NULLIF(?, ''), username) WHERE user_id=?",
+                      (phone, first_name, first_name, username, uid))
             return False
         c.execute("INSERT INTO clients(user_id, phone, first_name, username, created_at) VALUES(?, ?, ?, ?, ?)",
                   (uid, phone, first_name, username, now().strftime(FMT)))
@@ -904,21 +910,54 @@ def tier_title(key: str) -> str:
 
 
 def set_client_tier(uid: int, tier: str):
+    import i18n
     if tier not in CLIENT_TIERS:
         return False, "Такого статуса нет."
     with db() as c:
-        r = c.execute("SELECT tier, first_name FROM clients WHERE user_id=?", (uid,)).fetchone()
+        r = c.execute("SELECT tier, first_name, lang FROM clients WHERE user_id=?", (uid,)).fetchone()
         if not r:
             return False, "Клиент не найден."
         c.execute("UPDATE clients SET tier=? WHERE user_id=?", (tier, uid))
         if (r["tier"] or "bronza") != tier:
-            notify(c, uid, f"🎉 Ваш статус клиента: {tier_title(tier)}")
+            notify(c, uid, i18n.t(r["lang"], "tier_changed", tier=tier_title(tier)))
     return True, f"{r['first_name'] or uid}: {tier_title(tier)}"
+
+
+CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username"}
+
+
+def update_client(uid: int, **fields):
+    """Обновить поля клиента (создаёт запись, если её нет)."""
+    fields = {k: v for k, v in fields.items() if k in CLIENT_FIELDS}
+    save_client(uid)
+    if fields:
+        with db() as c:
+            c.execute(f"UPDATE clients SET {', '.join(k + '=?' for k in fields)} WHERE user_id=?",
+                      (*fields.values(), uid))
+
+
+def client_full_name(cl) -> str:
+    return " ".join(x for x in ((cl or {}).get("first_name"), (cl or {}).get("last_name")) if x)
+
+
+def parse_birth(text: str):
+    """'15.03.1995' / '15/03/1995' / '15-03-1995' -> '1995-03-15' или None."""
+    import re
+    m = re.fullmatch(r"\s*(\d{1,2})[./\-](\d{1,2})[./\-](\d{4})\s*", text or "")
+    if not m:
+        return None
+    try:
+        d = datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+    age = (now() - d).days / 365.25
+    return d.strftime("%Y-%m-%d") if 5 <= age <= 110 else None
 
 
 def clients_list(limit: int = 200) -> list:
     with db() as c:
         rows = c.execute("SELECT * FROM clients ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-    return [{"id": r["user_id"], "name": r["first_name"] or "", "username": r["username"] or "",
-             "phone": r["phone"], "tier": tier_of(dict(r)),
+    return [{"id": r["user_id"], "name": client_full_name(dict(r)), "username": r["username"] or "",
+             "phone": r["phone"], "tier": tier_of(dict(r)), "lang": r["lang"] or "",
+             "birth": datetime.strptime(r["birth_date"], "%Y-%m-%d").strftime("%d.%m.%Y") if r["birth_date"] else None,
              "since": parse(r["created_at"]).strftime("%d.%m.%Y")} for r in rows]

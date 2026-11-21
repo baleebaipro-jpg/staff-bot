@@ -9,6 +9,7 @@ from telegram import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Update,
     WebAppInfo,
 )
@@ -27,6 +28,8 @@ from telegram.ext import (
 
 import config
 import core
+import erp
+import i18n
 import relay
 
 AVATAR_DIR = getattr(config, "AVATAR_DIR", "/home/abdullohbe/avatars")
@@ -41,27 +44,9 @@ BTN_TASKS = "📋 Мои задачи"
 BTN_TEAM = "👥 Команда"
 BTN_CABINET = "🏠 Личный кабинет"
 BTN_INVEST = "💰 Инвестиции"
-BTN_PURCHASES = "🛍 Мои покупки"
-BTN_BONUS = "🎁 Бонусы"
-BTN_NEWS = "📰 Новости"
-BTN_PHONE = "📱 Поделиться номером"
-
-
-def client_keyboard(uid: int) -> ReplyKeyboardMarkup:
-    cl = core.get_client(uid)
-    if not cl or not cl.get("phone"):
-        return ReplyKeyboardMarkup([[KeyboardButton(BTN_PHONE, request_contact=True)]],
-                                   resize_keyboard=True, one_time_keyboard=True)
-    return ReplyKeyboardMarkup([
-        [BTN_PURCHASES, BTN_BONUS],
-        [BTN_NEWS, BTN_INVEST],
-        [KeyboardButton("🏠 Мой кабинет", web_app=WebAppInfo(url=config.WEBAPP_URL))],
-    ], resize_keyboard=True)
 
 
 def keyboard(uid: int) -> ReplyKeyboardMarkup:
-    if not known(uid):
-        return client_keyboard(uid)
     rows = []
     if core.employee(uid):
         rows.append([BTN_IN, BTN_OUT])
@@ -76,7 +61,7 @@ async def reply(update: Update, text: str, **kwargs) -> None:
     """Ответить; при сбое сети повторить до 5 раз."""
     for attempt in range(5):
         try:
-            await update.message.reply_text(text, **kwargs)
+            await update.effective_message.reply_text(text, **kwargs)
             return
         except BadRequest as e:
             # ошибка в самом сообщении — повтор не поможет
@@ -126,53 +111,137 @@ async def deny(update: Update) -> None:
     await client_menu(update)
 
 
-# ---------- панель клиента ----------
+# ---------- панель клиента (3 языка) ----------
+
+def client_keyboard(uid: int):
+    cl = core.get_client(uid) or {}
+    lang = cl.get("lang")
+    step = cl.get("step")
+    if not cl.get("phone"):
+        return ReplyKeyboardMarkup([[KeyboardButton(i18n.t(lang, "btn_phone"), request_contact=True)]],
+                                   resize_keyboard=True, one_time_keyboard=True)
+    if step in ("name", "birth"):
+        return ReplyKeyboardRemove()
+    return ReplyKeyboardMarkup([
+        [i18n.t(lang, "btn_purchases"), i18n.t(lang, "btn_bonus")],
+        [i18n.t(lang, "btn_news"), i18n.t(lang, "btn_invest")],
+        [KeyboardButton(i18n.t(lang, "btn_cabinet"), web_app=WebAppInfo(url=config.WEBAPP_URL)),
+         i18n.t(lang, "btn_lang")],
+    ], resize_keyboard=True)
+
+
+def lang_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(title, callback_data=f"lang:{code}")]
+                                 for code, title in i18n.LANGS.items()])
+
 
 async def client_menu(update: Update, greet: bool = False) -> None:
+    """Главная точка для клиента: ведёт по шагам регистрации или показывает меню."""
     u = update.effective_user
     core.save_client(u.id, first_name=u.first_name or "", username=u.username or "")
     cl = core.get_client(u.id)
-    if not cl.get("phone"):
-        await reply(update,
-                    f"Assalomu alaykum, {u.first_name}! 👋\n\n"
-                    "Чтобы видеть свои покупки и бонусы, поделитесь номером телефона — "
-                    "нажмите кнопку ниже 👇",
-                    reply_markup=client_keyboard(u.id))
-        return
-    text = ((f"Assalomu alaykum, {u.first_name}! 👋\n" if greet else "")
-            + f"Ваш статус: {core.tier_title(core.tier_of(cl))}\n\nВыберите раздел 👇")
+    lang = cl.get("lang")
+    if not lang:  # шаг 1 — язык
+        return await reply(update, i18n.t(None, "choose_lang"), reply_markup=lang_buttons())
+    if not cl.get("phone"):  # шаг 2 — номер
+        return await reply(update, i18n.t(lang, "greet", name=u.first_name) + "\n\n" + i18n.t(lang, "ask_phone"),
+                           reply_markup=client_keyboard(u.id))
+    if not cl.get("step"):  # номер есть, но анкета не заполнена (старые клиенты)
+        return await after_phone(update)
+    if cl.get("step") == "name":  # шаг 3 — имя и фамилия
+        return await reply(update, i18n.t(lang, "ask_name"), reply_markup=ReplyKeyboardRemove())
+    if cl.get("step") == "birth":  # шаг 4 — дата рождения
+        return await reply(update, i18n.t(lang, "ask_birth"), reply_markup=ReplyKeyboardRemove())
+    name = cl.get("first_name") or u.first_name
+    text = (i18n.t(lang, "greet", name=name) + "\n" if greet else "")
+    text += i18n.t(lang, "status_line", tier=core.tier_title(core.tier_of(cl))) + "\n\n" + i18n.t(lang, "menu")
     await reply(update, text, reply_markup=client_keyboard(u.id))
+
+
+async def choose_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    code = i18n.lang_of(q.data.split(":", 1)[1])
+    core.update_client(q.from_user.id, lang=code)
+    await q.answer(i18n.t(code, "lang_set"))
+    try:
+        await q.edit_message_text(i18n.t(code, "lang_set"))
+    except TelegramError:
+        pass
+    await client_menu(update, greet=True)
 
 
 async def got_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     u = update.effective_user
     contact = update.message.contact
+    cl = core.get_client(u.id) or {}
+    lang = cl.get("lang")
     if contact.user_id != u.id:
-        return await reply(update, "Пожалуйста, отправьте свой номер кнопкой «📱 Поделиться номером».",
-                           reply_markup=client_keyboard(u.id))
+        return await reply(update, i18n.t(lang, "wrong_contact"), reply_markup=client_keyboard(u.id))
     core.save_client(u.id, phone=contact.phone_number, first_name=u.first_name or "", username=u.username or "")
     if known(u.id):
         return await reply(update, "Номер сохранён ✅", reply_markup=keyboard(u.id))
-    await reply(update, "Спасибо! Номер сохранён ✅\nТеперь вам доступны все разделы 👇",
-                reply_markup=client_keyboard(u.id))
+    if cl.get("step") == "done":
+        return await client_menu(update)
+    await after_phone(update)
 
 
-async def client_soon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text
-    if text == BTN_PURCHASES:
-        msg = "🛍 Скоро здесь будет общая сумма ваших покупок и их история ⏳"
-    elif text == BTN_BONUS:
-        msg = "🎁 Скоро здесь будут ваши бонусы ⏳"
-    else:
-        msg = "💰 Раздел «Инвестиции» скоро появится ⏳"
-    await reply(update, msg, reply_markup=keyboard(update.effective_user.id))
+async def after_phone(update: Update) -> None:
+    """Номер есть — ищем клиента в ERP; не нашли — спрашиваем имя и дату рождения."""
+    u = update.effective_user
+    cl = core.get_client(u.id)
+    lang = cl.get("lang")
+    found = None
+    try:
+        found = erp.find_client(cl["phone"])
+    except Exception:
+        logging.exception("Ошибка поиска клиента в ERP")
+    if found:
+        core.update_client(u.id, first_name=found.get("first_name"), last_name=found.get("last_name"),
+                           birth_date=found.get("birth_date"), step="done")
+        await reply(update, i18n.t(lang, "found"))
+        return await client_menu(update, greet=True)
+    core.update_client(u.id, step="name")
+    await reply(update, i18n.t(lang, "ask_name"), reply_markup=ReplyKeyboardRemove())
 
 
-async def client_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    items = core.news_list(5)
-    if not items:
-        return await reply(update, "📰 Новостей пока нет — скоро появятся!")
-    await reply(update, "📰 Новости\n\n" + "\n\n— — —\n\n".join(f"🗓 {n['date']}\n{n['text']}" for n in items))
+async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Любой текст от клиента: шаги регистрации или кнопки меню на любом языке."""
+    u = update.effective_user
+    text = (update.message.text or "").strip()
+    cl = core.get_client(u.id) or {}
+    lang = cl.get("lang")
+    step = cl.get("step")
+    if lang and cl.get("phone") and step == "name":
+        parts = text.split()
+        if len(parts) < 2 or len(text) > 80 or any(ch.isdigit() for ch in text):
+            return await reply(update, i18n.t(lang, "bad_name"))
+        core.update_client(u.id, first_name=parts[0].capitalize(),
+                           last_name=" ".join(p.capitalize() for p in parts[1:]), step="birth")
+        return await reply(update, i18n.t(lang, "ask_birth"))
+    if lang and cl.get("phone") and step == "birth":
+        birth = core.parse_birth(text)
+        if not birth:
+            return await reply(update, i18n.t(lang, "bad_birth"))
+        core.update_client(u.id, birth_date=birth, step="done")
+        await reply(update, i18n.t(lang, "registered"))
+        return await client_menu(update)
+    if text in i18n.all_variants("btn_lang"):
+        return await reply(update, i18n.t(None, "choose_lang"), reply_markup=lang_buttons())
+    if not lang or not cl.get("phone"):
+        return await client_menu(update)
+    if text in i18n.all_variants("btn_purchases"):
+        return await reply(update, i18n.t(lang, "soon_purchases"), reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_bonus"):
+        return await reply(update, i18n.t(lang, "soon_bonus"), reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_invest"):
+        return await reply(update, i18n.t(lang, "soon_invest"), reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_news"):
+        items = core.news_list(5)
+        if not items:
+            return await reply(update, i18n.t(lang, "no_news"))
+        return await reply(update, i18n.t(lang, "news_title") + "\n\n" +
+                           "\n\n— — —\n\n".join(f"🗓 {n['date']}\n{n['text']}" for n in items))
+    await client_menu(update)
 
 
 async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -393,13 +462,15 @@ async def bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not known(update.effective_user.id):
+        return await client_text(update, context)
     await reply(update, "💰 Раздел «Инвестиции» скоро появится ⏳")
 
 
 async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
-        return await deny(update)
+        return await client_text(update, context)
     await reply(update, "Пользуйтесь кнопками внизу 👇", reply_markup=keyboard(uid))
 
 
@@ -471,6 +542,7 @@ def main() -> None:
     app.add_handler(CommandHandler("task", task_cmd))
     app.add_handler(CommandHandler("fine", fine_cmd))
     app.add_handler(CallbackQueryHandler(task_button, pattern=r"^(done|task):"))
+    app.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
     app.add_handler(MessageHandler(filters.Text([BTN_IN]), came))
     app.add_handler(MessageHandler(filters.Text([BTN_OUT]), left))
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
@@ -478,8 +550,6 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text([BTN_INVEST]), invest))
     app.add_handler(CommandHandler("news", news_cmd))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Text([BTN_PURCHASES, BTN_BONUS]), client_soon))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Text([BTN_NEWS]), client_news))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.VIDEO), other_media_while_proof))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, other))
