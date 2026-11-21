@@ -683,7 +683,40 @@ def earnings_of(uid: int, lang: str = None) -> dict:
               "amount": r["amount"], "note": r["note"] or ""} for r in rows]
     return {"total": sum(i["amount"] for i in items),
             "year": sum(i["amount"] for i in items if i["month"].startswith(year)),
-            "items": items}
+            "items": items,
+            "months": _by_month(rows, lang)}
+
+
+def _split_by_month(d1: str, d2: str, amount: int) -> dict:
+    """Распределить сумму периода по месяцам пропорционально дням: {'2026-10': 444444, '2026-11': 555556}."""
+    a, b = datetime.strptime(d1, "%Y-%m-%d"), datetime.strptime(d2, "%Y-%m-%d")
+    total_days = (b - a).days + 1
+    days = {}
+    d = a
+    while d <= b:
+        days[d.strftime("%Y-%m")] = days.get(d.strftime("%Y-%m"), 0) + 1
+        d += timedelta(days=1)
+    out, left = {}, amount
+    keys = list(days)
+    for k in keys[:-1]:
+        out[k] = round(amount * days[k] / total_days)
+        left -= out[k]
+    out[keys[-1]] = left  # остаток — последнему месяцу, чтобы сумма сошлась до сума
+    return out
+
+
+def _by_month(rows, lang=None) -> list:
+    """Итоги по месяцам (новые сверху): сумма, сколько записей и из каких периодов сложилась."""
+    months = {}
+    for r in rows:
+        parts = _split_by_month(r["date_from"], r["date_to"], r["amount"]) if r["date_from"] else {r["month"]: r["amount"]}
+        title = _period_title(r["date_from"], r["date_to"], lang) if r["date_from"] else _month_title(r["month"], lang)
+        for ym, part in parts.items():
+            m = months.setdefault(ym, {"month": ym, "title": _month_title(ym, lang), "amount": 0, "parts": []})
+            m["amount"] += part
+            m["parts"].append({"title": title, "amount": part, "note": r["note"] or "", "split": len(parts) > 1,
+                               "full": r["amount"]})
+    return [months[k] for k in sorted(months, reverse=True)]
 
 
 def earnings_team() -> list:

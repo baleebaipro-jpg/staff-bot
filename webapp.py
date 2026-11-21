@@ -730,6 +730,8 @@ PAGE = r"""<!doctype html>
   .chip.rating { background: rgba(251,191,36,.16); color: var(--orange); }
   details.inv-months summary { font-size: 12.5px; color: #8b7bff; cursor: pointer; margin-top: 6px; }
   details.inv-form summary { list-style: none; cursor: pointer; }
+  .emonth summary::-webkit-details-marker { display: none; }
+  .emonth[open] summary b:first-child { color: #cfc6ff; }
   .staff-act { padding: 14px 16px; }
   /* проекты руководителя */
   .ptask { display: flex; gap: 12px; align-items: flex-start; padding: 11px 0; border-top: 1px solid var(--line); }
@@ -928,7 +930,7 @@ PAGE = r"""<!doctype html>
     <div class="page-title" data-sx="earn_page"></div>
     <div class="page-sub" data-sx="earn_sub"></div>
     <div class="inv-tiles" style="grid-template-columns:1fr 1fr" id="earn-tiles"></div>
-    <div class="card"><h3 data-sx="earn_by_month"></h3><div id="earn-list"></div></div>
+    <div class="card"><div id="earn-list"></div></div>
   </div>
 
   <!-- ЗАРАБОТОК СОТРУДНИКОВ (руководитель вводит вручную) -->
@@ -1974,12 +1976,35 @@ function earnRows(items, cur, admin) {
       <b style="color:var(--green);white-space:nowrap">+${money0(i.amount, cur)}</b>
       ${admin ? `<button class="btn btn-soft btn-sm" data-delearn="${i.id}">✕</button>` : ""}</div>`).join("") : "";
 }
+/* вид списка: по месяцам (суммы за месяц, внутри — периоды) или по периодам (каждая запись) */
+let earnView = "months";
+function earnSwitch(id, t) {
+  return `<div class="seg" style="margin:0 0 10px" id="${id}"><button data-ev="months" class="${earnView === "months" ? "on" : ""}">${t.months}</button>
+    <button data-ev="periods" class="${earnView === "periods" ? "on" : ""}">${t.periods}</button></div>`;
+}
+function bindEarnSwitch(id, redraw) {
+  document.querySelectorAll(`#${id} [data-ev]`).forEach(b => b.onclick = () => { earnView = b.dataset.ev; redraw(); });
+}
+function earnMonths(months, cur, t) {
+  return months.length ? months.map(m => `<details class="emonth"><summary class="pen" style="cursor:pointer;list-style:none">
+      <div class="tt"><b>${esc(m.title)}</b><div class="hint" style="font-size:12.5px">${t.records(m.parts.length)}</div></div>
+      <b style="color:var(--green);white-space:nowrap">${money0(m.amount, cur)}</b></summary>
+      <div style="padding:0 0 6px 12px;border-left:2px solid var(--line);margin-left:4px">${m.parts.map(p => `<div class="pmeta" style="justify-content:space-between;margin:4px 0">
+        <span>${esc(p.title)}${p.note ? " · " + esc(p.note) : ""}${p.split ? ` <i>(${t.part} ${money0(p.full, cur)})</i>` : ""}</span>
+        <span>+${money0(p.amount, cur)}</span></div>`).join("")}</div></details>`).join("") : "";
+}
+const EARN_T = {
+  ru: {months: "По месяцам", periods: "По периодам", part: "часть от", records: n => `${n} ${plural(n, "запись", "записи", "записей")}`},
+  uz: {months: "Oylar bo'yicha", periods: "Davrlar bo'yicha", part: "qismi:", records: n => `${n} ta yozuv`},
+};
 function renderEarn() {
-  const e = data.earnings, cur = sx("cur");
+  const e = data.earnings, cur = sx("cur"), T = EARN_T[meLang()];
   $("earn-folder-sub").textContent = sx("earn_folder", {s: money0(e.total, cur)});
   $("earn-tiles").innerHTML = `<div><b style="color:var(--green)">${money0(e.total, cur)}</b><span>${sx("earn_total")}</span></div>
     <div><b>${money0(e.year, cur)}</b><span>${sx("earn_year")}</span></div>`;
-  $("earn-list").innerHTML = earnRows(e.items, cur, false) || `<div class="empty">${sx("earn_empty")}</div>`;
+  $("earn-list").innerHTML = earnSwitch("earn-sw", T) +
+    ((earnView === "months" ? earnMonths(e.months, cur, T) : earnRows(e.items, cur, false)) || `<div class="empty">${sx("earn_empty")}</div>`);
+  bindEarnSwitch("earn-sw", renderEarn);
 }
 function renderEarnAdmin() {
   const t = data.earnings_team, total = t.reduce((a, x) => a + x.total, 0);
@@ -2009,7 +2034,9 @@ function earnSheet(uid, keep) {
       <label class="hint" style="font-size:12.5px">по<input type="date" id="ea-to" value="${today}"></label></div>
     <input id="ea-note" maxlength="200" placeholder="Комментарий: зарплата, бонус, премия…">
     <button class="btn btn-main" style="width:100%" id="ea-add">Добавить</button>
-    <div style="margin-top:10px">${earnRows(x.items, "сум", true) || '<div class="empty">Записей пока нет</div>'}</div>
+    <div style="margin-top:12px">${earnSwitch("earn-sw-a", EARN_T.ru)}
+      ${(earnView === "months" ? earnMonths(x.months, "сум", EARN_T.ru) : earnRows(x.items, "сум", true)) || '<div class="empty">Записей пока нет</div>'}
+      ${earnView === "months" && x.items.length ? '<div class="hint" style="font-size:12px;margin-top:6px">Удалить запись — во вкладке «По периодам».</div>' : ""}</div>
     <button class="btn btn-soft" style="width:100%;margin-top:10px" id="is-cancel">Закрыть</button>`);
   if (keep) { $("ea-amount").value = prev.a || ""; if (prev.f) $("ea-from").value = prev.f; if (prev.t) $("ea-to").value = prev.t;
               $("ea-note").value = prev.n || ""; }
@@ -2024,6 +2051,7 @@ function earnSheet(uid, keep) {
     action("/api/earning", {user_id: uid, amount, date_from, date_to, note: $("ea-note").value.trim()})
       .then(() => { $("ea-amount").value = ""; $("ea-note").value = ""; earnSheet(uid, true); });
   };
+  bindEarnSwitch("earn-sw-a", () => earnSheet(uid, true));
   document.querySelectorAll("#inv-sheet [data-delearn]").forEach(b => b.onclick = () =>
     tg.showConfirm("Удалить запись?", ok => ok && action("/api/earning", {action: "delete", id: +b.dataset.delearn})
       .then(() => earnSheet(uid, true))));
