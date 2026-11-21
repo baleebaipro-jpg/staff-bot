@@ -232,6 +232,10 @@ def init_db():
                 user_id INTEGER PRIMARY KEY, pressed_at TEXT, expires_at TEXT);
             CREATE TABLE IF NOT EXISTS proof_used(
                 file_unique_id TEXT PRIMARY KEY, user_id INTEGER, used_at TEXT);
+            CREATE TABLE IF NOT EXISTS clients(
+                user_id INTEGER PRIMARY KEY, phone TEXT, first_name TEXT, username TEXT, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS news(
+                id INTEGER PRIMARY KEY, text TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS outbox(
                 id INTEGER PRIMARY KEY, chat_id INTEGER, text TEXT, sent INTEGER DEFAULT 0);
             """
@@ -830,3 +834,55 @@ def expired_proofs() -> list:
         ids = [r[0] for r in c.execute("SELECT user_id FROM proof_pending WHERE expires_at < ?", (t,))]
         c.execute("DELETE FROM proof_pending WHERE expires_at < ?", (t,))
     return ids
+
+
+# ---------- клиенты (все, кто не сотрудник и не руководитель) ----------
+
+def is_client(uid: int) -> bool:
+    return not employee(uid) and not is_admin(uid)
+
+
+def get_client(uid: int):
+    with db() as c:
+        r = c.execute("SELECT * FROM clients WHERE user_id=?", (uid,)).fetchone()
+    return dict(r) if r else None
+
+
+def save_client(uid: int, phone: str = None, first_name: str = "", username: str = "") -> bool:
+    """Запомнить клиента. Возвращает True, если это новый клиент."""
+    phone = ("+" + phone.lstrip("+")) if phone else None
+    with db() as c:
+        old = c.execute("SELECT phone FROM clients WHERE user_id=?", (uid,)).fetchone()
+        if old:
+            c.execute("UPDATE clients SET phone=COALESCE(?, phone), first_name=?, username=? WHERE user_id=?",
+                      (phone, first_name, username, uid))
+            return False
+        c.execute("INSERT INTO clients(user_id, phone, first_name, username, created_at) VALUES(?, ?, ?, ?, ?)",
+                  (uid, phone, first_name, username, now().strftime(FMT)))
+        return True
+
+
+def clients_stats() -> dict:
+    with db() as c:
+        total = c.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
+        with_phone = c.execute("SELECT COUNT(*) FROM clients WHERE phone IS NOT NULL").fetchone()[0]
+    return {"total": total, "with_phone": with_phone}
+
+
+# ---------- новости для клиентов ----------
+
+def add_news(text: str) -> int:
+    with db() as c:
+        return c.execute("INSERT INTO news(text, created_at) VALUES(?, ?)",
+                         (text.strip()[:2000], now().strftime(FMT))).lastrowid
+
+
+def news_list(limit: int = 10) -> list:
+    with db() as c:
+        rows = c.execute("SELECT * FROM news ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [{"id": r["id"], "text": r["text"], "date": parse(r["created_at"]).strftime("%d.%m.%Y")} for r in rows]
+
+
+def delete_news(news_id: int):
+    with db() as c:
+        c.execute("DELETE FROM news WHERE id=?", (news_id,))

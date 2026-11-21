@@ -37,7 +37,8 @@ def telegram_user_id():
     return json.loads(pairs.get("user", "{}")).get("id")
 
 
-def need_user(admin=False):
+def need_user(admin=False, staff=False):
+    """admin — только руководитель; staff — сотрудник или руководитель; иначе — любой (в т.ч. клиент)."""
     def deco(fn):
         @wraps(fn)
         def wrapper():
@@ -46,8 +47,8 @@ def need_user(admin=False):
                 return jsonify(error="Откройте кабинет через Telegram-бота."), 401
             if admin and not core.is_admin(uid):
                 return jsonify(error="Только для руководителя."), 403
-            if not admin and not (core.employee(uid) or core.is_admin(uid)):
-                return jsonify(error=f"Нет доступа. Ваш ID: {uid} — передайте его руководителю."), 403
+            if staff and not (core.employee(uid) or core.is_admin(uid)):
+                return jsonify(error="Только для сотрудников."), 403
             return fn(uid, request.get_json(silent=True) or {})
         return wrapper
     return deco
@@ -72,7 +73,7 @@ def ava_version(uid) -> int:
 
 
 @app.post("/api/avatar")
-@need_user()
+@need_user(staff=True)
 def api_avatar(uid, data):
     """Сотрудник загружает своё фото (уже сжатое в браузере до JPEG)."""
     raw = str(data.get("image", ""))
@@ -107,7 +108,14 @@ def api_me(uid, data):
         res["profile"]["ava_v"] = ava_version(uid)
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
+    res["is_client"] = not res["is_admin"] and not res["is_employee"]
+    if res["is_client"]:
+        cl = core.get_client(uid) or {}
+        res["client"] = {"id": uid, "name": cl.get("first_name") or "", "phone": cl.get("phone")}
+        res["news"] = core.news_list(10)
     if res["is_admin"]:
+        res["news"] = core.news_list(10)
+        res["clients"] = core.clients_stats()
         res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
         res["shifts"][core.OFF] = "Выходной"
         res["team"] = core.team()
@@ -117,7 +125,7 @@ def api_me(uid, data):
 
 
 @app.post("/api/checkin")
-@need_user()
+@need_user(staff=True)
 def api_checkin(uid, data):
     if core.PROOF_REQUIRED:
         ok, msg = core.start_proof(uid)
@@ -131,14 +139,14 @@ def api_checkin(uid, data):
 
 
 @app.post("/api/checkout")
-@need_user()
+@need_user(staff=True)
 def api_checkout(uid, data):
     ok, msg = core.check_out(uid)
     return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/task_done")
-@need_user()
+@need_user(staff=True)
 def api_task_done(uid, data):
     ok, msg = core.complete_task(int(data.get("id", 0)), uid)
     return jsonify(ok=ok, msg=msg)
@@ -196,6 +204,23 @@ def api_task_review(uid, data):
         return jsonify(ok=False, msg="Неизвестное действие.")
     ok, msg = core.review_task(int(data.get("id", 0)), act)
     return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/add_news")
+@need_user(admin=True)
+def api_add_news(uid, data):
+    text = str(data.get("text", "")).strip()
+    if not text:
+        return jsonify(ok=False, msg="Напишите текст новости.")
+    core.add_news(text)
+    return jsonify(ok=True, msg="📰 Новость опубликована для клиентов")
+
+
+@app.post("/api/delete_news")
+@need_user(admin=True)
+def api_delete_news(uid, data):
+    core.delete_news(int(data.get("id", 0)))
+    return jsonify(ok=True, msg="Новость удалена.")
 
 
 @app.post("/api/delete_task")
@@ -269,6 +294,12 @@ PAGE = r"""<!doctype html>
   .btn { border-radius: 14px; padding: 13px 16px; font-weight: 700; white-space: nowrap; }
   .btn-main { background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #fff; }
   .btn-soft { background: var(--card2); }
+  .soon-stat { position: relative; opacity: .7; }
+  .soon-stat em { position: absolute; top: 8px; right: 10px; font-style: normal; font-size: 11px; color: var(--hint); }
+  textarea { width: 100%; font: inherit; color: var(--text); background: var(--card2); border: 1px solid var(--line);
+             border-radius: 12px; padding: 12px; margin-bottom: 10px; outline: none; resize: vertical; }
+  .news-item { padding: 10px 0; border-top: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+  .news-item:first-child { border-top: none; }
   .soon { display: flex; align-items: center; gap: 12px; opacity: .6; cursor: not-allowed; user-select: none;
           background: linear-gradient(90deg, rgba(52,211,153,.12), rgba(124,92,255,.08)); }
   .soon-ic { font-size: 28px; filter: grayscale(.3); }
@@ -428,6 +459,28 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- ПАНЕЛЬ КЛИЕНТА -->
+  <div id="view-client" class="hidden">
+    <div class="profile">
+      <div class="ava" id="cl-ava"></div>
+      <div style="min-width:0">
+        <div class="pname" id="cl-name"></div>
+        <div class="prole" id="cl-phone"></div>
+        <div class="lvl-pill" style="padding:4px 12px">💎 Клиент RADI & Xuping</div>
+      </div>
+    </div>
+    <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)">
+      📱 Поделитесь номером телефона в чате с ботом — так мы найдём ваши покупки и бонусы.
+    </div>
+    <div class="stats" style="grid-template-columns:1fr 1fr">
+      <div class="stat s1 soon-stat"><div class="ic">🛍</div><b>—</b><span>сумма покупок</span><em>скоро</em></div>
+      <div class="stat s3 soon-stat"><div class="ic">🎁</div><b>—</b><span>бонусы</span><em>скоро</em></div>
+    </div>
+    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
+      <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
+    <div class="card"><h3>📰 Новости</h3><div id="cl-news"></div></div>
+  </div>
+
   <!-- ВСЯ ИСТОРИЯ -->
   <div id="view-history" class="hidden">
     <div class="card"><h3>Все посещения</h3><div id="history-all"></div></div>
@@ -435,6 +488,12 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
+    <div class="card">
+      <div class="head"><h3>📰 Новости для клиентов</h3><span class="hint" style="font-size:13px" id="cl-count"></span></div>
+      <textarea id="n-text" rows="3" placeholder="Текст новости…" maxlength="2000"></textarea>
+      <button class="btn btn-main" style="width:100%" id="n-add">Опубликовать</button>
+      <div id="n-list" style="margin-top:8px"></div>
+    </div>
     <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b>Инвестиции</b>
       <div class="hint" style="font-size:13px">Раздел скоро появится</div></div><span class="soon-pill">Скоро ⏳</span></div>
     <div class="card">
@@ -577,7 +636,7 @@ async function action(path, body) {
 /* ---------- экраны ---------- */
 function show(v) {
   view = v;
-  ["me", "history", "team"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v === "history") tg.BackButton.show(); else tg.BackButton.hide();
   window.scrollTo(0, 0);
@@ -747,8 +806,9 @@ async function load() {
   try {
     data = await api("/api/me");
     $("loading").classList.add("hidden");
+    if (data.is_client) { renderClient(); show("client"); return; }
     if (data.is_employee) renderMe();
-    if (data.is_admin) renderTeam();
+    if (data.is_admin) { renderTeam(); renderNewsAdmin(); }
     $("seg").classList.toggle("hidden", !(data.is_admin && data.is_employee));
     if (!data.is_employee) view = "team";
     show(view);
@@ -758,6 +818,31 @@ async function load() {
     $("error").textContent = e.message;
   }
 }
+
+function newsHtml(items, admin) {
+  return items.length ? items.map(n => `<div class="news-item"><div class="hint" style="font-size:12px;display:flex;justify-content:space-between">
+      <span>🗓 ${n.date}</span>${admin ? `<button class="link" data-delnews="${n.id}">удалить</button>` : ""}</div>${esc(n.text)}</div>`).join("")
+    : `<div class="empty">Новостей пока нет</div>`;
+}
+function renderClient() {
+  const c = data.client;
+  $("cl-ava").innerHTML = avatar(c.id, c.name || "?", 0);
+  $("cl-name").textContent = c.name || "Клиент";
+  $("cl-phone").textContent = c.phone || "номер не указан";
+  $("cl-nophone").classList.toggle("hidden", !!c.phone);
+  $("cl-news").innerHTML = newsHtml(data.news, false);
+}
+function renderNewsAdmin() {
+  $("cl-count").textContent = `клиентов: ${data.clients.total} (с номером: ${data.clients.with_phone})`;
+  $("n-list").innerHTML = newsHtml(data.news, true);
+  document.querySelectorAll("[data-delnews]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Удалить новость?", ok => ok && action("/api/delete_news", {id: +b.dataset.delnews})));
+}
+$("n-add").onclick = () => {
+  const text = $("n-text").value.trim();
+  if (!text) return toast("Напишите текст новости");
+  action("/api/add_news", {text}).then(() => $("n-text").value = "");
+};
 
 document.querySelectorAll("#seg button").forEach(b => b.onclick = () => show(b.dataset.view));
 $("all-btn").onclick = () => show("history");

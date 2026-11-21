@@ -41,9 +41,27 @@ BTN_TASKS = "📋 Мои задачи"
 BTN_TEAM = "👥 Команда"
 BTN_CABINET = "🏠 Личный кабинет"
 BTN_INVEST = "💰 Инвестиции"
+BTN_PURCHASES = "🛍 Мои покупки"
+BTN_BONUS = "🎁 Бонусы"
+BTN_NEWS = "📰 Новости"
+BTN_PHONE = "📱 Поделиться номером"
+
+
+def client_keyboard(uid: int) -> ReplyKeyboardMarkup:
+    cl = core.get_client(uid)
+    if not cl or not cl.get("phone"):
+        return ReplyKeyboardMarkup([[KeyboardButton(BTN_PHONE, request_contact=True)]],
+                                   resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup([
+        [BTN_PURCHASES, BTN_BONUS],
+        [BTN_NEWS, BTN_INVEST],
+        [KeyboardButton("🏠 Мой кабинет", web_app=WebAppInfo(url=config.WEBAPP_URL))],
+    ], resize_keyboard=True)
 
 
 def keyboard(uid: int) -> ReplyKeyboardMarkup:
+    if not known(uid):
+        return client_keyboard(uid)
     rows = []
     if core.employee(uid):
         rows.append([BTN_IN, BTN_OUT])
@@ -104,8 +122,67 @@ def known(uid: int) -> bool:
 
 
 async def deny(update: Update) -> None:
-    uid = update.effective_user.id
-    await reply(update, f"⛔ У вас нет доступа.\nВаш ID: {uid}\nПередайте его руководителю.")
+    """Клиент нажал что-то для сотрудников — показываем меню клиента."""
+    await client_menu(update)
+
+
+# ---------- панель клиента ----------
+
+async def client_menu(update: Update, greet: bool = False) -> None:
+    u = update.effective_user
+    core.save_client(u.id, first_name=u.first_name or "", username=u.username or "")
+    cl = core.get_client(u.id)
+    if not cl.get("phone"):
+        await reply(update,
+                    f"Assalomu alaykum, {u.first_name}! 👋\n\n"
+                    "Чтобы видеть свои покупки и бонусы, поделитесь номером телефона — "
+                    "нажмите кнопку ниже 👇",
+                    reply_markup=client_keyboard(u.id))
+        return
+    text = (f"Assalomu alaykum, {u.first_name}! 👋\n\n" if greet else "") + "Выберите раздел 👇"
+    await reply(update, text, reply_markup=client_keyboard(u.id))
+
+
+async def got_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    u = update.effective_user
+    contact = update.message.contact
+    if contact.user_id != u.id:
+        return await reply(update, "Пожалуйста, отправьте свой номер кнопкой «📱 Поделиться номером».",
+                           reply_markup=client_keyboard(u.id))
+    core.save_client(u.id, phone=contact.phone_number, first_name=u.first_name or "", username=u.username or "")
+    if known(u.id):
+        return await reply(update, "Номер сохранён ✅", reply_markup=keyboard(u.id))
+    await reply(update, "Спасибо! Номер сохранён ✅\nТеперь вам доступны все разделы 👇",
+                reply_markup=client_keyboard(u.id))
+
+
+async def client_soon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
+    if text == BTN_PURCHASES:
+        msg = "🛍 Скоро здесь будет общая сумма ваших покупок и их история ⏳"
+    elif text == BTN_BONUS:
+        msg = "🎁 Скоро здесь будут ваши бонусы ⏳"
+    else:
+        msg = "💰 Раздел «Инвестиции» скоро появится ⏳"
+    await reply(update, msg, reply_markup=keyboard(update.effective_user.id))
+
+
+async def client_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    items = core.news_list(5)
+    if not items:
+        return await reply(update, "📰 Новостей пока нет — скоро появятся!")
+    await reply(update, "📰 Новости\n\n" + "\n\n— — —\n\n".join(f"🗓 {n['date']}\n{n['text']}" for n in items))
+
+
+async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/news текст — руководитель добавляет новость для клиентов."""
+    if not core.is_admin(update.effective_user.id):
+        return await client_menu(update)
+    text = update.message.text.partition(" ")[2].strip()
+    if not text:
+        return await reply(update, "Формат: /news текст новости\nНовость увидят клиенты в «📰 Новости» и в кабинете.")
+    core.add_news(text)
+    await reply(update, "📰 Новость опубликована для клиентов ✅")
 
 
 # ---------- команды ----------
@@ -113,7 +190,7 @@ async def deny(update: Update) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not known(uid):
-        return await deny(update)
+        return await client_menu(update, greet=True)
     await save_avatar(context.bot, uid)
     text = f"Здравствуйте, {core.name(uid) if core.employee(uid) else update.effective_user.first_name}! 👋\n\n"
     if core.employee(uid):
@@ -126,6 +203,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{BTN_TEAM} — кто на месте\n"
             "/task ID текст — поставить задачу\n"
             "/fine ID сумма причина — выписать штраф\n"
+            "/news текст — новость для клиентов\n"
         )
     text += f"{BTN_CABINET} — часы, история, задачи"
     await reply(update, text, reply_markup=keyboard(uid))
@@ -314,8 +392,6 @@ async def bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not known(update.effective_user.id):
-        return await deny(update)
     await reply(update, "💰 Раздел «Инвестиции» скоро появится ⏳")
 
 
@@ -399,6 +475,10 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text([BTN_TASKS]), my_tasks))
     app.add_handler(MessageHandler(filters.Text([BTN_TEAM]), team))
     app.add_handler(MessageHandler(filters.Text([BTN_INVEST]), invest))
+    app.add_handler(CommandHandler("news", news_cmd))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Text([BTN_PURCHASES, BTN_BONUS]), client_soon))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Text([BTN_NEWS]), client_news))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.VIDEO), other_media_while_proof))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, other))
