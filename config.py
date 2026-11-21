@@ -137,6 +137,7 @@ EMPLOYEES = {
     7711346965: {"name": "Admin Silver", "role": "Админ", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
     6834141071: {"name": "Aziza Tursunbaeva", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
     745848319: {"name": "Nilufar Tursunbaeva", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
+    6658459389: {"name": "Omina Sadikova", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
 }
 
 
