@@ -133,20 +133,51 @@ def _date(value) -> str:
     return m.group(1) if m and not m.group(1).startswith("0001") else None
 
 
-def find_client(phone: str):
-    """Найти клиента в BILLZ по номеру. Возвращает словарь или None.
-    {"billz_id", "first_name", "last_name", "birth_date" (YYYY-MM-DD), "balance", "cards"}"""
-    if not enabled():
-        return None
+def _digits(s) -> str:
+    return re.sub(r"\D", "", str(s or ""))
+
+
+def _same_phone(c: dict, phone: str) -> bool:
+    """Номер клиента BILLZ совпадает с нашим по последним 9 цифрам (формат записи не важен)."""
+    tail = _digits(phone)[-9:]
+    return bool(tail) and any(_digits(p).endswith(tail) for p in (c.get("phone_numbers") or []))
+
+
+def _candidates(phone: str) -> list:
+    """Все записи BILLZ с этим номером: точный поиск в разных форматах + общий поиск по цифрам."""
+    found = {}
     for p in _phone_variants(phone):
-        res = _api("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 1})
-        clients = (res or {}).get("clients") or []
-        if clients:
-            c = clients[0]
-            return {"billz_id": c.get("id"), "first_name": (c.get("first_name") or "").strip() or None,
-                    "last_name": (c.get("last_name") or "").strip() or None, "birth_date": _date(c.get("birth_date")),
-                    "balance": float(c.get("balance") or 0), "cards": c.get("cards") or []}
-    return None
+        for c in (_api("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 5}) or {}).get("clients") or []:
+            found[c.get("id")] = c
+    digits = _digits(phone)
+    for q in dict.fromkeys([digits[-9:], digits]):
+        if len(q) < 7:
+            continue
+        for c in (_api("GET", "/v1/client", params={"search": q, "page": 1, "limit": 20}) or {}).get("clients") or []:
+            if _same_phone(c, phone):
+                found[c.get("id")] = c
+    return list(found.values())
+
+
+def _best(cands: list):
+    """Из нескольких записей одного номера — та, где есть история: бонусы, покупки, давность."""
+    return max(cands, key=lambda c: (float(c.get("balance") or 0) > 0, bool(c.get("last_transaction_date")),
+                                     str(c.get("last_transaction_date") or ""), float(c.get("balance") or 0)),
+               default=None)
+
+
+def find_client(phone: str):
+    """Найти клиента в BILLZ по номеру (в любом формате записи). Возвращает словарь или None.
+    {"billz_id", "first_name", "last_name", "birth_date" (YYYY-MM-DD), "balance", "cards", "duplicates"}"""
+    if not enabled() or not _digits(phone):
+        return None
+    cands = _candidates(phone)
+    c = _best(cands)
+    if not c:
+        return None
+    return {"billz_id": c.get("id"), "first_name": (c.get("first_name") or "").strip() or None,
+            "last_name": (c.get("last_name") or "").strip() or None, "birth_date": _date(c.get("birth_date")),
+            "balance": float(c.get("balance") or 0), "cards": c.get("cards") or [], "duplicates": len(cands)}
 
 
 def create_client(uid: int):
@@ -198,6 +229,17 @@ def sync_client(uid: int, force: bool = False) -> dict:
             purchases = float((info or {}).get("purchase_amount") or 0)
             if (info or {}).get("balance") is not None:  # кешбэк-баланс есть прямо в карточке клиента
                 balance = float(info["balance"] or 0)
+            if not purchases and not balance and cl.get("phone"):
+                # пустая запись (например, бот сам завёл клиента, не найдя его из-за формата номера) —
+                # проверяем, нет ли в BILLZ записи с этим номером, где есть покупки или бонусы
+                better = find_client(cl["phone"])
+                if better and better["billz_id"] != bid:
+                    other = _api("GET", f"/v1/customer/{better['billz_id']}") or {}
+                    o_buy = float(other.get("purchase_amount") or 0)
+                    o_bal = float(other.get("balance") if other.get("balance") is not None else better["balance"] or 0)
+                    if o_buy or o_bal:
+                        logging.info("BILLZ: клиент %s перепривязан %s → %s", uid, bid, better["billz_id"])
+                        bid, purchases, balance = better["billz_id"], o_buy, o_bal
             if balance is None:  # запасной путь — поиск по номеру
                 for p in _phone_variants(cl.get("phone")):
                     found = (_api("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 1}) or {}).get("clients")
@@ -253,15 +295,17 @@ def diagnose(phone: str = None) -> str:
     lines.append(f"✅ 2. Чтение клиентов — доступно (всего в базе: {(res or {}).get('count')})")
     # 3. поиск по номеру
     if phone:
-        found = None
-        for p in _phone_variants(phone):
-            code, res = _http("GET", "/v1/client", params={"phone_number": p, "page": 1, "limit": 1}, token=_token["value"])
-            if code == 200 and (res or {}).get("clients"):
-                found = res["clients"][0]
-                lines.append(f"✅ 3. Номер {p} найден: {found.get('first_name') or ''} {found.get('last_name') or ''}".rstrip())
-                break
-        if not found:
-            lines.append(f"ℹ️ 3. Номер {phone} в BILLZ не найден (пробовал: {', '.join(_phone_variants(phone))})")
+        cands = _candidates(phone)
+        if not cands:
+            lines.append(f"ℹ️ 3. Номер {phone} в BILLZ не найден (точно: {', '.join(_phone_variants(phone))}; и общим поиском)")
+        else:
+            best = _best(cands)
+            lines.append(f"✅ 3. Номер {phone} — записей в BILLZ: {len(cands)}" + (" ⚠️ дубли" if len(cands) > 1 else ""))
+            for c in cands:
+                mark = "👉 " if c is best else "   "
+                lines.append(f"{mark}{(c.get('first_name') or '')} {(c.get('last_name') or '')}".rstrip() +
+                             f" · тел. {', '.join(c.get('phone_numbers') or [])} · кешбэк {float(c.get('balance') or 0):,.0f}"
+                             .replace(",", " ") + f" · посл. покупка {str(c.get('last_transaction_date') or '—')[:10]}")
     lines.append(f"➕ Заводить новых клиентов в BILLZ: {'да' if CREATE_CLIENTS else 'нет'}")
     if last_error["text"]:
         lines.append(f"⚠️ Последняя ошибка ({last_error['at']}): {last_error['text']}")
