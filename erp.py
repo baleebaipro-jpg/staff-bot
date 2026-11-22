@@ -275,6 +275,8 @@ def sync_client(uid: int, force: bool = False) -> dict:
         if purchases is not None:
             core.auto_tier(uid, purchases)
             _notify_purchase(uid, purchases, balance)
+        if debt is not None:
+            _notify_debt(uid, debt)
     except BillzError as e:
         logging.warning("BILLZ: не удалось обновить клиента %s: %s", uid, e)
         last_error.update(text=f"клиент {uid}: {e}", at=core.now().strftime("%d.%m %H:%M"))
@@ -401,6 +403,25 @@ def _notify_purchase(uid: int, purchases, balance) -> None:
     st = core.flag_json("purchase_watch") or {}
     core.flag_json("purchase_watch", dict(st, sent=int(st.get("sent") or 0) + 1, last_sent=core.now().strftime("%d.%m %H:%M")))
     logging.info("Спасибо за покупку → %s (+%s)", uid, purchases - before)
+
+
+def _notify_debt(uid: int, debt: float) -> None:
+    """Долг уменьшился (оплата) — сообщение клиенту с остатком. Новый долг просто запоминаем."""
+    cl = core.get_client(uid) or {}
+    before = cl.get("debt_notified")
+    if before is None or debt > before - 0.5:
+        if before is None or abs(debt - before) > 0.5:
+            core.update_client(uid, debt_notified=debt)
+        return
+    import i18n
+    lang = i18n.lang_of(cl.get("lang"))
+    paid = before - debt
+    key = "debt_paid_full" if debt <= 0.5 else "debt_paid"
+    text = i18n.t(lang, key, paid=_money(paid, lang), left=_money(debt, lang))
+    core.update_client(uid, debt_notified=debt)
+    with core.db() as c:
+        c.execute("INSERT INTO outbox(chat_id, text, via) VALUES(?, ?, 'client')", (uid, text))
+    logging.info("Оплата долга → %s (−%s, остаток %s)", uid, paid, debt)
 
 
 def _bot_client_for(billz_id: str):
