@@ -269,6 +269,17 @@ def api_task_done(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+@app.post("/api/my_task")
+@need_user(staff=True)
+def api_my_task(uid, data):
+    """Сотрудник: своя задача на сегодня/завтра (action=add) или удалить свою (action=delete)."""
+    if data.get("action") == "delete":
+        ok, msg = core.delete_self_task(uid, int(data.get("id") or 0))
+    else:
+        ok, msg = core.add_self_task(uid, data.get("title"), "tomorrow" if data.get("day") == "tomorrow" else "today")
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/add_task")
 @need_user(admin=True)
 def api_add_task(uid, data):
@@ -1015,6 +1026,10 @@ PAGE = r"""<!doctype html>
 
     <div class="card">
       <div class="head"><h3 data-sx="my_tasks"></h3></div>
+      <div class="add-row" style="margin-bottom:6px"><input id="mt-title" maxlength="300" data-sxp="mt_ph">
+        <button class="btn btn-main" id="mt-add">＋</button></div>
+      <div class="quick" id="mt-day" style="margin:0 0 6px"><button data-day="today" class="on" data-sx="mt_today"></button>
+        <button data-day="tomorrow" data-sx="mt_tomorrow"></button></div>
       <div id="tasks"></div>
     </div>
 
@@ -1461,7 +1476,7 @@ tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 /* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
 const SX = {
   ru: {h: "ч", per_month: "за месяц", in_row: "подряд", cur_rank: "текущее звание", invest: "Инвестиции",
-       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", last_visits: "Последние посещения",
+       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_mine: "моя", last_visits: "Последние посещения",
        all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
        close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
@@ -1477,7 +1492,7 @@ const SX = {
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
-       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", last_visits: "Oxirgi tashriflar",
+       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
        close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
@@ -1560,12 +1575,15 @@ function renderMe() {
 
   const open = data.tasks.filter(t => !t.done), done = data.tasks.filter(t => t.done).slice(0, 3);
   $("tasks").innerHTML = (open.length || done.length) ? [...open, ...done].map(t => `
-    <div class="task ${t.done ? "done" : ""}"><div class="tt">${t.repeat ? "🔁 " : ""}${esc(t.title)}<div class="hint" style="font-size:12px">${t.created}</div></div>
+    <div class="task ${t.done ? "done" : ""}"><div class="tt">${t.repeat ? "🔁 " : t.self ? "✍️ " : ""}${esc(t.title)}<div class="hint" style="font-size:12px">${t.self ? sx("mt_mine") + " · " : ""}${t.created}</div></div>
+    ${t.self && !t.done ? `<button class="btn btn-soft btn-sm" data-mtdel="${t.id}">✕</button>` : ""}
     ${t.done ? "✔️" : t.due ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("due", {d: t.due})}</span>`
       : t.status === "review" ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("review")}</span>`
       : `<button class="btn btn-main btn-sm" data-done="${t.id}">${sx("done")}</button>`}</div>`).join("")
     : `<div class="empty">${sx("no_tasks")}</div>`;
   document.querySelectorAll("[data-done]").forEach(b => b.onclick = () => action("/api/task_done", {id: +b.dataset.done}));
+  document.querySelectorAll("[data-mtdel]").forEach(b => b.onclick = () => action("/api/my_task", {action: "delete", id: +b.dataset.mtdel}));
+  $("mt-title").placeholder = sx("mt_ph");
 
   $("visits").innerHTML = data.history.length ? data.history.slice(0, 4).map(h => visitRow(h, false)).join("")
     : `<div class="empty">${sx("no_visits")}</div>`;
@@ -1656,7 +1674,7 @@ function renderTeam() {
       ${(e.recurring || []).length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🔁 Повторяющиеся задачи:</div>` +
         e.recurring.map(r => `<div class="task"><div class="tt">🔁 ${esc(r.title)}<div style="font-size:12px" class="hint">${esc(r.when)}</div></div>
           <button class="btn btn-soft btn-sm" data-stoprep="${r.id}" title="Остановить повтор">✕</button></div>`).join("") : ""}
-      ${e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : "📌"} ${esc(t.title)}${t.due
+      ${e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : t.self ? "✍️" : "📌"} ${esc(t.title)}${t.self ? ` <span class="hint" style="font-size:11.5px">(сам себе)</span>` : ""}${t.due
           ? `<div style="font-size:12px" class="hint">📅 на ${t.due}</div>`
           : t.status === "review" ? `<div style="font-size:12px;color:var(--orange)">⏳ ждёт вашей проверки</div>` : ""}</div>
         ${t.status === "review" && !t.due ? `<button class="btn btn-main btn-sm" data-review="${t.id}" data-act="ok">✅</button>
@@ -2488,6 +2506,17 @@ function langSwitch(id, langs, cur, onPick) {
   box.querySelectorAll("[data-lng]").forEach(b => b.onclick = () => { if (b.dataset.lng !== cur) onPick(b.dataset.lng); });
 }
 const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
+/* Своя задача сотрудника: на сегодня или завтра */
+let mtDay = "today";
+document.querySelectorAll("#mt-day [data-day]").forEach(b => b.onclick = () => {
+  mtDay = b.dataset.day;
+  document.querySelectorAll("#mt-day [data-day]").forEach(x => x.classList.toggle("on", x === b));
+});
+$("mt-add").onclick = () => {
+  const title = $("mt-title").value.trim(); if (!title) return toast(sx("mt_ph"));
+  action("/api/my_task", {action: "add", title, day: mtDay}).then(() => { $("mt-title").value = ""; });
+};
+$("mt-title").onkeydown = e => { if (e.key === "Enter") $("mt-add").onclick(); };
 $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(data.profile ? sx("invest_soon") : SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-clients").onclick = () => show("clients");
