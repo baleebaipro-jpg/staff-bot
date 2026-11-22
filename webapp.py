@@ -1051,7 +1051,7 @@ PAGE = r"""<!doctype html>
   <!-- ПОСТИНГ -->
   <div id="view-posting" class="hidden">
     <div class="page-title">📣 Постинг</div>
-    <div class="page-sub">Публикации в бот клиентов, бот сотрудников, группы и каналы</div>
+    <div class="page-sub">Один пост — всем в боте XUPING Bonus, а также в группы и каналы</div>
     <div class="card">
       <div id="po-langs"></div>
       <div class="hint" style="font-size:12px;display:flex;justify-content:space-between;margin:-6px 0 8px">
@@ -1075,10 +1075,7 @@ PAGE = r"""<!doctype html>
       <div class="po-lbl">Когда</div>
       <div class="quick" id="po-when" style="margin:0"><button data-w="now" class="on">Сейчас</button><button data-w="later">🕒 Запланировать</button></div>
       <input type="datetime-local" id="po-at" class="hidden" style="margin-top:10px">
-      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:10px;margin-top:14px">
-        <button class="btn btn-soft" id="po-test">👁 Себе</button>
-        <button class="btn btn-main" id="po-send">📣 Опубликовать</button>
-      </div>
+      <button class="btn btn-main" style="width:100%;margin-top:14px" id="po-send">📣 Опубликовать</button>
     </div>
     <div class="card"><h3>История постов</h3><div id="po-history"></div></div>
   </div>
@@ -2033,10 +2030,10 @@ function langEditor(boxId, rows, max, ph, onInput) {
 
 /* ---------- постинг ---------- */
 let poPhoto = null, poWhen = "now";
-const poAud = new Set();
+const poAud = new Set(["clients"]);  // по умолчанию — все в боте
 function renderPosting() {
   const a = data.posting.audience, h = data.posting.history;
-  const opts = [["clients", `🤖 Бот клиентов XUPING Bonus · ${a.clients}`], ["staff", `🤖 Бот сотрудников · ${a.staff}`],
+  const opts = [["clients", `🤖 Все в боте XUPING Bonus · ${a.clients}`],
                 ...a.chats.map(c => ["chat:" + c.id, "📢 " + c.title])];
   $("po-aud").innerHTML = opts.map(([k, t]) => `<button data-aud="${k}" class="${poAud.has(k) ? "on" : ""}">${esc(t)}</button>`).join("");
   document.querySelectorAll("[data-aud]").forEach(b => b.onclick = () => {
@@ -2084,12 +2081,8 @@ function poBody() {
 }
 function poReset() {
   poEd.clear(); $("po-btn-text").value = ""; $("po-btn-url").value = ""; $("po-at").value = "";
-  $("po-news").checked = false; poAud.clear(); $("po-photo-del").onclick(); poCount();
+  $("po-news").checked = false; poAud.clear(); poAud.add("clients"); $("po-photo-del").onclick(); poCount();
 }
-$("po-test").onclick = () => {
-  const b = poBody(); if (!Object.keys(b.texts).length && !b.image) return toast("Напишите текст или добавьте фото");
-  toast("Отправляю…"); api("/api/post", Object.assign({action: "test", audience: [...poAud]}, b)).then(r => toast(r.msg)).catch(e => toast(e.message));
-};
 $("po-send").onclick = () => {
   const b = poBody();
   if (!Object.keys(b.texts).length && !b.image) return toast("Напишите текст или добавьте фото");
