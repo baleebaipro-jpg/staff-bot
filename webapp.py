@@ -1215,8 +1215,7 @@ PAGE = r"""<!doctype html>
       <button class="link" id="cl-refresh" style="font-size:13px"></button></div>
     <div style="display:none">
     </div>
-    <div class="card soon"><div class="soon-ic">💰</div><div style="flex:1"><b data-t="invest"></b>
-      <div class="hint" style="font-size:13px" data-t="invest_soon"></div></div><span class="soon-pill" data-t="soon_pill"></span></div>
+    <!-- «Инвестиции» клиентам не показываем -->
     <div class="card"><h3 data-t="news"></h3><div id="cl-news"></div></div>
   </div>
 
