@@ -1389,31 +1389,65 @@ def flag_json(name: str, value=None):
         c.execute("INSERT OR REPLACE INTO flags(name, value) VALUES(?, ?)", (name, json.dumps(value, ensure_ascii=False)))
 
 
+def _bday(v):
+    return datetime.strptime(v, "%Y-%m-%d").strftime("%d.%m.%Y") if v else None
+
+
 def billz_base(q: str = "", offset: int = 0, limit: int = 50) -> dict:
-    """Поиск по копии базы BILLZ: имя или цифры номера. Отмечает тех, кто есть в боте."""
+    """Единый список клиентов: из бота + база магазина (BILLZ), один номер — одна строка.
+    Сначала клиенты бота (со статусом), затем остальные из базы магазина (по дате последней покупки).
+    offset листает только часть из базы магазина; клиенты бота приходят на первой странице."""
     q = str(q or "").strip()
     digits = "".join(ch for ch in q if ch.isdigit())
-    where, args = "", []
-    if digits and len(digits) >= 3 and len(digits) >= len(q.replace(" ", "").replace("+", "")) - 1:
-        where, args = "WHERE phones LIKE ?", [f"%{digits[-9:]}%"]
-    elif q:
-        where = "WHERE LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ?"
-        args = [f"%{q.lower()}%"]
+    by_phone = bool(digits) and len(digits) >= 3 and len(digits) >= len(q.replace(" ", "").replace("+", "")) - 1
     with db() as c:
-        total_all = c.execute("SELECT COUNT(*) FROM billz_clients").fetchone()[0]
-        found = c.execute(f"SELECT COUNT(*) FROM billz_clients {where}", args).fetchone()[0]
-        rows = c.execute(f"SELECT * FROM billz_clients {where} ORDER BY COALESCE(last_tx,'') DESC, first_name "
+        bot = [dict(r) for r in c.execute("SELECT * FROM clients ORDER BY created_at DESC")]
+        store = {r["id"]: dict(r) for r in c.execute("SELECT * FROM billz_clients WHERE id IN "
+                 "(SELECT billz_id FROM clients WHERE billz_id IS NOT NULL)")}
+        tails = {(x["phone"] or "")[-9:] for x in bot if x.get("phone")}
+        for r in c.execute("SELECT * FROM billz_clients WHERE phone_tail IN (%s)" % ",".join("?" * len(tails)), list(tails)):
+            store.setdefault("tail:" + r["phone_tail"], dict(r))
+        linked = [x["billz_id"] for x in bot if x.get("billz_id")]
+        # остальные из базы магазина — кого нет в боте
+        cond, args = ["1=1"], []
+        if linked:
+            cond.append("id NOT IN (%s)" % ",".join("?" * len(linked)))
+            args += linked
+        if tails:
+            cond.append("COALESCE(phone_tail,'') NOT IN (%s)" % ",".join("?" * len(tails)))
+            args += list(tails)
+        base_where, base_args = " AND ".join(cond), list(args)
+        if by_phone:
+            cond.append("phones LIKE ?")
+            args.append(f"%{digits[-9:]}%")
+        elif q:
+            cond.append("LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ?")
+            args.append(f"%{q.lower()}%")
+        where = " AND ".join(cond)
+        found = c.execute(f"SELECT COUNT(*) FROM billz_clients WHERE {where}", args).fetchone()[0]
+        rest_all = c.execute(f"SELECT COUNT(*) FROM billz_clients WHERE {base_where}", base_args).fetchone()[0]
+        rows = c.execute(f"SELECT * FROM billz_clients WHERE {where} ORDER BY COALESCE(last_tx,'') DESC, first_name "
                          f"LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
-        in_bot = {(r["phone"] or "")[-9:] for r in c.execute("SELECT phone FROM clients WHERE phone IS NOT NULL")}
-        linked = {r["billz_id"] for r in c.execute("SELECT billz_id FROM clients WHERE billz_id IS NOT NULL")}
     items = []
+    if offset == 0:
+        for x in bot:
+            name = client_full_name(x)
+            if by_phone and digits[-9:] not in "".join(ch for ch in (x.get("phone") or "") if ch.isdigit()):
+                continue
+            if q and not by_phone and q.lower() not in (f"{name} {x.get('username') or ''}").lower():
+                continue
+            b = store.get(x.get("billz_id")) or store.get("tail:" + (x.get("phone") or "")[-9:]) or {}
+            items.append({"bot_id": x["user_id"], "name": name or "Без имени", "phone": x.get("phone") or "",
+                          "birth": _bday(x.get("birth_date")) or _bday(b.get("birth_date")), "lang": x.get("lang") or "",
+                          "since": parse(x["created_at"]).strftime("%d.%m.%Y"), "tier": tier_of(x),
+                          "balance": x.get("billz_balance") if x.get("billz_balance") is not None else b.get("balance"),
+                          "last_tx": b.get("last_tx") or "", "in_store": bool(b or x.get("billz_id"))})
     for r in rows:
-        name = " ".join(x for x in (r["first_name"], r["last_name"]) if x) or "Без имени"
-        items.append({"id": r["id"], "name": name, "phone": r["phone"] or "",
-                      "birth": datetime.strptime(r["birth_date"], "%Y-%m-%d").strftime("%d.%m.%Y") if r["birth_date"] else None,
-                      "balance": r["balance"] or 0, "last_tx": r["last_tx"] or "",
-                      "in_bot": r["id"] in linked or bool(r["phone_tail"] and r["phone_tail"] in in_bot)})
-    return {"items": items, "found": found, "total": total_all, "status": flag_json("billz_import") or {}}
+        items.append({"name": " ".join(v for v in (r["first_name"], r["last_name"]) if v) or "Без имени",
+                      "phone": r["phone"] or "", "birth": _bday(r["birth_date"]), "balance": r["balance"] or 0,
+                      "last_tx": r["last_tx"] or "", "in_store": True})
+    return {"items": items, "more": max(0, found - offset - len(rows)), "loaded_store": offset + len(rows),
+            "total": len(bot) + rest_all, "in_bot": len(bot), "status": flag_json("billz_import") or {}}
 
 
 def clients_list(limit: int = 200) -> list:
