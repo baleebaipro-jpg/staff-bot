@@ -165,12 +165,11 @@ def client_keyboard(uid: int):
                                    resize_keyboard=True, one_time_keyboard=True)
     if step in ("name", "birth"):
         return ReplyKeyboardRemove()
+    # покупки, новости и остальное клиент смотрит в мини-приложении (кнопка «Кабинет»)
     return ReplyKeyboardMarkup([
-        [i18n.t(lang, "btn_purchases"), i18n.t(lang, "btn_bonus")],
-        [i18n.t(lang, "btn_news"), i18n.t(lang, "btn_invest")],
-        [i18n.t(lang, "btn_cabinet"),
-         i18n.t(lang, "btn_lang")],
-        [i18n.t(lang, "btn_logout")],
+        [i18n.t(lang, "btn_cabinet")],
+        [i18n.t(lang, "btn_bonus")],
+        [i18n.t(lang, "btn_lang"), i18n.t(lang, "btn_logout")],
     ], resize_keyboard=True)
 
 

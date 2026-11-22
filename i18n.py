@@ -76,9 +76,9 @@ T = {
         "en": "Choose a section 👇",
     },
     "purchases_info": {
-        "uz": "🛍 Xaridlaringiz umumiy summasi: {sum}\n\nMa'lumot BILLZ tizimidan olinadi.",
-        "ru": "🛍 Общая сумма ваших покупок: {sum}\n\nДанные из системы BILLZ.",
-        "en": "🛍 Your total purchases: {sum}\n\nData from the BILLZ system.",
+        "uz": "🛍 Xaridlaringiz umumiy summasi: {sum}",
+        "ru": "🛍 Общая сумма ваших покупок: {sum}",
+        "en": "🛍 Your total purchases: {sum}",
     },
     "bonus_info": {
         "uz": "🎁 Bonus (keshbek) balansingiz: {sum}",
