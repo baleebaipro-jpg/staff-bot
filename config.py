@@ -192,6 +192,7 @@ EMPLOYEES = {
     652665561: {"name": "Javohir Ilhomov", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 7000},
     8808451748: {"name": "Komola RADI", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 1000},
     8993708822: {"name": "Sitora RADI", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 700},
+    675957862: {"name": "Moxira Isxakova", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 4000},
 }
 
 
