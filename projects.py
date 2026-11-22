@@ -115,6 +115,22 @@ def update_task(owner: int, tid: int, title: str, note: str, due: str):
     return True, f"Сохранено · дедлайн: {_label(due)}" if due else "Сохранено · без даты"
 
 
+def plan(owner: int, tid: int, when: str):
+    """Быстро поставить срок: when = today / tomorrow / none (снять дату)."""
+    days = {"today": 0, "tomorrow": 1}.get(when)
+    due = (_today() + timedelta(days=days)).strftime(DAY) if days is not None else None
+    with core.db() as c:
+        t = _own_task(c, owner, tid)
+        if not t:
+            return False, "Задача не найдена."
+        c.execute("UPDATE ptasks SET due_date=?, done_at=NULL WHERE id=?", (due, tid))
+    if when == "today":
+        return True, f"☀️ «{t['title']}» — на сегодня. Задача в «Мой день»."
+    if when == "tomorrow":
+        return True, f"📅 «{t['title']}» — на завтра."
+    return True, f"📝 «{t['title']}» — снова без даты."
+
+
 def set_done(owner: int, tid: int, done: bool):
     with core.db() as c:
         t = _own_task(c, owner, tid)
@@ -162,6 +178,7 @@ def overview(owner: int) -> dict:
         "projects": projects,
         "tasks": tasks,
         "today": today.strftime("%d.%m"),
+        "today_iso": t, "tomorrow_iso": (today + timedelta(days=1)).strftime(DAY),
         "day": {
             "overdue": sorted([x for x in open_dated if x["due_date"] < t], key=by_due),
             "today": [x for x in open_dated if x["due_date"] == t],

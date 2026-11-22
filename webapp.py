@@ -432,6 +432,8 @@ def api_proj(uid, data):
         ok, msg = projects.add_task(uid, i, data.get("title"), data.get("due"))
     elif act == "update_task":
         ok, msg = projects.update_task(uid, i, data.get("title"), data.get("note"), data.get("due"))
+    elif act == "plan":
+        ok, msg = projects.plan(uid, i, str(data.get("when") or ""))
     elif act == "done":
         ok, msg = projects.set_done(uid, i, bool(data.get("done")))
     elif act == "delete_task":
@@ -740,6 +742,7 @@ PAGE = r"""<!doctype html>
             padding: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; margin-top: 1px; }
   .ptask.done .pcheck { background: var(--green); border-color: var(--green); color: #06281c; }
   .ptask .pbody { flex: 1; min-width: 0; cursor: pointer; }
+  .take-today { flex: none; align-self: center; border-color: rgba(167,139,250,.45) !important; color: #e9e3ff; }
   .ptask .pt { word-break: break-word; }
   .ptask.done .pt { color: var(--hint); text-decoration: line-through; }
   .pmeta { font-size: 12.5px; color: var(--hint); margin-top: 3px; display: flex; gap: 6px 10px; flex-wrap: wrap; }
@@ -1883,11 +1886,13 @@ function ptaskRow(x, withProject) {
   return `<div class="ptask ${x.done ? "done" : ""}">
     <button class="pcheck" data-pdone="${x.id}" data-v="${x.done ? 0 : 1}">${x.done ? "✓" : ""}</button>
     <div class="pbody" data-pedit="${x.id}"><div class="pt">${esc(x.title)}</div>
-      ${meta.length ? `<div class="pmeta">${meta.map(m => `<span>${m}</span>`).join("")}</div>` : ""}</div></div>`;
+      ${meta.length ? `<div class="pmeta">${meta.map(m => `<span>${m}</span>`).join("")}</div>` : ""}</div>
+    ${!x.done && x.due_date !== P().today_iso ? `<button class="btn btn-soft btn-sm take-today" data-ptoday="${x.id}">☀️ На сегодня</button>` : ""}</div>`;
 }
 function bindPtasks() {
   document.querySelectorAll("[data-pdone]").forEach(b => b.onclick = () => projAct({action: "done", id: +b.dataset.pdone, done: b.dataset.v === "1"}));
   document.querySelectorAll("[data-pedit]").forEach(b => b.onclick = () => editPtask(+b.dataset.pedit));
+  document.querySelectorAll("[data-ptoday]").forEach(b => b.onclick = () => projAct({action: "plan", id: +b.dataset.ptoday, when: "today"}));
 }
 function renderProjects() {
   const o = P(), d = o.day;
@@ -1967,11 +1972,15 @@ function editPtask(id) {
     <input id="et-title" maxlength="300" value="${esc(x.title)}">
     <textarea id="et-note" rows="5" maxlength="3000" placeholder="Заметки, детали, идеи…">${esc(x.note || "")}</textarea>
     <div class="hint" style="font-size:13px;margin-bottom:6px">Дедлайн</div>
-    <div class="add-row" style="margin-bottom:10px"><input type="date" id="et-due" value="${x.due_date || ""}">
-      <button class="btn btn-soft" id="et-nodue">Без даты</button></div>
+    <div class="quick" id="et-quick" style="margin:0 0 10px">
+      <button data-d="${P().today_iso}">☀️ Сегодня</button><button data-d="${P().tomorrow_iso}">Завтра</button>
+      <button data-d="">📝 Без даты</button></div>
+    <input type="date" id="et-due" value="${x.due_date || ""}">
     ${sheetBtns("Сохранить")}
     <button class="link" id="et-del" style="color:var(--red);display:block;margin:14px auto 0">Удалить задачу</button>`);
-  $("et-nodue").onclick = () => { $("et-due").value = ""; };
+  const qd = () => document.querySelectorAll("#et-quick [data-d]").forEach(b => b.classList.toggle("on", b.dataset.d === $("et-due").value));
+  document.querySelectorAll("#et-quick [data-d]").forEach(b => b.onclick = () => { $("et-due").value = b.dataset.d; qd(); });
+  $("et-due").oninput = qd; qd();
   $("is-cancel").onclick = invSheetClose;
   $("is-ok").onclick = () => { const title = $("et-title").value.trim(); if (!title) return toast("Введите задачу");
     const body = {action: "update_task", id, title, note: $("et-note").value, due: $("et-due").value};
