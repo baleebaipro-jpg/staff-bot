@@ -335,7 +335,7 @@ def init_db():
                          ("birth_date", "TEXT"), ("step", "TEXT"), ("billz_id", "TEXT"), ("billz_balance", "REAL"),
                          ("billz_purchases", "REAL"), ("billz_synced", "TEXT"), ("source", "TEXT"),
                          ("billz_debt", "REAL"), ("purchases_notified", "REAL"),
-                         ("debt_notified", "REAL")):
+                         ("debt_notified", "REAL"), ("billz_first", "TEXT"), ("billz_last", "TEXT")):
             if col not in ccols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
         ocols = {r[1] for r in c.execute("PRAGMA table_info(outbox)")}
@@ -1374,7 +1374,8 @@ def set_client_tier(uid: int, tier: str):
 
 
 CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username",
-                 "billz_id", "billz_balance", "billz_purchases", "billz_synced", "billz_debt", "purchases_notified", "debt_notified"}
+                 "billz_id", "billz_balance", "billz_purchases", "billz_synced", "billz_debt", "purchases_notified", "debt_notified",
+                 "billz_first", "billz_last"}
 
 
 def auto_tier(uid: int, purchases: float):
@@ -1413,7 +1414,17 @@ def update_client(uid: int, **fields):
 
 
 def client_full_name(cl) -> str:
-    return " ".join(x for x in ((cl or {}).get("first_name"), (cl or {}).get("last_name")) if x)
+    """Имя и фамилия клиента: как записаны в магазине (если есть), иначе — как ввёл в боте."""
+    cl = cl or {}
+    if cl.get("billz_first"):
+        return " ".join(x for x in (cl.get("billz_first"), cl.get("billz_last")) if x)
+    return " ".join(x for x in (cl.get("first_name"), cl.get("last_name")) if x)
+
+
+def client_first_name(cl) -> str:
+    """Как обращаться к клиенту: имя из магазина, иначе из бота."""
+    cl = cl or {}
+    return (cl.get("billz_first") or cl.get("first_name") or "").strip()
 
 
 def parse_birth(text: str):
