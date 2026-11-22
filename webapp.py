@@ -453,7 +453,7 @@ def api_post(uid, data):
         ok, msg = posts.test(uid, *args, text=data.get("text", ""), audience=data.get("audience") or [])
     elif act == "create":
         ok, msg = posts.create(uid, *args, data.get("audience") or [], bool(data.get("to_news")),
-                               data.get("send_at") or "", text=data.get("text", ""))
+                               data.get("send_at") or "", text=data.get("text", ""), bonus=data.get("bonus") or 0)
     else:
         ok, msg = False, "Неизвестное действие."
     return jsonify(ok=ok, msg=msg)
@@ -1097,6 +1097,12 @@ PAGE = r"""<!doctype html>
       </details>
       <div class="po-lbl">Где опубликовать <span style="font-size:11.5px">(можно несколько)</span></div>
       <div class="quick" id="po-aud" style="margin:0"></div>
+      <div class="hint" style="font-size:12px;margin-top:8px">💡 Напишите в тексте <b>{name}</b> — каждый клиент увидит своё имя,
+        <b>{bonus}</b> — сумму начисленного бонуса.</div>
+      <div id="po-bonus-row" class="hidden" style="margin-top:12px">
+        <div class="po-lbl" style="margin-top:0">🎁 Начислить бонус каждому получателю (необязательно)</div>
+        <input id="po-bonus" inputmode="numeric" autocomplete="off" placeholder="Сумма бонуса, например 50 000" style="margin-bottom:0">
+      </div>
       <label class="chk"><input type="checkbox" id="po-news">📰 Показать и в «Новостях» в панели клиентов</label>
       <div class="po-lbl">Когда</div>
       <div class="quick" id="po-when" style="margin:0"><button data-w="now" class="on">Сейчас</button><button data-w="later">🕒 Запланировать</button></div>
@@ -2079,7 +2085,9 @@ const poAud = new Set(["clients"]);  // по умолчанию — все в б
 function renderPosting() {
   const a = data.posting.audience, h = data.posting.history;
   const opts = [["clients", `🤖 Все в боте XUPING Bonus · ${a.clients}`],
+                ...(a.segments || []).map(s => [s.key, `${s.title} · ${s.count}`]),
                 ...a.chats.map(c => ["chat:" + c.id, "📢 " + c.title])];
+  $("po-bonus-row").classList.toggle("hidden", !a.bonus_on);
   $("po-aud").innerHTML = opts.map(([k, t]) => `<button data-aud="${k}" class="${poAud.has(k) ? "on" : ""}">${esc(t)}</button>`).join("");
   document.querySelectorAll("[data-aud]").forEach(b => b.onclick = () => {
     poAud.has(b.dataset.aud) ? poAud.delete(b.dataset.aud) : poAud.add(b.dataset.aud);
@@ -2100,11 +2108,14 @@ function renderPosting() {
     return `<div class="po-post"><div class="inv-top"><span class="hint" style="font-size:12.5px">${p.status === "scheduled" ? "Запланирован" : p.when}${p.has_photo ? " · 📷" : ""}${p.button_text ? " · 🔗" : ""}<span class="lang-badges">${(p.langs || []).map(l => `<span>${l.toUpperCase()}</span>`).join("")}</span></span>${st}</div>
       <div class="pt">${esc(p.text || "(только фото)")}</div>
       <div class="pmeta"><span>→ ${esc(p.audience_titles.join(", "))}</span>${stats}</div>
+      ${p.bonus ? `<div class="pmeta"><span style="color:var(--green)">🎁 бонус ${Math.round(p.bonus).toLocaleString("ru-RU")} сум · начислено ${p.bonus_ok} из ${p.bonus_total}</span>${p.bonus_wait ? `<span>в процессе: ${p.bonus_wait}</span>` : ""}${p.bonus_fail ? `<span class="late">не удалось: ${p.bonus_fail}</span>` : ""}</div>` : ""}
       ${p.status === "scheduled" ? `<div class="inv-act"><button class="btn btn-soft btn-sm" data-pocancel="${p.id}">Отменить</button></div>` : ""}</div>`;
   }).join("") : `<div class="empty">Постов пока нет</div>`;
   document.querySelectorAll("[data-pocancel]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить запланированный пост?", ok => ok && action("/api/post", {action: "cancel", id: +b.dataset.pocancel})));
 }
+const poBonus = () => +($("po-bonus").value || "").replace(/[^\d]/g, "") || 0;
+$("po-bonus").oninput = () => { const v = poBonus(); $("po-bonus").value = v ? v.toLocaleString("ru-RU") : ""; };
 const poCount = () => { const n = poEd.current().value.length, max = poPhoto ? 1024 : 4000;
   $("po-count").innerHTML = `<span style="color:${n > max ? "var(--red)" : "inherit"}">${n} / ${max}</span>`; };
 const poEd = langEditor("po-langs", 6, 4000, {uz: "Post matni (o'zbekcha)…", ru: "Текст поста (по-русски)…",
@@ -2126,7 +2137,7 @@ function poBody() {
 }
 function poReset() {
   poEd.clear(); $("po-btn-text").value = ""; $("po-btn-url").value = ""; $("po-at").value = "";
-  $("po-news").checked = false; poAud.clear(); poAud.add("clients"); $("po-photo-del").onclick(); poCount();
+  $("po-news").checked = false; poAud.clear(); poAud.add("clients"); $("po-bonus").value = ""; $("po-photo-del").onclick(); poCount();
 }
 $("po-send").onclick = () => {
   const b = poBody();
@@ -2138,10 +2149,14 @@ $("po-send").onclick = () => {
   const filled = Object.keys(b.texts), missing = LANG_TABS.map(x => x[0]).filter(k => !filled.includes(k));
   const langs = `\nЯзыки: ${filled.map(k => k.toUpperCase()).join(", ") || "—"}` +
     (missing.length && filled.length ? ` (без ${missing.map(k => k.toUpperCase()).join(", ")} — получат на ${filled.includes("uz") ? "UZ" : filled[0].toUpperCase()})` : "");
-  tg.showConfirm(`Опубликовать пост?\nКому: ${names}${when}${langs}`, ok => {
+  const bonus = poBonus(), aud = data.posting.audience;
+  const reach = [...poAud].reduce((n, k) => n + (k === "clients" ? aud.clients : ((aud.segments || []).find(s => s.key === k) || {}).count || 0), 0);
+  const bonusLine = bonus ? `\n🎁 Бонус: ${bonus.toLocaleString("ru-RU")} сум каждому клиенту (до ${reach} чел., итого до ${(bonus * reach).toLocaleString("ru-RU")} сум)` : "";
+  if (bonus > aud.bonus_max) return toast(`Бонус — не больше ${aud.bonus_max.toLocaleString("ru-RU")} сум`);
+  tg.showConfirm(`Опубликовать пост?\nКому: ${names}${when}${langs}${bonusLine}`, ok => {
     if (!ok) return;
     toast("Отправляю…");
-    api("/api/post", Object.assign({action: "create", audience: [...poAud], to_news: $("po-news").checked,
+    api("/api/post", Object.assign({action: "create", audience: [...poAud], to_news: $("po-news").checked, bonus: poBonus(),
         send_at: poWhen === "later" ? $("po-at").value : ""}, b))
       .then(r => { toast(r.msg); if (r.ok) poReset(); return load(); }).catch(e => toast(e.message));
   });

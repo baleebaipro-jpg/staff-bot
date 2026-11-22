@@ -19,6 +19,7 @@ from datetime import datetime
 
 import config
 import core
+import erp
 import i18n
 
 DIR = os.path.join(core._DATA_DIR, "posts")
@@ -44,7 +45,9 @@ def audience_info() -> dict:
                 continue
             total += 1
             langs[i18n.lang_of(r["lang"])] += 1
-    return {"clients": total, "client_langs": langs, "staff": len(config.EMPLOYEES), "chats": chats()}
+    segs = [{"key": "seg:" + k, "title": t, "count": len(core.segment_uids(k))} for k, t in core.SEGMENTS.items()]
+    return {"clients": total, "client_langs": langs, "staff": len(config.EMPLOYEES), "chats": chats(), "segments": segs,
+            "bonus_max": erp.BONUS_MAX, "bonus_on": erp.enabled()}
 
 
 def two_bots() -> bool:
@@ -72,6 +75,14 @@ def _recipients(audience: list) -> list:
     if "staff" in audience:
         for uid in config.EMPLOYEES:
             add(uid, None, core.staff_lang(uid), "staff" if two_bots() else None)
+    langs = None
+    for a in audience:
+        if a.startswith("seg:") and a[4:] in core.SEGMENTS:
+            if langs is None:
+                with core.db() as c:
+                    langs = {r["user_id"]: r["lang"] for r in c.execute("SELECT user_id, lang FROM clients")}
+            for uid in core.segment_uids(a[4:]):
+                add(uid, None, i18n.lang_of(langs.get(uid)), "client" if two_bots() else None)
     known = {ch["id"]: ch for ch in chats()}
     for a in audience:
         if a.startswith("chat:"):
@@ -136,18 +147,26 @@ def test(owner: int, texts, photo: str, btn_text: str, btn_url: str, text: str =
 
 
 def create(owner: int, texts, photo: str, btn_text: str, btn_url: str, audience: list,
-           to_news: bool = False, send_at: str = "", text: str = ""):
+           to_news: bool = False, send_at: str = "", text: str = "", bonus=0):
     btn_text, btn_url = str(btn_text or "").strip()[:60], str(btn_url or "").strip()[:500]
     texts = _texts(texts, text)
     err = _check(texts, bool(photo), btn_text, btn_url)
     if err:
         return False, err
-    valid = {"clients", "staff"} | {f"chat:{ch['id']}" for ch in chats()}
+    valid = {"clients", "staff"} | {f"chat:{ch['id']}" for ch in chats()} | {"seg:" + k for k in core.SEGMENTS}
     audience = [a for a in dict.fromkeys(str(a) for a in (audience or [])) if a in valid]
     if not audience:
         return False, "Выберите, кому отправить пост."
     if not _recipients(audience):
         return False, "В выбранной аудитории пока никого нет."
+    try:
+        bonus = round(float(str(bonus or 0).replace(" ", "").replace(",", ".")), 2)
+    except ValueError:
+        return False, "Неверная сумма бонуса."
+    if bonus < 0 or bonus > erp.BONUS_MAX:
+        return False, f"Бонус — от 0 до {erp.BONUS_MAX:,} сум.".replace(",", " ")
+    if bonus and not erp.enabled():
+        return False, "Бонусы начисляются через магазин — он не подключён."
     when = None
     if send_at:
         try:
@@ -159,10 +178,10 @@ def create(owner: int, texts, photo: str, btn_text: str, btn_url: str, audience:
     with core.db() as c:
         cur = c.execute(
             "INSERT INTO posts(owner_id, text, texts, photo, button_text, button_url, audience, to_news, status, "
-            "send_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)",
+            "send_at, created_at, bonus) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)",
             (owner, i18n.pick(texts, "ru"), json.dumps(texts, ensure_ascii=False), photo, btn_text, btn_url,
              json.dumps(audience), int(bool(to_news)), (when or core.now()).strftime(core.FMT),
-             core.now().strftime(core.FMT)))
+             core.now().strftime(core.FMT), bonus))
         pid = cur.lastrowid
     if when:
         return True, f"🕒 Пост запланирован на {when:%d.%m %H:%M}"
@@ -183,13 +202,24 @@ def dispatch(pid: int) -> int:
         texts = _post_texts(p)
         rec = _recipients(json.loads(p["audience"]))
         markup = _markup(p["button_text"], p["button_url"])
+        bonus = float(p["bonus"] or 0)
+        names = {r["user_id"]: core.client_first_name(dict(r)) for r in c.execute("SELECT * FROM clients")}
         for chat, thread, lang, via in rec:
+            personal = chat > 0
+            name = (names.get(chat) or (core.name(chat) if core.employee(chat) else "")) if personal else ""
+            body = (i18n.pick(texts, lang) or " ").replace("{name}", name or {"uz": "do'stim", "ru": "друг", "en": "friend"}[lang])
+            body = body.replace("{bonus}", f"{int(bonus):,}".replace(",", " ") + " " + i18n.t(lang, "currency"))
             c.execute("INSERT INTO outbox(chat_id, text, markup, photo, thread_id, post_id, via) VALUES(?, ?, ?, ?, ?, ?, ?)",
-                      (chat, i18n.pick(texts, lang) or " ", markup, p["photo"], thread, pid, via))
+                      (chat, body, markup, p["photo"], thread, pid, via))
+            if bonus and personal and chat in names and via != "staff":
+                c.execute("INSERT OR IGNORE INTO bonus_grants(post_id, user_id, amount, status) VALUES(?, ?, ?, 'pending')",
+                          (pid, chat, bonus))
         c.execute("UPDATE posts SET status='sent', sent_at=?, total=? WHERE id=?",
                   (core.now().strftime(core.FMT), len(rec), pid))
     if p["to_news"] and texts:
         core.add_news(texts=texts)
+    if float(p["bonus"] or 0):
+        erp.start_grants(pid)
     return len(rec)
 
 
@@ -213,7 +243,7 @@ def cancel(owner: int, pid: int):
 
 def history(limit: int = 20) -> list:
     out = []
-    names = {"clients": "все в боте", "staff": "бот сотрудников"}
+    names = {"clients": "все в боте", "staff": "бот сотрудников", **{"seg:" + k: t for k, t in core.SEGMENTS.items()}}
     titles = {f"chat:{ch['id']}": ch["title"] for ch in chats()}
     with core.db() as c:
         for p in c.execute("SELECT * FROM posts WHERE status!='cancelled' ORDER BY id DESC LIMIT ?", (limit,)):
@@ -226,6 +256,9 @@ def history(limit: int = 20) -> list:
             d["text"] = i18n.pick(texts, "ru")
             d["langs"] = [k for k in i18n.LANGS if texts.get(k)]
             d["has_photo"] = bool(p["photo"])
+            g = c.execute("SELECT COUNT(*), SUM(status='ok'), SUM(status='pending'), SUM(status IN ('fail', 'no_store')) "
+                          "FROM bonus_grants WHERE post_id=?", (p["id"],)).fetchone()
+            d["bonus_total"], d["bonus_ok"], d["bonus_wait"], d["bonus_fail"] = g[0] or 0, g[1] or 0, g[2] or 0, g[3] or 0
             d["when"] = datetime.strptime(p["send_at"], core.FMT).strftime("%d.%m %H:%M")
             for k in ("photo", "texts"):
                 d.pop(k, None)

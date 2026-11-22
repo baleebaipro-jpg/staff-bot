@@ -309,6 +309,9 @@ def init_db():
             CREATE TABLE IF NOT EXISTS billz_clients(
                 id TEXT PRIMARY KEY, first_name TEXT, last_name TEXT, phone TEXT, phones TEXT, phone_tail TEXT,
                 birth_date TEXT, balance REAL, last_tx TEXT, synced TEXT);
+            CREATE TABLE IF NOT EXISTS bonus_grants(
+                post_id INTEGER, user_id INTEGER, billz_id TEXT, amount REAL, before REAL, after REAL,
+                status TEXT, at TEXT, PRIMARY KEY(post_id, user_id));
             CREATE TABLE IF NOT EXISTS store_tiers(billz_id TEXT PRIMARY KEY, tier TEXT, set_at TEXT);
             CREATE TABLE IF NOT EXISTS purchase_seen(order_id TEXT PRIMARY KEY, seen_at TEXT);
             CREATE TABLE IF NOT EXISTS channel_links(
@@ -336,7 +339,8 @@ def init_db():
                          ("birth_date", "TEXT"), ("step", "TEXT"), ("billz_id", "TEXT"), ("billz_balance", "REAL"),
                          ("billz_purchases", "REAL"), ("billz_synced", "TEXT"), ("source", "TEXT"),
                          ("billz_debt", "REAL"), ("purchases_notified", "REAL"),
-                         ("debt_notified", "REAL"), ("billz_first", "TEXT"), ("billz_last", "TEXT")):
+                         ("debt_notified", "REAL"), ("billz_first", "TEXT"), ("billz_last", "TEXT"),
+                         ("last_purchase", "TEXT"), ("visits", "INTEGER")):
             if col not in ccols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
         ocols = {r[1] for r in c.execute("PRAGMA table_info(outbox)")}
@@ -348,6 +352,8 @@ def init_db():
             c.execute("ALTER TABLE outbox ADD COLUMN photo TEXT")
         if "texts" not in {r[1] for r in c.execute("PRAGMA table_info(news)")}:
             c.execute("ALTER TABLE news ADD COLUMN texts TEXT")
+        if "bonus" not in {r[1] for r in c.execute("PRAGMA table_info(posts)")}:
+            c.execute("ALTER TABLE posts ADD COLUMN bonus REAL DEFAULT 0")
         if "texts" not in {r[1] for r in c.execute("PRAGMA table_info(posts)")}:
             c.execute("ALTER TABLE posts ADD COLUMN texts TEXT")
         if "post_id" not in ocols:
@@ -1380,7 +1386,43 @@ def set_client_tier(uid: int, tier: str):
 
 CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username",
                  "billz_id", "billz_balance", "billz_purchases", "billz_synced", "billz_debt", "purchases_notified", "debt_notified",
-                 "billz_first", "billz_last"}
+                 "billz_first", "billz_last", "last_purchase", "visits"}
+
+
+# ---------- сегменты клиентов по покупкам (для постинга) ----------
+
+SEGMENTS = {
+    "idle30": "💤 Не покупали 30+ дней",
+    "idle90": "👻 Пропали 90+ дней",
+    "active14": "🔥 Покупали за 14 дней",
+    "never": "🆕 Ещё не покупали",
+}
+
+
+def client_last_purchase() -> dict:
+    """{user_id: 'YYYY-MM-DD' | None} — последняя покупка клиентов бота (из карточки и копии базы магазина)."""
+    with db() as c:
+        bot = [dict(r) for r in c.execute("SELECT user_id, phone, billz_id, last_purchase, billz_purchases FROM clients "
+                                          "WHERE phone IS NOT NULL")]
+        by_id = {r["id"]: r["last_tx"] for r in c.execute("SELECT id, last_tx FROM billz_clients WHERE last_tx IS NOT NULL")}
+        by_tail = {r["phone_tail"]: r["last_tx"] for r in c.execute(
+            "SELECT phone_tail, last_tx FROM billz_clients WHERE last_tx IS NOT NULL AND phone_tail IS NOT NULL")}
+    out = {}
+    for x in bot:
+        dates = [d for d in (x["last_purchase"], by_id.get(x["billz_id"]), by_tail.get((x["phone"] or "")[-9:])) if d]
+        out[x["user_id"]] = max(dates)[:10] if dates else None
+    return out
+
+
+def segment_uids(key: str) -> list:
+    today = now().date()
+    res = []
+    for uid, d in client_last_purchase().items():
+        days = (today - datetime.strptime(d, "%Y-%m-%d").date()).days if d else None
+        if (key == "idle30" and days is not None and days >= 30) or (key == "idle90" and days is not None and days >= 90) \
+                or (key == "active14" and days is not None and days <= 14) or (key == "never" and days is None):
+            res.append(uid)
+    return res
 
 
 def set_store_tier(billz_id: str, tier: str):
