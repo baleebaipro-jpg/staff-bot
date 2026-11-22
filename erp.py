@@ -251,6 +251,9 @@ def sync_client(uid: int, force: bool = False) -> dict:
                 info = {}  # клиент только что заведён — покупок ещё нет
             purchases = float((info or {}).get("purchase_amount") or 0)
             debt = float((info or {}).get("debt_amount") or 0)
+            bf, bl = ((info or {}).get("first_name") or "").strip(), ((info or {}).get("last_name") or "").strip()
+            if bf and (bf != cl.get("billz_first") or bl != (cl.get("billz_last") or "")):
+                core.update_client(uid, billz_first=bf, billz_last=bl or None)  # имя и фамилия как в магазине
             if debt > 0 or float(cl.get("billz_debt") or 0) > 0 or float(cl.get("debt_notified") or 0) > 0:
                 # остаток по списку долгов точнее: общая сумма в карточке может обновляться с задержкой
                 items = _debt_items(bid)
@@ -400,7 +403,7 @@ def _notify_purchase(uid: int, purchases, balance) -> None:
         return
     import i18n
     lang = i18n.lang_of(cl.get("lang"))
-    name = cl.get("first_name") or {"uz": "Hurmatli mijoz", "ru": "Дорогой клиент", "en": "Dear customer"}[lang]
+    name = core.client_first_name(cl) or {"uz": "Hurmatli mijoz", "ru": "Дорогой клиент", "en": "Dear customer"}[lang]
     text = i18n.t(lang, "thanks_purchase", name=name, sum=_money(purchases - before, lang), bonus=_money(balance, lang))
     core.update_client(uid, purchases_notified=purchases)
     with core.db() as c:

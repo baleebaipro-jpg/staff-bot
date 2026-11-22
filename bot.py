@@ -213,7 +213,7 @@ async def client_menu(update: Update, greet: bool = False) -> None:
         return await reply(update, i18n.t(lang, "ask_name"), reply_markup=ReplyKeyboardRemove())
     if cl.get("step") == "birth":  # шаг 4 — дата рождения
         return await reply(update, i18n.t(lang, "ask_birth"), reply_markup=ReplyKeyboardRemove())
-    name = cl.get("first_name") or u.first_name
+    name = core.client_first_name(cl) or u.first_name
     text = (i18n.t(lang, "greet", name=name) + "\n" if greet else "")
     text += i18n.t(lang, "status_line", tier=core.tier_title(core.tier_of(cl))) + "\n\n" + i18n.t(lang, "menu")
     if erp.enabled() and cl.get("phone"):

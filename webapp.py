@@ -208,7 +208,8 @@ def api_me(uid, data):
         cl = core.get_client(uid) or {}
         tier = core.tier_of(cl)
         birth = cl.get("birth_date")
-        res["client"] = {"id": uid, "name": core.client_full_name(cl), "phone": cl.get("phone"),
+        res["client"] = {"id": uid, "name": core.client_full_name(cl), "first": core.client_first_name(cl),
+                         "phone": cl.get("phone"),
                          "tier": tier, "tier_title": core.CLIENT_TIERS[tier]["title"],
                          "ava_v": ava_version(uid), "lang": i18n.lang_of(cl.get("lang")),
                          "registered": cl.get("step") == "done",
@@ -1168,6 +1169,7 @@ PAGE = r"""<!doctype html>
         <input type="file" id="cl-file" accept="image/*" hidden>
       </label>
       <div style="min-width:0">
+        <div class="hint hidden" style="font-size:14px;margin-bottom:2px" id="cl-hello"></div>
         <div class="pname" id="cl-name"></div>
         <div class="prole" id="cl-phone"></div>
         <div class="hint hidden" style="font-size:13px;margin:-4px 0 8px" id="cl-birth"></div>
@@ -2268,7 +2270,7 @@ function newsHtml(items, admin) {
 }
 const TIER_EMOJI = {bronza: "🥉", silver: "🥈", gold: "🥇"};
 const CL_T = {
-  uz: {debt: "Qarzingiz · batafsil", debt_order: "Buyurtma", debt_one: "Qarz", debt_sum: "summa", debt_paid_lbl: "to'langan",
+  uz: {hello: "Salom, {n}! 👋", debt: "Qarzingiz · batafsil", debt_order: "Buyurtma", debt_one: "Qarz", debt_sum: "summa", debt_paid_lbl: "to'langan",
        debt_due: "muddat", debt_no_list: "Tafsilotlar hozircha mavjud emas — umumiy qarz yuqorida ko'rsatilgan", purchases: "xaridlar summasi", bonuses: "bonuslar", soon: "tez orada", invest: "Investitsiyalar",
        invest_soon: "Bo'lim tez orada paydo bo'ladi", soon_pill: "Tez orada ⏳", news: "📰 Yangiliklar",
        no_news: "Hozircha yangiliklar yo'q", no_phone: "raqam ko'rsatilmagan", client: "Mijoz",
@@ -2276,7 +2278,7 @@ const CL_T = {
        birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…",
        billz_not_found: "Raqamingiz hali do'kon bazasida yo'q — birinchi xariddan keyin bu yerda xaridlar va bonuslar paydo bo'ladi",
        billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi", refresh: "🔄 Yangilash", refreshing: "⏳ Yangilanmoqda…"},
-  ru: {debt: "Ваш долг · подробнее", debt_order: "Заказ", debt_one: "Долг", debt_sum: "сумма", debt_paid_lbl: "оплачено",
+  ru: {hello: "Здравствуйте, {n}! 👋", debt: "Ваш долг · подробнее", debt_order: "Заказ", debt_one: "Долг", debt_sum: "сумма", debt_paid_lbl: "оплачено",
        debt_due: "до", debt_no_list: "Подробности пока недоступны — общий долг указан выше", purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
        invest_soon: "Раздел скоро появится", soon_pill: "Скоро ⏳", news: "📰 Новости",
        no_news: "Новостей пока нет", no_phone: "номер не указан", client: "Клиент",
@@ -2284,7 +2286,7 @@ const CL_T = {
        birth: "🎂 День рождения", photo: "Загружаю фото…",
        billz_not_found: "Вашего номера пока нет в базе магазина — после первой покупки здесь появятся покупки и бонусы",
        billz_error: "Сейчас не удалось получить данные, обновится позже", refresh: "🔄 Обновить", refreshing: "⏳ Обновляю…"},
-  en: {debt: "Your debt · details", debt_order: "Order", debt_one: "Debt", debt_sum: "amount", debt_paid_lbl: "paid",
+  en: {hello: "Hello, {n}! 👋", debt: "Your debt · details", debt_order: "Order", debt_one: "Debt", debt_sum: "amount", debt_paid_lbl: "paid",
        debt_due: "due", debt_no_list: "Details are not available yet — the total debt is shown above", purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
        invest_soon: "This section is coming soon", soon_pill: "Soon ⏳", news: "📰 News",
        no_news: "No news yet", no_phone: "no phone number", client: "Client",
@@ -2305,6 +2307,8 @@ function renderClient() {
   $("cl-tier").textContent = (TIER_EMOJI[c.tier] || "") + " " + c.tier_title;
   document.querySelectorAll("#view-client [data-t]").forEach(el => el.textContent = ct(el.dataset.t));
   $("cl-name").textContent = c.name || ct("client");
+  $("cl-hello").textContent = c.first ? ct("hello").replace("{n}", c.first) : "";
+  $("cl-hello").classList.toggle("hidden", !c.first);
   $("cl-phone").textContent = c.phone || ct("no_phone");
   $("cl-birth").textContent = c.birth ? `${ct("birth")}: ${c.birth}` : "";
   $("cl-birth").classList.toggle("hidden", !c.birth);
