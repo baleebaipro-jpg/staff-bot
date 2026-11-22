@@ -356,8 +356,8 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await debt_info(update, lang)
     if text in i18n.all_variants("btn_channel") and getattr(config, "CLIENT_CHANNEL_ID", None):
         return await channel_link(update, context, lang)
-    if text in i18n.all_variants("btn_invest"):
-        return await reply(update, i18n.t(lang, "soon_invest"), reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_invest"):  # раздел скрыт от клиентов — старая кнопка просто открывает меню
+        return await client_menu(update)
     if text in i18n.all_variants("btn_news"):
         items = core.news_list(5)
         if not items:
