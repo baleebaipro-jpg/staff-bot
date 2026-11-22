@@ -422,7 +422,7 @@ def api_post(uid, data):
         photo = posts.save_photo(img)
     args = (data.get("texts"), photo, data.get("button_text"), data.get("button_url"))
     if act == "test":
-        ok, msg = posts.test(uid, *args, text=data.get("text", ""))
+        ok, msg = posts.test(uid, *args, text=data.get("text", ""), audience=data.get("audience") or [])
     elif act == "create":
         ok, msg = posts.create(uid, *args, data.get("audience") or [], bool(data.get("to_news")),
                                data.get("send_at") or "", text=data.get("text", ""))
@@ -2048,7 +2048,9 @@ function renderPosting() {
     (planned ? ` · запланировано: ${planned}` : h.length ? ` · постов: ${h.length}` : "");
   $("po-history").innerHTML = h.length ? h.map(p => {
     const st = p.status === "scheduled" ? `<span class="chip pending">🕒 ${p.when}</span>`
-      : `<span class="chip ${p.queued ? "active" : "matured"}">${p.queued ? "📤 отправляется" : "✅ отправлен"}</span>`;
+      : p.queued ? `<span class="chip active">📤 отправляется</span>`
+      : p.failed && !p.delivered ? `<span class="chip pending" style="color:var(--red)">⚠️ не доставлен</span>`
+      : `<span class="chip matured">✅ доставлен${p.failed ? " частично" : ""}</span>`;
     const stats = p.status === "scheduled" ? "" : `<span>доставлено: ${p.delivered} из ${p.total}</span>` +
       (p.failed ? `<span class="late">не доставлено: ${p.failed}</span>` : "") + (p.queued ? `<span>в очереди: ${p.queued}</span>` : "");
     return `<div class="po-post"><div class="inv-top"><span class="hint" style="font-size:12.5px">${p.status === "scheduled" ? "Запланирован" : p.when}${p.has_photo ? " · 📷" : ""}${p.button_text ? " · 🔗" : ""}<span class="lang-badges">${(p.langs || []).map(l => `<span>${l.toUpperCase()}</span>`).join("")}</span></span>${st}</div>
@@ -2084,7 +2086,7 @@ function poReset() {
 }
 $("po-test").onclick = () => {
   const b = poBody(); if (!Object.keys(b.texts).length && !b.image) return toast("Напишите текст или добавьте фото");
-  toast("Отправляю…"); api("/api/post", Object.assign({action: "test"}, b)).then(r => toast(r.msg)).catch(e => toast(e.message));
+  toast("Отправляю…"); api("/api/post", Object.assign({action: "test", audience: [...poAud]}, b)).then(r => toast(r.msg)).catch(e => toast(e.message));
 };
 $("po-send").onclick = () => {
   const b = poBody();
