@@ -251,6 +251,9 @@ def sync_client(uid: int, force: bool = False) -> dict:
                 info = {}  # клиент только что заведён — покупок ещё нет
             purchases = float((info or {}).get("purchase_amount") or 0)
             debt = float((info or {}).get("debt_amount") or 0)
+            lp, visits = _date((info or {}).get("last_purchase_date")), (info or {}).get("visits_count")
+            if lp != cl.get("last_purchase") or (visits is not None and visits != cl.get("visits")):
+                core.update_client(uid, last_purchase=lp, visits=visits)
             bf, bl = ((info or {}).get("first_name") or "").strip(), ((info or {}).get("last_name") or "").strip()
             if bf and (bf != cl.get("billz_first") or bl != (cl.get("billz_last") or "")):
                 core.update_client(uid, billz_first=bf, billz_last=bl or None)  # имя и фамилия как в магазине
@@ -537,6 +540,63 @@ def start_purchase_watch() -> None:
             st = core.flag_json("purchase_watch") or {}
             core.flag_json("purchase_watch", dict(st, last_run=core.now().strftime("%d.%m %H:%M"), error=err))
             time.sleep(WATCH_SECONDS)
+    threading.Thread(target=run, daemon=True).start()
+
+
+# ---------- начисление бонусов (из постинга) ----------
+
+BONUS_MAX = 1_000_000  # не больше этой суммы одному клиенту за один пост
+
+
+def set_balance(billz_id: str, balance: float) -> None:
+    """Установить кешбэк-баланс клиента в магазине (PATCH /v1/customer/set_balance/{id}, ждём результат)."""
+    res = _api("PATCH", f"/v1/customer/set_balance/{billz_id}", params={"Billz-Response-Channel": "HTTP"},
+               body={"balance": round(float(balance), 2)}, timeout=60) or {}
+    code = res.get("status_code")
+    err = (res.get("error") or {}).get("message") if isinstance(res.get("error"), dict) else None
+    if code not in (None, 200) or err:
+        raise BillzError(f"BILLZ: бонус не начислен ({code}: {err})", code)
+
+
+def grant_bonus(post_id: int, uid: int) -> str:
+    """Начислить бонус клиенту по записи bonus_grants (один раз). Возвращает статус."""
+    with core.db() as c:
+        g = c.execute("SELECT * FROM bonus_grants WHERE post_id=? AND user_id=?", (post_id, uid)).fetchone()
+    if not g or g["status"] != "pending":
+        return g["status"] if g else "none"
+    status, before, after, bid = "fail", None, None, None
+    try:
+        sync_client(uid, force=True)  # свяжет с магазином по номеру, если ещё не связан
+        bid = (core.get_client(uid) or {}).get("billz_id")
+        if not bid:
+            status = "no_store"
+        else:
+            card = _api("GET", f"/v1/customer/{bid}") or {}
+            before = float(card.get("balance") or 0)
+            after = before + float(g["amount"])
+            set_balance(bid, after)
+            core.update_client(uid, billz_balance=after)
+            status = "ok"
+    except BillzError as e:
+        logging.warning("Бонус клиенту %s (пост %s) не начислен: %s", uid, post_id, e)
+    with core.db() as c:
+        c.execute("UPDATE bonus_grants SET status=?, billz_id=?, before=?, after=?, at=? WHERE post_id=? AND user_id=?",
+                  (status, bid, before, after, core.now().strftime(core.FMT), post_id, uid))
+    return status
+
+
+def start_grants(post_id: int) -> None:
+    """Начислить бонусы получателям поста в фоне."""
+    def run():
+        with core.db() as c:
+            uids = [r["user_id"] for r in c.execute(
+                "SELECT user_id FROM bonus_grants WHERE post_id=? AND status='pending'", (post_id,))]
+        for uid in uids:
+            try:
+                grant_bonus(post_id, uid)
+            except Exception:  # noqa: BLE001
+                logging.exception("Начисление бонуса %s", uid)
+            time.sleep(0.2)
     threading.Thread(target=run, daemon=True).start()
 
 
