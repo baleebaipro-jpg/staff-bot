@@ -241,7 +241,7 @@ def sync_client(uid: int, force: bool = False) -> dict:
                 # клиент прошёл регистрацию в боте, но в BILLZ его нет — заводим (один раз: дальше есть billz_id)
                 bid = create_client(uid)
                 balance = 0.0 if bid else None
-        purchases = None
+        purchases = debt = None
         if bid:
             try:
                 info = _api("GET", f"/v1/customer/{bid}")
@@ -250,6 +250,7 @@ def sync_client(uid: int, force: bool = False) -> dict:
                     raise
                 info = {}  # клиент только что заведён — покупок ещё нет
             purchases = float((info or {}).get("purchase_amount") or 0)
+            debt = float((info or {}).get("debt_amount") or 0)
             if (info or {}).get("balance") is not None:  # кешбэк-баланс есть прямо в карточке клиента
                 balance = float(info["balance"] or 0)
             if not purchases and not balance and cl.get("phone"):
@@ -269,7 +270,7 @@ def sync_client(uid: int, force: bool = False) -> dict:
                     if found:
                         balance = float(found[0].get("balance") or 0)
                         break
-        core.update_client(uid, billz_id=bid, billz_purchases=purchases, billz_balance=balance,
+        core.update_client(uid, billz_id=bid, billz_purchases=purchases, billz_balance=balance, billz_debt=debt,
                            billz_synced=core.now().strftime(core.FMT))
         if purchases is not None:
             core.auto_tier(uid, purchases)
@@ -437,6 +438,31 @@ def diagnose(phone: str = None) -> str:
     return "\n".join(lines)
 
 
+def debts(uid: int) -> list:
+    """Непогашенные долги клиента: [{"left", "amount", "paid", "due" (YYYY-MM-DD|None), "overdue", "order"}].
+    Если подробный список недоступен — пусто (общая сумма есть в карточке клиента)."""
+    cl = core.get_client(uid) or {}
+    if not enabled() or not cl.get("billz_id"):
+        return []
+    try:
+        res = _api("GET", "/v1/debt", params={"customer_id": cl["billz_id"], "page": 1, "limit": 50}) or {}
+    except BillzError as e:
+        logging.warning("BILLZ: список долгов клиента %s недоступен: %s", uid, e)
+        return []
+    out = []
+    for d in res.get("data") or []:
+        if d.get("deleted_at") or d.get("status") == "fully_paid":
+            continue
+        amount, paid = float(d.get("amount") or 0), float(d.get("paid_amount") or 0)
+        left = max(0.0, amount - paid)
+        if left <= 0:
+            continue
+        due = _date(d.get("repayment_at_tz") or d.get("repayment_date"))
+        out.append({"left": left, "amount": amount, "paid": paid, "due": due, "order": d.get("order_number") or "",
+                    "overdue": d.get("status") == "overdue" or bool(due and due < core.now().strftime("%Y-%m-%d"))})
+    return sorted(out, key=lambda x: (x["due"] or "9999"))
+
+
 def _stats(cl: dict) -> dict:
-    return {"linked": bool(cl.get("billz_id")), "purchases": cl.get("billz_purchases"),
+    return {"linked": bool(cl.get("billz_id")), "purchases": cl.get("billz_purchases"), "debt": cl.get("billz_debt"),
             "balance": cl.get("billz_balance"), "synced": cl.get("billz_synced")}

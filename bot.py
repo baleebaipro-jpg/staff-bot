@@ -186,6 +186,7 @@ def client_keyboard(uid: int):
     return ReplyKeyboardMarkup([
         [i18n.t(lang, "btn_cabinet")],
         [i18n.t(lang, "btn_bonus")] + ([i18n.t(lang, "btn_channel")] if getattr(config, "CLIENT_CHANNEL_ID", None) else []),
+    ] + ([[i18n.t(lang, "btn_debt")]] if float(cl.get("billz_debt") or 0) > 0 else []) + [
         [i18n.t(lang, "btn_lang"), i18n.t(lang, "btn_logout")],
     ], resize_keyboard=True)
 
@@ -215,6 +216,11 @@ async def client_menu(update: Update, greet: bool = False) -> None:
     name = cl.get("first_name") or u.first_name
     text = (i18n.t(lang, "greet", name=name) + "\n" if greet else "")
     text += i18n.t(lang, "status_line", tier=core.tier_title(core.tier_of(cl))) + "\n\n" + i18n.t(lang, "menu")
+    if erp.enabled() and cl.get("phone"):
+        try:  # свежие данные (с кэшем) — чтобы кнопка «💳 Долг» появилась/исчезла вовремя
+            await asyncio.to_thread(erp.sync_client, u.id)
+        except Exception:  # noqa: BLE001
+            logging.exception("BILLZ: обновление при показе меню")
     await reply(update, text, reply_markup=client_keyboard(u.id))
 
 
@@ -346,6 +352,8 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             money = f"{int(value):,}".replace(",", " ") + " " + i18n.t(lang, "currency")  # вниз: не обещать лишнего
             msg = i18n.t(lang, "purchases_info" if purchases else "bonus_info", sum=money)
         return await reply(update, msg, reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_debt"):
+        return await debt_info(update, lang)
     if text in i18n.all_variants("btn_channel") and getattr(config, "CLIENT_CHANNEL_ID", None):
         return await channel_link(update, context, lang)
     if text in i18n.all_variants("btn_invest"):
@@ -357,6 +365,36 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await reply(update, i18n.t(lang, "news_title") + "\n\n" +
                            "\n\n— — —\n\n".join(f"🗓 {n['date']}\n{n['text']}" for n in items))
     await client_menu(update)
+
+
+# ---------- долг клиента ----------
+
+def _money(v, lang) -> str:
+    return f"{int(round(v or 0)):,}".replace(",", " ") + " " + i18n.t(lang, "currency")
+
+
+async def debt_info(update: Update, lang: str) -> None:
+    """Кнопка «💳 Долг» (видна, только когда долг есть): свежая сумма и список с датами погашения."""
+    uid = update.effective_user.id
+    stats = await asyncio.to_thread(erp.sync_client, uid, True) if erp.enabled() else {}
+    total = float(stats.get("debt") or 0)
+    if stats.get("error") and not total:
+        return await reply(update, i18n.t(lang, "billz_error"), reply_markup=client_keyboard(uid))
+    if total <= 0:
+        return await reply(update, i18n.t(lang, "debt_none"), reply_markup=client_keyboard(uid))
+    lines = [i18n.t(lang, "debt_total", sum=_money(total, lang))]
+    items = await asyncio.to_thread(erp.debts, uid)
+    if items:
+        lines.append("")
+        for d in items[:10]:
+            line = i18n.t(lang, "debt_item", order=("№" + str(d["order"])) if d["order"] else "", left=_money(d["left"], lang))
+            if d["due"]:
+                line += i18n.t(lang, "debt_due", date=datetime.strptime(d["due"], "%Y-%m-%d").strftime("%d.%m.%Y"))
+            if d["overdue"]:
+                line += i18n.t(lang, "debt_overdue")
+            lines.append(line)
+    lines += ["", i18n.t(lang, "debt_footer")]
+    await reply(update, "\n".join(lines), reply_markup=client_keyboard(uid))
 
 
 # ---------- закрытый канал для покупателей ----------
