@@ -330,7 +330,7 @@ def init_db():
         ccols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
         for col, ddl in (("tier", "TEXT DEFAULT 'bronza'"), ("lang", "TEXT"), ("last_name", "TEXT"),
                          ("birth_date", "TEXT"), ("step", "TEXT"), ("billz_id", "TEXT"), ("billz_balance", "REAL"),
-                         ("billz_purchases", "REAL"), ("billz_synced", "TEXT")):
+                         ("billz_purchases", "REAL"), ("billz_synced", "TEXT"), ("source", "TEXT")):
             if col not in ccols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
         ocols = {r[1] for r in c.execute("PRAGMA table_info(outbox)")}
@@ -1236,6 +1236,50 @@ def get_client(uid: int):
     return dict(r) if r else None
 
 
+def import_clients(text: str) -> dict:
+    """Загрузить прежних подписчиков бота клиентов из текста/CSV: в каждой строке Telegram ID,
+    по желанию — номер телефона и имя. Уже известных не трогаем (только дополняем пустой номер)."""
+    import re
+    added = existing = 0
+    bad = []
+    seen = set()
+    for line in str(text or "").splitlines():
+        line = line.strip().strip("\ufeff")
+        if not line:
+            continue
+        tokens = [t for t in re.split(r"[;,\t|]+|\s{2,}", line) if t.strip()]
+        uid = phone = None
+        name_parts = []
+        for t in tokens:
+            t = t.strip().strip('"').strip("'")
+            d = re.sub(r"[\s()+-]", "", t)
+            if d.isdigit() and (t.lstrip().startswith("+") or (len(d) == 12 and d.startswith("998"))) and not phone:
+                phone = "+" + d
+            elif d.isdigit() and 5 <= len(d) <= 15 and not uid:
+                uid = int(d)
+            elif not d.isdigit() and t:
+                name_parts.append(t)
+        if not uid:
+            if re.search(r"\d", line):
+                bad.append(line[:60])
+            continue  # заголовок таблицы и т.п.
+        if uid in seen:
+            continue
+        seen.add(uid)
+        name = " ".join(name_parts)[:60] or None
+        with db() as c:
+            old = c.execute("SELECT phone FROM clients WHERE user_id=?", (uid,)).fetchone()
+            if old:
+                existing += 1
+                if phone and not old["phone"]:
+                    c.execute("UPDATE clients SET phone=? WHERE user_id=?", (phone, uid))
+                continue
+            c.execute("INSERT INTO clients(user_id, phone, first_name, created_at, source) VALUES(?, ?, ?, ?, 'import')",
+                      (uid, phone, name, now().strftime(FMT)))
+            added += 1
+    return {"added": added, "existing": existing, "bad": bad[:10], "bad_count": len(bad)}
+
+
 def save_client(uid: int, phone: str = None, first_name: str = "", username: str = "") -> bool:
     """Запомнить клиента. Возвращает True, если это новый клиент.
     Имя из Telegram записывается, только пока клиент не ввёл своё."""
@@ -1471,7 +1515,8 @@ def billz_base(q: str = "", offset: int = 0, limit: int = 50) -> dict:
                           "birth": _bday(x.get("birth_date")) or _bday(b.get("birth_date")), "lang": x.get("lang") or "",
                           "since": parse(x["created_at"]).strftime("%d.%m.%Y"), "tier": tier_of(x),
                           "balance": x.get("billz_balance") if x.get("billz_balance") is not None else b.get("balance"),
-                          "last_tx": b.get("last_tx") or "", "in_store": bool(b or x.get("billz_id"))})
+                          "last_tx": b.get("last_tx") or "", "in_store": bool(b or x.get("billz_id")),
+                          "imported": x.get("source") == "import" and not x.get("lang")})
     for r in rows:
         items.append({"name": " ".join(v for v in (r["first_name"], r["last_name"]) if v) or "Без имени",
                       "phone": r["phone"] or "", "birth": _bday(r["birth_date"]), "balance": r["balance"] or 0,
