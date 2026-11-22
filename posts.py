@@ -40,36 +40,44 @@ def audience_info() -> dict:
         staff = set(config.EMPLOYEES) | set(config.ADMINS)
         total = 0
         for r in c.execute("SELECT user_id, lang FROM clients"):
-            if r["user_id"] in staff:
+            if r["user_id"] in staff and not two_bots():
                 continue
             total += 1
             langs[i18n.lang_of(r["lang"])] += 1
     return {"clients": total, "client_langs": langs, "staff": len(config.EMPLOYEES), "chats": chats()}
 
 
+def two_bots() -> bool:
+    return bool(getattr(config, "CLIENT_BOT_TOKEN", ""))
+
+
 def _recipients(audience: list) -> list:
-    """[(chat_id, thread_id, lang), ...] без повторов."""
+    """[(chat_id, thread_id, lang, via), ...] без повторов. via — через какого бота: client / staff / None.
+    При двух ботах в «бот клиентов» попадают все, кто зарегистрировался в клиентском боте,
+    включая сотрудников и руководителя (они получают пост именно там)."""
     out, seen = [], set()
     staff = set(config.EMPLOYEES) | set(config.ADMINS)
 
-    def add(chat, thread, lang):
-        if chat not in seen:
-            seen.add(chat)
-            out.append((chat, thread, lang))
+    def add(chat, thread, lang, via=None):
+        if (chat, via) not in seen:
+            seen.add((chat, via))
+            out.append((chat, thread, lang, via))
     if "clients" in audience:
         with core.db() as c:
             for r in c.execute("SELECT user_id, lang FROM clients ORDER BY created_at"):
-                if r["user_id"] not in staff:
+                if two_bots():
+                    add(r["user_id"], None, i18n.lang_of(r["lang"]), "client")
+                elif r["user_id"] not in staff:
                     add(r["user_id"], None, i18n.lang_of(r["lang"]))
     if "staff" in audience:
         for uid in config.EMPLOYEES:
-            add(uid, None, core.staff_lang(uid))
+            add(uid, None, core.staff_lang(uid), "staff" if two_bots() else None)
     known = {ch["id"]: ch for ch in chats()}
     for a in audience:
         if a.startswith("chat:"):
             ch = known.get(int(a[5:]))
             if ch:
-                add(ch["id"], ch["thread_id"], ch["lang"])
+                add(ch["id"], ch["thread_id"], ch["lang"], "staff" if two_bots() else None)
     return out
 
 
@@ -107,19 +115,24 @@ def save_photo(jpeg: bytes) -> str:
     return path
 
 
-def test(owner: int, texts, photo: str, btn_text: str, btn_url: str, text: str = ""):
-    """Предпросмотр: прислать себе пост на каждом заполненном языке."""
+def test(owner: int, texts, photo: str, btn_text: str, btn_url: str, text: str = "", audience=None):
+    """Предпросмотр: прислать себе пост на каждом заполненном языке.
+    Выбран «бот клиентов» и вы зарегистрированы в нём — пример придёт туда, иначе — в бот сотрудников."""
     btn_text, btn_url = str(btn_text or "").strip()[:60], str(btn_url or "").strip()[:500]
     texts = _texts(texts, text)
     err = _check(texts, bool(photo), btn_text, btn_url)
     if err:
         return False, err
+    via = "client" if two_bots() and "clients" in (audience or []) and core.get_client(owner) else None
+    if two_bots() and not via:
+        via = "staff"
     with core.db() as c:
         for lang, t in (texts.items() or [("", " ")]):
-            c.execute("INSERT INTO outbox(chat_id, text, markup, photo) VALUES(?, ?, ?, ?)",
-                      (owner, t, _markup(btn_text, btn_url), photo))
+            c.execute("INSERT INTO outbox(chat_id, text, markup, photo, via) VALUES(?, ?, ?, ?, ?)",
+                      (owner, t, _markup(btn_text, btn_url), photo, via))
     langs = ", ".join(k.upper() for k in texts) or "фото"
-    return True, f"👁 Пост отправлен вам в бот ({langs}) — посмотрите, как он выглядит."
+    where = "в бот клиентов" if via == "client" else "в бот"
+    return True, f"👁 Пост отправлен вам {where} ({langs}) — посмотрите, как он выглядит."
 
 
 def create(owner: int, texts, photo: str, btn_text: str, btn_url: str, audience: list,
@@ -170,9 +183,9 @@ def dispatch(pid: int) -> int:
         texts = _post_texts(p)
         rec = _recipients(json.loads(p["audience"]))
         markup = _markup(p["button_text"], p["button_url"])
-        for chat, thread, lang in rec:
-            c.execute("INSERT INTO outbox(chat_id, text, markup, photo, thread_id, post_id) VALUES(?, ?, ?, ?, ?, ?)",
-                      (chat, i18n.pick(texts, lang) or " ", markup, p["photo"], thread, pid))
+        for chat, thread, lang, via in rec:
+            c.execute("INSERT INTO outbox(chat_id, text, markup, photo, thread_id, post_id, via) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                      (chat, i18n.pick(texts, lang) or " ", markup, p["photo"], thread, pid, via))
         c.execute("UPDATE posts SET status='sent', sent_at=?, total=? WHERE id=?",
                   (core.now().strftime(core.FMT), len(rec), pid))
     if p["to_news"] and texts:

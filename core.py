@@ -346,6 +346,8 @@ def init_db():
             c.execute("ALTER TABLE outbox ADD COLUMN post_id INTEGER")
         if "failed" not in ocols:
             c.execute("ALTER TABLE outbox ADD COLUMN failed INTEGER DEFAULT 0")
+        if "via" not in ocols:  # через какого бота отправить: client / staff (пусто — определить автоматически)
+            c.execute("ALTER TABLE outbox ADD COLUMN via TEXT")
         icols = {r[1] for r in c.execute("PRAGMA table_info(investments)")}
         for col in ("early_at", "early_info", "pay_method", "pay_report"):
             if col not in icols:

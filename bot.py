@@ -774,6 +774,10 @@ def _bot_for(m, app, client_app):
     if client_app is None:
         return app.bot
     chat = m["chat_id"]
+    if m.get("via") == "client":
+        return client_app.bot
+    if m.get("via") == "staff":
+        return app.bot
     if m.get("markup") == "client_kb" or (chat > 0 and not known(chat) and m.get("markup") != "staff_kb"):
         return client_app.bot
     return app.bot
