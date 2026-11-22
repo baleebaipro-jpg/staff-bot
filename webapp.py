@@ -920,6 +920,19 @@ PAGE = r"""<!doctype html>
   .dayc .bottom { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
     color: var(--hint); font-size: 14px; }
   .sec-h { font-size: 13px; color: var(--hint); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin: 4px 4px 10px; }
+  /* постинг: выбор аудитории в боте */
+  .po-bot { width: 100%; margin-bottom: 4px; }
+  .po-bot-head { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left;
+    background: rgba(255,255,255,.05) !important; border: 1.5px solid var(--line) !important; border-radius: 14px !important;
+    padding: 12px 14px !important; font-size: 14px !important; font-weight: 700; }
+  .po-bot-head.on { border-color: #a78bfa !important; background: rgba(139,92,246,.18) !important; }
+  .po-bot-cur { color: #d8ccff; font-weight: 600; font-size: 13px; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+  .po-caret { display: inline-block; transition: transform .2s; color: #c4b5fd; }
+  .po-bot-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .po-bot-list button { display: flex; justify-content: space-between; align-items: center; text-align: left; width: 100%;
+    background: rgba(255,255,255,.03) !important; border: 1px solid var(--line) !important; border-radius: 12px !important;
+    padding: 11px 14px !important; font-size: 14px !important; }
+  .po-bot-list button.on { border-color: #a78bfa !important; background: rgba(139,92,246,.2) !important; }
   /* нижнее меню */
   .tabbar { position: fixed; left: 12px; right: 12px; bottom: 12px; max-width: 536px; margin: 0 auto; z-index: 8;
     display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px; border-radius: 26px;
@@ -2082,17 +2095,35 @@ function langEditor(boxId, rows, max, ph, onInput) {
 /* ---------- постинг ---------- */
 let poPhoto = null, poWhen = "now";
 const poAud = new Set(["clients"]);  // по умолчанию — все в боте
-function renderPosting() {
-  const a = data.posting.audience, h = data.posting.history;
-  const opts = [["clients", `🤖 Все в боте XUPING Bonus · ${a.clients}`],
-                ...(a.segments || []).map(s => [s.key, `${s.title} · ${s.count}`]),
-                ...a.chats.map(c => ["chat:" + c.id, "📢 " + c.title])];
-  $("po-bonus-row").classList.toggle("hidden", !a.bonus_on);
-  $("po-aud").innerHTML = opts.map(([k, t]) => `<button data-aud="${k}" class="${poAud.has(k) ? "on" : ""}">${esc(t)}</button>`).join("");
-  document.querySelectorAll("[data-aud]").forEach(b => b.onclick = () => {
+let poBotOpen = false;
+/* «Где опубликовать»: бот — раскрывающийся список (все или группа клиентов), ниже — группы и каналы */
+function renderAud() {
+  const a = data.posting.audience;
+  const botOpts = [["clients", "🤖 Все в боте", a.clients], ...(a.segments || []).map(s => [s.key, s.title, s.count])];
+  const cur = botOpts.find(o => poAud.has(o[0]));
+  $("po-aud").innerHTML = `<div class="po-bot">
+      <button class="po-bot-head ${cur ? "on" : ""}" id="po-bot-head"><span>🤖 Бот XUPING Bonus</span>
+        <span class="po-bot-cur">${cur ? esc(cur[1].replace("🤖 ", "")) + " · " + cur[2] : "не отправлять"}
+          <span class="po-caret" style="transform:rotate(${poBotOpen ? 180 : 0}deg)">▾</span></span></button>
+      <div class="po-bot-list ${poBotOpen ? "" : "hidden"}">
+        ${botOpts.map(([k, t, n]) => `<button data-bot="${k}" class="${poAud.has(k) ? "on" : ""}"><span>${poAud.has(k) ? "✓ " : ""}${esc(t)}</span><span class="hint">${n}</span></button>`).join("")}
+        <button data-bot="" class="${cur ? "" : "on"}"><span>✕ Не отправлять в бот</span></button></div></div>` +
+    a.chats.map(c => `<button data-aud="chat:${c.id}" class="${poAud.has("chat:" + c.id) ? "on" : ""}">📢 ${esc(c.title)}</button>`).join("");
+  $("po-bot-head").onclick = () => { poBotOpen = !poBotOpen; renderAud(); };
+  document.querySelectorAll("[data-bot]").forEach(b => b.onclick = () => {
+    botOpts.forEach(o => poAud.delete(o[0]));
+    if (b.dataset.bot) poAud.add(b.dataset.bot);
+    poBotOpen = false; renderAud();
+  });
+  document.querySelectorAll("#po-aud [data-aud]").forEach(b => b.onclick = () => {
     poAud.has(b.dataset.aud) ? poAud.delete(b.dataset.aud) : poAud.add(b.dataset.aud);
     b.classList.toggle("on", poAud.has(b.dataset.aud));
   });
+}
+function renderPosting() {
+  const a = data.posting.audience, h = data.posting.history;
+  $("po-bonus-row").classList.toggle("hidden", !a.bonus_on);
+  renderAud();
   const cl = a.client_langs || {};
   $("po-lang-hint").textContent = `Клиенты по языкам: UZ ${cl.uz || 0} · RU ${cl.ru || 0} · EN ${cl.en || 0}`;
   const planned = h.filter(p => p.status === "scheduled").length;
@@ -2137,14 +2168,15 @@ function poBody() {
 }
 function poReset() {
   poEd.clear(); $("po-btn-text").value = ""; $("po-btn-url").value = ""; $("po-at").value = "";
-  $("po-news").checked = false; poAud.clear(); poAud.add("clients"); $("po-bonus").value = ""; $("po-photo-del").onclick(); poCount();
+  $("po-news").checked = false; poAud.clear(); poAud.add("clients"); poBotOpen = false; renderAud(); $("po-bonus").value = ""; $("po-photo-del").onclick(); poCount();
 }
 $("po-send").onclick = () => {
   const b = poBody();
   if (!Object.keys(b.texts).length && !b.image) return toast("Напишите текст или добавьте фото");
   if (!poAud.size) return toast("Выберите, кому отправить");
   if (poWhen === "later" && !$("po-at").value) return toast("Выберите дату и время");
-  const names = [...document.querySelectorAll("[data-aud].on")].map(x => x.textContent).join(", ");
+  const names = [$("po-bot-head").classList.contains("on") ? "🤖 " + $("po-bot-head").querySelector(".po-bot-cur").textContent.replace("▾", "").trim() : "",
+    ...[...document.querySelectorAll("#po-aud [data-aud].on")].map(x => x.textContent)].filter(Boolean).join(", ");
   const when = poWhen === "later" ? `\nКогда: ${$("po-at").value.replace("T", " ")}` : "\nОтправить сейчас.";
   const filled = Object.keys(b.texts), missing = LANG_TABS.map(x => x[0]).filter(k => !filled.includes(k));
   const langs = `\nЯзыки: ${filled.map(k => k.toUpperCase()).join(", ") || "—"}` +
