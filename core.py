@@ -332,6 +332,8 @@ def init_db():
         for col in ("date_from", "date_to"):
             if col not in ecols:
                 c.execute(f"ALTER TABLE earnings ADD COLUMN {col} TEXT")
+        if "self" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:  # задачу сотрудник поставил себе сам
+            c.execute("ALTER TABLE tasks ADD COLUMN self INTEGER DEFAULT 0")
         if "template_id" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN template_id INTEGER")
         ccols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
@@ -974,14 +976,16 @@ def spawn_recurring() -> int:
 
 
 def _unfinished(c, uid) -> list:
-    """Незакрытые задачи на сегодня (перенесённые на будущее не считаются)."""
+    """Незакрытые задачи от руководителя на сегодня (перенесённые на будущее и свои задачи сотрудника не считаются:
+    свои не мешают отметить уход)."""
     return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
-                     "AND (due_date IS NULL OR due_date <= ?) ORDER BY id", (uid, now().strftime("%Y-%m-%d"))).fetchall()
+                     "AND COALESCE(self, 0)=0 AND (due_date IS NULL OR due_date <= ?) ORDER BY id",
+                     (uid, now().strftime("%Y-%m-%d"))).fetchall()
 
 
 def _all_open(c, uid) -> list:
     """Все незакрытые задачи, включая перенесённые на будущие дни."""
-    return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
+    return c.execute("SELECT id, title, status, due_date, template_id, self FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
                      "ORDER BY due_date IS NOT NULL, due_date, id", (uid,)).fetchall()
 
 
@@ -1004,6 +1008,34 @@ def next_workday(uid: int) -> datetime:
     return now() + timedelta(days=1)
 
 
+SELF_TASKS_MAX = 20
+
+
+def add_self_task(uid: int, title: str, day: str = "today"):
+    """Сотрудник сам ставит себе задачу на сегодня или завтра (без проверки руководителем)."""
+    L = staff_lang(uid)
+    title = str(title or "").strip()[:300]
+    if not employee(uid):
+        return False, st.s(L, "not_staff")
+    if not title:
+        return False, st.s(L, "self_task_empty")
+    due = (now() + timedelta(days=1 if day == "tomorrow" else 0)).strftime("%Y-%m-%d")
+    with db() as c:
+        n = c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND self=1 AND status!='done'", (uid,)).fetchone()[0]
+        if n >= SELF_TASKS_MAX:
+            return False, st.s(L, "self_task_limit", n=SELF_TASKS_MAX)
+        c.execute("INSERT INTO tasks(user_id, title, created_at, due_date, self) VALUES(?, ?, ?, ?, 1)",
+                  (uid, title, now().strftime(FMT), due))
+    return True, st.s(L, "self_task_added_tomorrow" if day == "tomorrow" else "self_task_added")
+
+
+def delete_self_task(uid: int, task_id: int):
+    L = staff_lang(uid)
+    with db() as c:
+        cur = c.execute("DELETE FROM tasks WHERE id=? AND user_id=? AND self=1", (task_id, uid))
+    return (True, st.s(L, "self_task_deleted")) if cur.rowcount else (False, st.s(L, "task_not_found"))
+
+
 def tasks(uid: int) -> list:
     L = staff_lang(uid)
     with db() as c:
@@ -1013,7 +1045,7 @@ def tasks(uid: int) -> list:
     return [
         {"id": r["id"], "title": r["title"], "created": parse(r["created_at"]).strftime("%d.%m %H:%M"),
          "status": r["status"], "done": r["status"] == "done", "due": _due_label(r["due_date"], L),
-         "repeat": bool(r["template_id"])}
+         "repeat": bool(r["template_id"]), "self": bool(r["self"])}
         for r in rows
     ]
 
@@ -1029,6 +1061,9 @@ def complete_task(task_id: int, uid: int):
             return False, st.s(L, "task_already_done")
         if r["status"] == "review":
             return False, st.s(L, "task_already_review")
+        if r["self"]:  # свою задачу сотрудник закрывает сам — без проверки руководителем
+            c.execute("UPDATE tasks SET status='done', done_at=? WHERE id=?", (now().strftime(FMT), task_id))
+            return True, st.s(L, "self_task_done")
         c.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
         notify_admins(c, f"📝 {name(uid)} выполнил(а) задачу — проверьте:\n{r['title']}",
                       [[("✅ Принять", f"task:ok:{task_id}"), ("↩️ Вернуть", f"task:back:{task_id}")],
@@ -1119,7 +1154,8 @@ def team() -> list:
                 "penalties_total": penalties_total(c, uid),
                 "total_hours": round(_hours(c, uid) + emp.get("hours_before", 0), 1),
                 "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"],
-                           "due": _due_label(r["due_date"]), "repeat": bool(r["template_id"])} for r in open_tasks],
+                           "due": _due_label(r["due_date"]), "repeat": bool(r["template_id"]),
+                           "self": bool(r["self"])} for r in open_tasks],
                 "recurring": recurring_list(c, uid),
             })
     return out
