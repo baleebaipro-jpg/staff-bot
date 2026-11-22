@@ -251,6 +251,11 @@ def sync_client(uid: int, force: bool = False) -> dict:
                 info = {}  # клиент только что заведён — покупок ещё нет
             purchases = float((info or {}).get("purchase_amount") or 0)
             debt = float((info or {}).get("debt_amount") or 0)
+            if debt > 0 or float(cl.get("billz_debt") or 0) > 0 or float(cl.get("debt_notified") or 0) > 0:
+                # остаток по списку долгов точнее: общая сумма в карточке может обновляться с задержкой
+                items = _debt_items(bid)
+                if items is not None:
+                    debt = round(sum(d["left"] for d in items), 2)
             if (info or {}).get("balance") is not None:  # кешбэк-баланс есть прямо в карточке клиента
                 balance = float(info["balance"] or 0)
             if not purchases and not balance and cl.get("phone"):
@@ -600,6 +605,23 @@ def diagnose(phone: str = None) -> str:
                          f" · тел. {', '.join(c.get('phone_numbers') or [])} · кешбэк " +
                          f"{float(c.get('balance') or 0):,.0f}".replace(",", " ") +
                          f" · посл. покупка {str(c.get('last_transaction_date') or '—')[:10]}")
+        if best:
+            try:
+                card = _api("GET", f"/v1/customer/{best['id']}") or {}
+                items = _debt_items(best["id"])
+                lines.append(f"💳 Долг: в карточке {float(card.get('debt_amount') or 0):,.0f}".replace(",", " ") +
+                             (f" · по списку долгов {sum(d['left'] for d in items):,.0f} ({len(items)} шт.)".replace(",", " ")
+                              if items is not None else " · список долгов недоступен"))
+            except BillzError as e:
+                lines.append(f"⚠️ Долг: не удалось получить — {e}")
+            tail = _digits(phone)[-9:]
+            with core.db() as c:
+                bc = c.execute("SELECT * FROM clients WHERE phone LIKE ?", ("%" + tail,)).fetchone()
+            if bc:
+                lines.append(f"🤖 В боте: id {bc['user_id']} · бот помнит долг {bc['debt_notified']} · "
+                             f"покупки (сказали спасибо) {bc['purchases_notified']} · обновлён {bc['billz_synced'] or '—'}")
+            else:
+                lines.append("🤖 Клиента с этим номером в боте нет")
     lines.append(f"➕ Заводить новых клиентов в BILLZ: {'да' if CREATE_CLIENTS else 'нет'}")
     if last_error["text"]:
         lines.append(f"⚠️ Последняя ошибка ({last_error['at']}): {last_error['text']}")
@@ -612,11 +634,16 @@ def debts(uid: int) -> list:
     cl = core.get_client(uid) or {}
     if not enabled() or not cl.get("billz_id"):
         return []
+    return _debt_items(cl["billz_id"]) or []
+
+
+def _debt_items(billz_id: str):
+    """Список непогашенных долгов из магазина; None — список недоступен."""
     try:
-        res = _api("GET", "/v1/debt", params={"customer_id": cl["billz_id"], "page": 1, "limit": 50}) or {}
+        res = _api("GET", "/v1/debt", params={"customer_id": billz_id, "page": 1, "limit": 100}) or {}
     except BillzError as e:
-        logging.warning("BILLZ: список долгов клиента %s недоступен: %s", uid, e)
-        return []
+        logging.warning("BILLZ: список долгов %s недоступен: %s", billz_id, e)
+        return None
     out = []
     for d in res.get("data") or []:
         if d.get("deleted_at") or d.get("status") == "fully_paid":
