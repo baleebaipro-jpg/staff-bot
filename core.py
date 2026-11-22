@@ -243,7 +243,9 @@ def in_window(emp, kind: str, t: datetime) -> bool:
     a, b = window(emp, kind, t)
     if kind == "out":
         return a <= t  # уйти можно с начала окна (задержаться — можно)
-    return a <= t <= b
+    # прийти можно с начала окна и до конца смены: опоздавший тоже отмечается (опоздание записывается,
+    # штраф за неотметку в окне остаётся), раньше окна — нельзя
+    return a <= t < at(t, shift_end(emp, t))
 
 
 @contextmanager
@@ -568,6 +570,8 @@ def profile(uid: int) -> dict:
             "in_window": window_text(emp, "in", t, L),
             "out_window": window_text(emp, "out", t, L),
             "can_in": in_window(emp, "in", t) and not s and not (today and workday(emp, t)),
+            "late_now": bool(workday(emp, t) and not s and not today and t > window(emp, "in", t)[1]
+                             and in_window(emp, "in", t)),
             "unfinished": len(_unfinished(c, uid)),
             "can_out": bool(s) and in_window(emp, "out", t) and not _unfinished(c, uid),
         }

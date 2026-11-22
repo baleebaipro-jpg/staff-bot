@@ -1443,7 +1443,7 @@ const SX = {
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
        close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
        free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
-       shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
+       shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", late_now: "⚠️ Вы опаздываете — отметьте приход", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
        fines: "🔴 Штрафы", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
        no_fines: "Штрафов нет — так держать! 👍", due: "📅 на {d}", review: "⏳ на проверке", done: "Готово",
        no_tasks: "Задач нет 🎉", no_visits: "Посещений пока нет", to_rank: "до звания «{r}»",
@@ -1459,7 +1459,7 @@ const SX = {
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
        close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
        free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
-       shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
+       shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", late_now: "⚠️ Kechikyapsiz — kelganingizni belgilang", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
        fines: "🔴 Jarimalar", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
        no_fines: "Jarima yo'q — shunday davom eting! 👍", due: "📅 {d} ga", review: "⏳ tekshiruvda", done: "Bajarildi",
        no_tasks: "Vazifa yo'q 🎉", no_visits: "Hozircha tashriflar yo'q", to_rank: "«{r}» unvonigacha",
@@ -1515,6 +1515,7 @@ function renderMe() {
     : !p.workday ? sx("day_off")
     : p.on_site ? sx("out_at", {w: p.out_window})
     : p.came_today ? sx("shift_done", {s: p.schedule})
+    : p.late_now ? sx("late_now")
     : sx("in_at", {w: p.in_window});
   $("btn-mark").textContent = p.on_site ? sx("btn_out") : sx("btn_in");
   $("btn-mark").className = "btn " + (p.on_site ? "btn-soft" : "btn-main");
