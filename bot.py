@@ -528,6 +528,7 @@ async def billz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, "⏳ Проверяю BILLZ…")
     try:
         text = await asyncio.to_thread(erp.diagnose, phone)
+        text += "\n\n" + erp.watch_status()
     except Exception as e:
         logging.exception("BILLZ диагностика")
         text = f"❌ Ошибка проверки: {e}"
