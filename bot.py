@@ -919,7 +919,7 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         try:
             posts.dispatch_due()
             erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
-            erp.start_purchase_watch()  # «спасибо за покупку» — фоновая проверка продаж (запускается один раз)
+            erp.start_purchase_watch()  # «спасибо за покупку» — проверка продаж каждые 30 с (запускается один раз)
         except Exception:
             logging.exception("Ошибка запланированных постов")
         try:
