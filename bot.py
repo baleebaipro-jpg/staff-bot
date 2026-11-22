@@ -794,6 +794,7 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
             logging.exception("Ошибка при проверке кружков")
         try:
             posts.dispatch_due()
+            erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
         except Exception:
             logging.exception("Ошибка запланированных постов")
         try:

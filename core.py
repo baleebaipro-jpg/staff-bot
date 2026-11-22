@@ -1,5 +1,6 @@
 """Общая логика: база данных, приход/уход, часы, задачи, уведомления.
 Этот файл используют и бот, и мини-апп."""
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -303,6 +304,9 @@ def init_db():
                 id INTEGER PRIMARY KEY, owner_id INTEGER, text TEXT, photo TEXT, button_text TEXT,
                 button_url TEXT, audience TEXT, to_news INTEGER DEFAULT 0, status TEXT, send_at TEXT,
                 created_at TEXT, sent_at TEXT, total INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS billz_clients(
+                id TEXT PRIMARY KEY, first_name TEXT, last_name TEXT, phone TEXT, phones TEXT, phone_tail TEXT,
+                birth_date TEXT, balance REAL, last_tx TEXT, synced TEXT);
             CREATE TABLE IF NOT EXISTS projects(
                 id INTEGER PRIMARY KEY, owner_id INTEGER, title TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS ptasks(
@@ -1369,6 +1373,47 @@ def parse_birth(text: str):
         return None
     age = (now() - d).days / 365.25
     return d.strftime("%Y-%m-%d") if 5 <= age <= 110 else None
+
+
+# ---------- клиентская база BILLZ (копия для раздела «Клиенты») ----------
+
+def flag_json(name: str, value=None):
+    """Служебная запись в flags в виде JSON: без value — прочитать, с value — сохранить."""
+    with db() as c:
+        if value is None:
+            r = c.execute("SELECT value FROM flags WHERE name=?", (name,)).fetchone()
+            try:
+                return json.loads(r["value"]) if r else None
+            except ValueError:
+                return None
+        c.execute("INSERT OR REPLACE INTO flags(name, value) VALUES(?, ?)", (name, json.dumps(value, ensure_ascii=False)))
+
+
+def billz_base(q: str = "", offset: int = 0, limit: int = 50) -> dict:
+    """Поиск по копии базы BILLZ: имя или цифры номера. Отмечает тех, кто есть в боте."""
+    q = str(q or "").strip()
+    digits = "".join(ch for ch in q if ch.isdigit())
+    where, args = "", []
+    if digits and len(digits) >= 3 and len(digits) >= len(q.replace(" ", "").replace("+", "")) - 1:
+        where, args = "WHERE phones LIKE ?", [f"%{digits[-9:]}%"]
+    elif q:
+        where = "WHERE LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ?"
+        args = [f"%{q.lower()}%"]
+    with db() as c:
+        total_all = c.execute("SELECT COUNT(*) FROM billz_clients").fetchone()[0]
+        found = c.execute(f"SELECT COUNT(*) FROM billz_clients {where}", args).fetchone()[0]
+        rows = c.execute(f"SELECT * FROM billz_clients {where} ORDER BY COALESCE(last_tx,'') DESC, first_name "
+                         f"LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+        in_bot = {(r["phone"] or "")[-9:] for r in c.execute("SELECT phone FROM clients WHERE phone IS NOT NULL")}
+        linked = {r["billz_id"] for r in c.execute("SELECT billz_id FROM clients WHERE billz_id IS NOT NULL")}
+    items = []
+    for r in rows:
+        name = " ".join(x for x in (r["first_name"], r["last_name"]) if x) or "Без имени"
+        items.append({"id": r["id"], "name": name, "phone": r["phone"] or "",
+                      "birth": datetime.strptime(r["birth_date"], "%Y-%m-%d").strftime("%d.%m.%Y") if r["birth_date"] else None,
+                      "balance": r["balance"] or 0, "last_tx": r["last_tx"] or "",
+                      "in_bot": r["id"] in linked or bool(r["phone_tail"] and r["phone_tail"] in in_bot)})
+    return {"items": items, "found": found, "total": total_all, "status": flag_json("billz_import") or {}}
 
 
 def clients_list(limit: int = 200) -> list:

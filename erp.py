@@ -10,6 +10,7 @@
                                   balance (кешбэк-бонусы), карты
     GET  /v1/customer/{id}        карточка клиента: purchase_amount (сумма покупок), balance (кешбэк)
     POST /v1/client               создать клиента (если включено BILLZ_CREATE_CLIENTS)
+    GET  /v1/client?page=&limit=  вся клиентская база — копия для раздела «Клиенты» (раз в сутки и по кнопке)
 """
 import json
 import logging
@@ -277,6 +278,91 @@ def sync_client(uid: int, force: bool = False) -> dict:
         last_error.update(text=f"клиент {uid}: {e}", at=core.now().strftime("%d.%m %H:%M"))
         return dict(_stats(cl), error=True)
     return _stats(core.get_client(uid) or {})
+
+
+# ---------- вся клиентская база ----------
+
+IMPORT_PAGE = 100
+IMPORT_HOUR = 4  # каждый день около 04:00 база обновляется сама
+_import = {"running": False}
+
+
+def _import_status(**kw):
+    st = dict(core.flag_json("billz_import") or {}, **kw)
+    core.flag_json("billz_import", st)
+    return st
+
+
+def import_all() -> dict:
+    """Скачать всю клиентскую базу BILLZ постранично в таблицу billz_clients."""
+    started = core.now().strftime(core.FMT)
+    _import_status(running=True, started=started, loaded=0, error=None)
+    loaded, page, total = 0, 1, None
+    try:
+        while page <= 2000:
+            res = _api("GET", "/v1/client", params={"page": page, "limit": IMPORT_PAGE}, timeout=SEARCH_TIMEOUT) or {}
+            batch = res.get("clients") or []
+            if total is None and res.get("count") is not None:
+                total = int(res["count"])
+            rows = []
+            for c in batch:
+                if not c.get("id"):
+                    continue
+                phones = [p for p in (c.get("phone_numbers") or []) if p]
+                first = phones[0] if phones else ""
+                rows.append((c["id"], (c.get("first_name") or "").strip() or None, (c.get("last_name") or "").strip() or None,
+                             first, " ".join(_digits(p) for p in phones), _digits(first)[-9:] or None,
+                             _date(c.get("birth_date") or c.get("date_of_birth")), float(c.get("balance") or 0),
+                             _date(c.get("last_transaction_date")), started))
+            with core.db() as db:
+                db.executemany("INSERT OR REPLACE INTO billz_clients(id, first_name, last_name, phone, phones, phone_tail, "
+                               "birth_date, balance, last_tx, synced) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            loaded += len(rows)
+            _import_status(loaded=loaded, total=total)
+            if len(batch) < IMPORT_PAGE or (total is not None and page * IMPORT_PAGE >= total):
+                break
+            page += 1
+            time.sleep(0.2)
+        with core.db() as db:  # удалённые в BILLZ — убираем из копии (только после полной загрузки)
+            db.execute("DELETE FROM billz_clients WHERE synced<?", (started,))
+        return _import_status(running=False, loaded=loaded, total=loaded, at=core.now().strftime("%d.%m.%Y %H:%M"),
+                              day=core.now().strftime("%Y-%m-%d"))
+    except BillzError as e:
+        logging.warning("BILLZ: загрузка базы клиентов прервана: %s", e)
+        last_error.update(text=f"загрузка базы: {e}", at=core.now().strftime("%d.%m %H:%M"))
+        return _import_status(running=False, error=str(e)[:200], day=core.now().strftime("%Y-%m-%d"))
+
+
+def start_import() -> bool:
+    """Запустить загрузку базы в фоне. False — уже идёт или BILLZ не подключён."""
+    if not enabled() or _import["running"]:
+        return False
+    _import["running"] = True
+
+    def run():
+        try:
+            import_all()
+        except Exception:  # noqa: BLE001 — фоновая загрузка не должна ронять бота
+            logging.exception("BILLZ: загрузка базы клиентов упала")
+            _import_status(running=False, error="внутренняя ошибка")
+        finally:
+            _import["running"] = False
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
+def import_due() -> None:
+    """Из цикла бота: раз в сутки (после IMPORT_HOUR) и сразу, если базы ещё нет."""
+    if not enabled() or _import["running"]:
+        return
+    st = core.flag_json("billz_import") or {}
+    today = core.now().strftime("%Y-%m-%d")
+    if not st.get("day") or (st.get("day") != today and core.now().hour >= IMPORT_HOUR):
+        start_import()
+
+
+def import_running() -> bool:
+    return _import["running"]
 
 
 def diagnose(phone: str = None) -> str:
