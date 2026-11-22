@@ -3,6 +3,7 @@ import logging
 import os
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from telegram import (
     InlineKeyboardButton,
@@ -20,6 +21,7 @@ from telegram.ext import (
     Application,
     ApplicationHandlerStop,
     CallbackQueryHandler,
+    ChatJoinRequestHandler,
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
@@ -168,7 +170,7 @@ def client_keyboard(uid: int):
     # покупки, новости и остальное клиент смотрит в мини-приложении (кнопка «Кабинет»)
     return ReplyKeyboardMarkup([
         [i18n.t(lang, "btn_cabinet")],
-        [i18n.t(lang, "btn_bonus")],
+        [i18n.t(lang, "btn_bonus")] + ([i18n.t(lang, "btn_channel")] if getattr(config, "CLIENT_CHANNEL_ID", None) else []),
         [i18n.t(lang, "btn_lang"), i18n.t(lang, "btn_logout")],
     ], resize_keyboard=True)
 
@@ -329,6 +331,8 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             money = f"{int(value):,}".replace(",", " ") + " " + i18n.t(lang, "currency")  # вниз: не обещать лишнего
             msg = i18n.t(lang, "purchases_info" if purchases else "bonus_info", sum=money)
         return await reply(update, msg, reply_markup=client_keyboard(u.id))
+    if text in i18n.all_variants("btn_channel") and getattr(config, "CLIENT_CHANNEL_ID", None):
+        return await channel_link(update, context, lang)
     if text in i18n.all_variants("btn_invest"):
         return await reply(update, i18n.t(lang, "soon_invest"), reply_markup=client_keyboard(u.id))
     if text in i18n.all_variants("btn_news"):
@@ -338,6 +342,69 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await reply(update, i18n.t(lang, "news_title") + "\n\n" +
                            "\n\n— — —\n\n".join(f"🗓 {n['date']}\n{n['text']}" for n in items))
     await client_menu(update)
+
+
+# ---------- закрытый канал для покупателей ----------
+
+async def channel_link(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str) -> None:
+    """Кнопка «📢 Канал»: покупателю — личная ссылка-заявка (одна на человека, 24 часа)."""
+    uid, chat = update.effective_user.id, config.CLIENT_CHANNEL_ID
+    try:
+        member = await context.bot.get_chat_member(chat, uid)
+        if member.status in ("member", "administrator", "creator"):
+            return await reply(update, i18n.t(lang, "channel_already"), reply_markup=client_keyboard(uid))
+    except TelegramError:
+        pass  # не смогли проверить — просто продолжаем
+    stats = await asyncio.to_thread(erp.sync_client, uid, True) if erp.enabled() else {}
+    bought = float(stats.get("purchases") or 0)
+    if bought < getattr(config, "CLIENT_CHANNEL_MIN_PURCHASES", 1):
+        return await reply(update, i18n.t(lang, "channel_no_purchase"), reply_markup=client_keyboard(uid))
+    link = core.channel_link_get(uid, chat)
+    if not link:
+        hours = getattr(config, "CLIENT_CHANNEL_LINK_HOURS", 24)
+        expires = core.now() + timedelta(hours=hours)
+        try:
+            inv = await context.bot.create_chat_invite_link(
+                chat, name=f"client {uid}"[:32], creates_join_request=True,
+                expire_date=datetime.now(timezone.utc) + timedelta(hours=hours))
+        except TelegramError as e:
+            logging.warning("Канал: не удалось создать ссылку для %s: %s", uid, e)
+            return await reply(update, i18n.t(lang, "channel_error"), reply_markup=client_keyboard(uid))
+        link = inv.invite_link
+        core.channel_link_add(link, uid, chat, expires)
+    await reply(update, i18n.t(lang, "channel_link"),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(i18n.t(lang, "channel_btn"), url=link)]]))
+
+
+async def channel_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Заявка в канал: одобряем, только если ссылку получил именно этот человек; ссылку после этого отзываем."""
+    req = update.chat_join_request
+    if not req or req.chat.id != getattr(config, "CLIENT_CHANNEL_ID", None):
+        return
+    url = req.invite_link.invite_link if req.invite_link else None
+    owner = core.channel_link_owner(url) if url else None
+    if owner != req.from_user.id:
+        logging.info("Канал: заявка %s по чужой/неизвестной ссылке отклонена", req.from_user.id)
+        try:
+            await req.decline()
+        except TelegramError:
+            pass
+        return
+    try:
+        await req.approve()
+    except TelegramError as e:
+        logging.warning("Канал: не удалось одобрить заявку %s: %s", req.from_user.id, e)
+        return
+    core.channel_link_used(url)
+    try:
+        await context.bot.revoke_chat_invite_link(req.chat.id, url)  # одноразовая — больше никто не войдёт
+    except TelegramError:
+        pass
+    lang = (core.get_client(req.from_user.id) or {}).get("lang")
+    try:
+        await context.bot.send_message(req.from_user.id, i18n.t(lang, "channel_welcome"))
+    except TelegramError:
+        pass
 
 
 async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -912,6 +979,7 @@ def build_client_app() -> Application:
     capp.add_handler(TypeHandler(Update, gate), group=-1)
     capp.add_handler(CommandHandler("start", client_start))
     capp.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))
+    capp.add_handler(ChatJoinRequestHandler(channel_join_request))
     capp.add_handler(CallbackQueryHandler(client_logout, pattern=r"^clogout:(yes|no)$"))
     capp.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
     capp.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, client_text))

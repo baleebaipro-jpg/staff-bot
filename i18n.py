@@ -104,6 +104,25 @@ T = {
     "open_cabinet": {"uz": "🏠 Kabinetingizni oching 👇", "ru": "🏠 Откройте ваш кабинет 👇", "en": "🏠 Open your account 👇"},
     "open_cabinet_btn": {"uz": "🏠 Kabinetni ochish", "ru": "🏠 Открыть кабинет", "en": "🏠 Open account"},
     "btn_lang": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
+    "btn_channel": {"uz": "📢 Kanal", "ru": "📢 Канал", "en": "📢 Channel"},
+    "channel_link": {
+        "uz": "📢 Bu havola faqat siz uchun — 24 soat amal qiladi.\nTugmani bosing va «Qo'shilish so'rovi»ni yuboring — bot uni darhol tasdiqlaydi ✅",
+        "ru": "📢 Эта ссылка — только для вас, действует 24 часа.\nНажмите кнопку и отправьте заявку на вступление — бот сразу её одобрит ✅",
+        "en": "📢 This link is just for you and works for 24 hours.\nTap the button and send a join request — the bot will approve it right away ✅",
+    },
+    "channel_btn": {"uz": "📢 Kanalga qo'shilish", "ru": "📢 Вступить в канал", "en": "📢 Join the channel"},
+    "channel_no_purchase": {
+        "uz": "📢 Kanal xaridorlarimiz uchun. Birinchi xariddan keyin bu yerda shaxsiy havola olasiz 🛍",
+        "ru": "📢 Канал — для наших покупателей. После первой покупки здесь можно будет получить личную ссылку 🛍",
+        "en": "📢 The channel is for our customers. After your first purchase you'll get a personal link here 🛍",
+    },
+    "channel_already": {"uz": "✅ Siz allaqachon kanaldasiz", "ru": "✅ Вы уже в канале", "en": "✅ You're already in the channel"},
+    "channel_welcome": {"uz": "🎉 Kanalga xush kelibsiz!", "ru": "🎉 Добро пожаловать в канал!", "en": "🎉 Welcome to the channel!"},
+    "channel_error": {
+        "uz": "Hozircha havola yaratib bo'lmadi, birozdan keyin urinib ko'ring 🙏",
+        "ru": "Сейчас не удалось создать ссылку, попробуйте чуть позже 🙏",
+        "en": "Couldn't create a link right now, please try a bit later 🙏",
+    },
     "btn_logout": {"uz": "🚪 Chiqish", "ru": "🚪 Выйти", "en": "🚪 Log out"},
     "logout_confirm": {
         "uz": "🚪 Chiqasizmi? Til, raqam va ma'lumotlaringiz o'chiriladi — botni qaytadan boshlaysiz.",

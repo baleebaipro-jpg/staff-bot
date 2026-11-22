@@ -307,6 +307,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS billz_clients(
                 id TEXT PRIMARY KEY, first_name TEXT, last_name TEXT, phone TEXT, phones TEXT, phone_tail TEXT,
                 birth_date TEXT, balance REAL, last_tx TEXT, synced TEXT);
+            CREATE TABLE IF NOT EXISTS channel_links(
+                link TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, created_at TEXT, expires TEXT, used_at TEXT);
             CREATE TABLE IF NOT EXISTS projects(
                 id INTEGER PRIMARY KEY, owner_id INTEGER, title TEXT, created_at TEXT);
             CREATE TABLE IF NOT EXISTS ptasks(
@@ -1378,6 +1380,32 @@ def parse_birth(text: str):
 
 
 # ---------- клиентская база BILLZ (копия для раздела «Клиенты») ----------
+
+def channel_link_get(uid: int, chat: int):
+    """Действующая неиспользованная ссылка этого клиента (чтобы не плодить новые)."""
+    with db() as c:
+        r = c.execute("SELECT link FROM channel_links WHERE user_id=? AND chat_id=? AND used_at IS NULL AND expires>? "
+                      "ORDER BY created_at DESC LIMIT 1",
+                      (uid, chat, (now() + timedelta(minutes=10)).strftime(FMT))).fetchone()
+    return r["link"] if r else None
+
+
+def channel_link_add(link: str, uid: int, chat: int, expires) -> None:
+    with db() as c:
+        c.execute("INSERT OR REPLACE INTO channel_links(link, user_id, chat_id, created_at, expires) VALUES(?, ?, ?, ?, ?)",
+                  (link, uid, chat, now().strftime(FMT), expires.strftime(FMT)))
+
+
+def channel_link_owner(link: str):
+    with db() as c:
+        r = c.execute("SELECT user_id FROM channel_links WHERE link=? AND used_at IS NULL", (link,)).fetchone()
+    return r["user_id"] if r else None
+
+
+def channel_link_used(link: str) -> None:
+    with db() as c:
+        c.execute("UPDATE channel_links SET used_at=? WHERE link=?", (now().strftime(FMT), link))
+
 
 def flag_json(name: str, value=None):
     """Служебная запись в flags в виде JSON: без value — прочитать, с value — сохранить."""
