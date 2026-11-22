@@ -800,10 +800,97 @@ PAGE = r"""<!doctype html>
 
   .toast { position: fixed; left: 14px; right: 14px; bottom: 18px; background: #2a2d4d; border: 1px solid var(--line);
            padding: 13px 15px; border-radius: 14px; white-space: pre-line; display: none; z-index: 9; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+
+  /* ===== Тема RADI: чёрный + фиолетовое свечение, стеклянные карточки ===== */
+  :root { --bg: #06050c; --card: #15112a; --card2: rgba(255,255,255,.06); --line: rgba(168,140,255,.16);
+          --text: #f5f3ff; --hint: #a39dc6; --accent: #8b5cf6; --accent2: #6d5dfc;
+          --glass: linear-gradient(160deg, rgba(44,33,82,.66), rgba(13,10,26,.82));
+          --icon: linear-gradient(150deg, #b9a2ff 0%, #8b5cf6 45%, #5b21b6 100%); }
+  body { background: #06050c; background-image: none; }
+  body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: radial-gradient(460px 320px at 105% -4%, rgba(124,58,237,.42), transparent 70%),
+                radial-gradient(420px 360px at -10% 104%, rgba(91,33,182,.32), transparent 70%),
+                url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 800' preserveAspectRatio='none'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23a78bfa' stop-opacity='.55'/%3E%3Cstop offset='1' stop-color='%234c1d95' stop-opacity='0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M250 0C300 70 330 120 400 150V0Z' fill='url(%23g)' opacity='.55'/%3E%3Cpath d='M230 0C290 80 320 140 400 175' fill='none' stroke='%23a78bfa' stroke-opacity='.35' stroke-width='1.2'/%3E%3Cpath d='M270 0C315 60 345 100 400 120' fill='none' stroke='%23c4b5fd' stroke-opacity='.25'/%3E%3Cpath d='M400 600C340 660 310 740 230 800H400Z' fill='url(%23g)' opacity='.45'/%3E%3Cpath d='M400 570C330 640 300 730 205 800' fill='none' stroke='%23a78bfa' stroke-opacity='.3' stroke-width='1.2'/%3E%3C/svg%3E"); background-size: auto, auto, 100% 100%; }
+  .card, .folder, .soon { background: var(--glass); border: 1px solid var(--line); border-radius: 24px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 12px 30px rgba(0,0,0,.35);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+  .soon { border-color: rgba(168,140,255,.42); opacity: .8; }
+  .f-ic, .folder .f-ic, .prow .f-ic { background: var(--icon) !important; border-radius: 16px !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.4), inset 0 -6px 12px rgba(46,16,101,.5), 0 6px 18px rgba(124,58,237,.42); }
+  .folder .f-arrow { color: #c4b5fd; }
+  .btn-main { background: linear-gradient(135deg, #a78bfa, #7c3aed 60%, #6366f1); box-shadow: 0 8px 22px rgba(124,58,237,.45); }
+  .btn-soft { background: rgba(255,255,255,.06); border: 1px solid var(--line); }
+  select, input, textarea { background: rgba(255,255,255,.045); border-color: var(--line); }
+  select:focus, input:focus, textarea:focus { border-color: rgba(167,139,250,.7); }
+  .seg { background: rgba(255,255,255,.04); border-color: var(--line); border-radius: 16px; }
+  .seg button.on { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; box-shadow: 0 4px 14px rgba(124,58,237,.4); }
+  .quick button.on, .plans button.on, .lvl-btns button.on, .ltabs button.on { border-color: #a78bfa; background: rgba(139,92,246,.22); }
+  .s1, .s2, .s3 { background: var(--glass); }
+  .stat { border-radius: 20px; }
+  .motiv { background: linear-gradient(110deg, rgba(91,33,182,.55), rgba(20,15,40,.85)); }
+  .sheet { background: linear-gradient(180deg, #1b1533, #0c0917); border-top-color: rgba(168,140,255,.3); }
+  .toast { background: rgba(32,24,60,.96); border-color: rgba(168,140,255,.3); }
+  .inv-tiles > div, .pen-stats > div, .week div { background: rgba(255,255,255,.05); }
+  .inv-tiles > div { background: var(--glass); border: 1px solid var(--line); border-radius: 18px; }
+  .link { color: #b9a2ff; }
+
+  /* шапка */
+  .brand { display: flex; align-items: center; gap: 14px; margin: 2px 0 16px; }
+  .logo-mark { width: 58px; height: 58px; border-radius: 18px; flex: none; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 35% 25%, #2c2546, #0e0b1a 75%); border: 1px solid rgba(255,255,255,.1);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 8px 22px rgba(0,0,0,.5); }
+  .logo-mark svg { width: 74%; }
+  .brand-sep { width: 1px; align-self: stretch; margin: 6px 0; background: linear-gradient(transparent, rgba(196,181,253,.6), transparent); }
+  .brand b { display: block; font-size: 19px; letter-spacing: .06em; font-weight: 700; }
+  .brand span { color: var(--hint); font-size: 13.5px; }
+  /* заголовок страницы */
+  .hero { position: relative; overflow: hidden; display: flex; align-items: center; gap: 16px; padding: 18px; margin-bottom: 14px;
+    border-radius: 24px; border: 1px solid rgba(168,140,255,.32);
+    background: linear-gradient(115deg, rgba(88,60,170,.6), rgba(28,20,56,.85) 60%, rgba(12,9,24,.9)); }
+  .hero::after { content: ""; position: absolute; right: -40px; top: -30px; width: 180px; height: 160px; pointer-events: none;
+    background: radial-gradient(closest-side, rgba(167,139,250,.45), transparent); }
+  .hero .logo-mark { width: 56px; height: 56px; background: none; border: none; box-shadow: none; }
+  .hero .page-title { margin: 0; font-size: 21px; }
+  .hero .page-sub { margin: 3px 0 0; }
+  /* главная руководителя */
+  .welcome { display: flex; align-items: center; gap: 14px; border-color: rgba(168,140,255,.38); }
+  .welcome b { display: block; font-size: 18px; }
+  .welcome .f-sub { color: var(--hint); font-size: 13.5px; margin-top: 3px; }
+  .dash { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .dtile { display: flex; align-items: center; gap: 10px; padding: 14px 12px; text-align: left; position: relative; margin: 0; min-width: 0; }
+  .dtile .f-ic { width: 44px; height: 44px; font-size: 22px; flex: none; display: flex; align-items: center; justify-content: center; }
+  .dtile b { display: block; font-size: 21px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dtile span { color: var(--hint); font-size: 12.5px; display: block; line-height: 1.2; }
+  .dtile i { position: absolute; right: 10px; bottom: 6px; font-style: normal; color: #c4b5fd; font-size: 18px; }
+  .dtile > div:nth-child(2) { min-width: 0; }
+  .dayc { width: 100%; text-align: left; border-color: rgba(168,140,255,.38); }
+  .dayc .top { display: flex; align-items: center; gap: 14px; }
+  .dayc .f-ic { width: 52px; height: 52px; font-size: 24px; display: flex; align-items: center; justify-content: center; flex: none; }
+  .dayc .top span { color: var(--hint); font-size: 14px; }
+  .dayc .top b { display: block; font-size: 28px; line-height: 1.1; }
+  .day-pill { margin-left: auto; padding: 7px 12px; border-radius: 99px; background: rgba(0,0,0,.35); border: 1px solid var(--line);
+    font-size: 13px; white-space: nowrap; color: var(--text) !important; }
+  .dayc .bottom { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+    color: var(--hint); font-size: 14px; }
+  .sec-h { font-size: 13px; color: var(--hint); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; margin: 4px 4px 10px; }
+  /* нижнее меню */
+  .tabbar { position: fixed; left: 12px; right: 12px; bottom: 12px; max-width: 536px; margin: 0 auto; z-index: 8;
+    display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px; border-radius: 26px;
+    background: rgba(18,14,34,.86); border: 1px solid rgba(168,140,255,.25);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: 0 12px 34px rgba(0,0,0,.55); }
+  .tabbar button { background: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 2px;
+    font-size: 12px; color: var(--hint); font-weight: 600; }
+  .tabbar svg { width: 24px; height: 24px; }
+  .tabbar button.on { color: #b9a2ff; }
+  .tabbar button.on svg { filter: drop-shadow(0 0 8px rgba(167,139,250,.8)); }
+  body.has-tabs .wrap { padding-bottom: 110px; }
+  body.has-tabs .toast { bottom: 96px; }
 </style>
 </head>
 <body>
 <div class="wrap">
+  <div class="brand hidden" id="brand"><div class="logo-mark"><svg viewBox="0 0 64 40"><defs><linearGradient id="lgR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#c9cbe0"/><stop offset="1" stop-color="#7d8199"/></linearGradient></defs><text x="31" y="31" text-anchor="middle" font-family="Didot,Georgia,serif" font-style="italic" font-weight="700" font-size="31" letter-spacing="-4" fill="url(#lgR)">RD</text></svg></div><div class="brand-sep"></div>
+    <div><b>RADI TEAM</b><span>мини-приложение</span></div></div>
   <div id="loading" class="card empty">Загрузка…</div>
   <div id="error" class="card empty hidden"></div>
 
@@ -1058,6 +1145,19 @@ PAGE = r"""<!doctype html>
 
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
+    <div class="card welcome"><div class="f-ic" style="width:56px;height:56px;font-size:26px;display:flex;align-items:center;justify-content:center;flex:none">👥</div>
+      <div><b>Добро пожаловать!</b><div class="f-sub">Ваш личный кабинет команды RADI</div></div></div>
+    <div class="dash">
+      <button class="card dtile" data-dgo="projects"><div class="f-ic">📁</div><div><b id="d-proj">—</b><span>Мои проекты</span></div><i>›</i></button>
+      <button class="card dtile" data-dgo="staff"><div class="f-ic">👥</div><div><b id="d-team">—</b><span>Команда</span></div><i>›</i></button>
+      <button class="card dtile" data-dgo="earn-admin"><div class="f-ic">📈</div><div><b id="d-earn" style="font-size:17px">—</b><span>Foyda сотрудников</span></div><i>›</i></button>
+      <button class="card dtile" data-dgo="clients"><div class="f-ic">💎</div><div><b id="d-cl">—</b><span>Клиенты</span></div><i>›</i></button>
+    </div>
+    <button class="card dayc" data-dgo="projects">
+      <div class="top"><div class="f-ic">📅</div><div><span>Мой день</span><b id="d-date"></b></div><span class="day-pill">☀️ Сегодня</span></div>
+      <div class="bottom"><span style="font-size:18px">🕘</span><span id="d-day" style="flex:1"></span><span id="d-day-ok"></span></div>
+    </button>
+    <div class="sec-h">Разделы</div>
     <button class="card folder" id="go-projects">
       <div class="f-ic" style="background:rgba(251,191,36,.16)">📁</div>
       <div style="min-width:0"><b>Мои проекты<span id="proj-badge"></span></b><div class="f-sub" id="proj-folder-sub"></div></div>
@@ -1131,6 +1231,12 @@ PAGE = r"""<!doctype html>
     <div id="team"></div>
   </div>
 </div>
+<nav class="tabbar hidden" id="tabbar">
+  <button data-tab="team"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 2.5 11h2.7v9h5.3v-6h3v6h5.3v-9h2.7z"/></svg>Главная</button>
+  <button data-tab="projects"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v10a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>Проекты</button>
+  <button data-tab="staff"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="8" r="3.5"/><circle cx="17" cy="9" r="2.8"/><path d="M2.5 19c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6zM15.5 19c0-1.9-.6-3.6-1.7-4.8 3.6-.6 7.7 1.2 7.7 4.8z"/></svg>Команда</button>
+  <button data-tab="clients"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 3h10l4 6-9 12L3 9zm-1.2 6h12.4L15.7 5H8.3z"/></svg>Клиенты</button>
+</nav>
 <div class="sheet-bg hidden" id="sheet-bg">
   <div class="sheet">
     <h3 id="sheet-title">График</h3>
@@ -1262,6 +1368,11 @@ function show(v) {
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
+  $("brand").classList.toggle("hidden", v === "client" || !data);
+  const tabs = !!(data && data.is_admin) && ["team", "projects", "staff", "clients"].includes(v);
+  $("tabbar").classList.toggle("hidden", !tabs);
+  document.body.classList.toggle("has-tabs", tabs);
+  document.querySelectorAll("#tabbar [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === v));
   window.scrollTo(0, 0);
 }
 tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
@@ -1281,7 +1392,7 @@ const SX = {
        keep_going: "Продолжайте в том же духе!", you_are: "Вы — {r}! 🏆", left_to: "До звания «{r}» осталось {h} ч 💪",
        goal_done: "Цель {h} часов достигнута", soon: "Раздел скоро появится", soon_pill: "Скоро ⏳",
        invest_soon: "💰 Раздел «Инвестиции» скоро появится ⏳", lang_btn: "🌐 O'zbekchaga o'tish", photo: "Загружаю фото…",
-       earn_title: "Foydam", earn_page: "💵 Foydam", earn_sub: "Ваша прибыль в компании",
+       earn_title: "Foydam", earn_page: "Foydam", earn_sub: "Ваша прибыль в компании",
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
@@ -1297,7 +1408,7 @@ const SX = {
        keep_going: "Shunday davom eting!", you_are: "Siz — {r}! 🏆", left_to: "«{r}» unvonigacha {h} soat qoldi 💪",
        goal_done: "{h} soatlik maqsadga erishildi", soon: "Bo'lim tez orada ochiladi", soon_pill: "Tez orada ⏳",
        invest_soon: "💰 «Investitsiyalar» bo'limi tez orada ochiladi ⏳", lang_btn: "🌐 Перейти на русский", photo: "Rasm yuklanmoqda…",
-       earn_title: "Foydam", earn_page: "💵 Foydam", earn_sub: "Kompaniyada olgan foydangiz",
+       earn_title: "Foydam", earn_page: "Foydam", earn_sub: "Kompaniyada olgan foydangiz",
        earn_by_month: "Oylar bo'yicha", earn_total: "butun vaqt davomida", earn_year: "shu yili", earn_empty: "Hozircha yozuvlar yo'q",
        earn_folder: "Jami: {s}", cur: "so'm"},
 };
@@ -2077,7 +2188,7 @@ async function load(fresh = false) {
     SUBPAGES.invest = data.is_employee ? "me" : "team";
     if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin();
                          if (data.projects) renderProjects(); if (data.posting) renderPosting();
-                         if (data.earnings_team) renderEarnAdmin(); }
+                         if (data.earnings_team) renderEarnAdmin(); renderDash(); }
     if (!data.is_employee && view === "me") view = "team";
     show(view);
   } catch (e) {
@@ -2191,6 +2302,32 @@ const SOON = "💰 Раздел «Инвестиции» скоро появит
 $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(data.profile ? sx("invest_soon") : SOON);
 $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOON);
 $("go-clients").onclick = () => show("clients");
+document.querySelectorAll("[data-dgo], #tabbar [data-tab]").forEach(b => b.onclick = () => show(b.dataset.dgo || b.dataset.tab));
+/* Главная руководителя: плитки с цифрами и «Мой день» */
+function renderDash() {
+  const o = data.projects, cl = data.clients || {}, et = data.earnings_team || [];
+  $("d-proj").textContent = o ? o.projects.length : "—";
+  $("d-team").textContent = (data.team || []).length;
+  $("d-earn").textContent = money0(et.reduce((a, x) => a + x.total, 0), "").trim();
+  $("d-cl").textContent = cl.total != null ? cl.total : "—";
+  const d = o && o.day, todo = d ? d.today.length + d.overdue.length : 0;
+  $("d-date").textContent = o ? o.today : "";
+  $("d-day").textContent = !d ? "" : todo
+    ? `На сегодня задач: ${todo}` + (d.overdue.length ? ` · просрочено: ${d.overdue.length}` : "")
+    : "На сегодня задач нет. Отличная работа!";
+  $("d-day-ok").innerHTML = d && !todo ? `<span class="pcheck" style="background:var(--accent);border-color:var(--accent);color:#fff">✓</span>` : "";
+}
+/* Заголовки страниц — в виде карточки с логотипом */
+document.querySelectorAll(".page-title").forEach(t => {
+  const sub = t.nextElementSibling;
+  if (!sub || !sub.classList.contains("page-sub")) return;
+  const hero = document.createElement("div");
+  hero.className = "hero";
+  hero.innerHTML = `<div class="logo-mark">${$("brand").querySelector(".logo-mark").innerHTML}</div><div class="brand-sep"></div><div style="min-width:0"></div>`;
+  if (!t.dataset.sx) t.textContent = t.textContent.replace(/^[^\p{L}\p{N}]+/u, "");
+  t.before(hero);
+  hero.lastElementChild.append(t, sub);
+});
 $("go-staff").onclick = () => show("staff");
 $("go-projects").onclick = () => show("projects");
 $("go-posting").onclick = () => show("posting");
