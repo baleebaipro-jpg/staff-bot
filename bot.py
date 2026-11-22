@@ -122,6 +122,21 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raise ApplicationHandlerStop
 
 
+async def remember_client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Бот клиентов: запоминаем ID каждого, кто хоть что-то сделал в боте (нажал, написал, подал заявку),
+    чтобы посты из «Постинга» доходили до всех."""
+    u = update.effective_user
+    if not u or u.is_bot:
+        return
+    chat = update.effective_chat
+    if chat and chat.type != "private" and not update.chat_join_request:
+        return
+    try:
+        core.save_client(u.id, first_name=u.first_name or "", username=u.username or "")
+    except Exception:  # noqa: BLE001 — запись не должна мешать ответу
+        logging.exception("Не удалось запомнить клиента %s", u.id)
+
+
 def known(uid: int) -> bool:
     return bool(core.employee(uid)) or core.is_admin(uid)
 
@@ -976,6 +991,7 @@ def build_client_app() -> Application:
     """Бот клиентов: только клиентская часть (язык, номер, BILLZ, новости, кабинет, «Выйти»)."""
     capp = Application.builder().token(config.CLIENT_BOT_TOKEN).build()
     capp.bot_data["role"] = "client"
+    capp.add_handler(TypeHandler(Update, remember_client), group=-2)
     capp.add_handler(TypeHandler(Update, gate), group=-1)
     capp.add_handler(CommandHandler("start", client_start))
     capp.add_handler(CallbackQueryHandler(choose_lang, pattern=r"^lang:"))

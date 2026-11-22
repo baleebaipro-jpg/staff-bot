@@ -369,6 +369,19 @@ def api_billz_base(uid, data):
     return jsonify(res)
 
 
+@app.post("/api/import_clients")
+@need_user(admin=True)
+def api_import_clients(uid, data):
+    text = str(data.get("text") or "")
+    if len(text) > 3_000_000:
+        return jsonify(ok=False, msg="Файл слишком большой.")
+    r = core.import_clients(text)
+    msg = f"📥 Добавлено: {r['added']} · уже были: {r['existing']}"
+    if r["bad_count"]:
+        msg += f"\nНе понял строк: {r['bad_count']} (например: {r['bad'][0]})"
+    return jsonify(ok=True, msg=msg, **r)
+
+
 @app.post("/api/set_tier")
 @need_user(admin=True)
 def api_set_tier(uid, data):
@@ -1107,6 +1120,17 @@ PAGE = r"""<!doctype html>
     <div class="card">
       <div class="head"><h3>💎 Клиенты</h3><span class="hint" style="font-size:13px" id="cl-total"></span></div>
       <div class="hint hidden" style="font-size:12.5px;margin:-2px 0 10px;display:flex;gap:8px;align-items:center" id="bz-status"></div>
+      <details class="staff-act" style="padding:0;margin:0 0 10px">
+        <summary><span style="font-size:14px">📥 Загрузить прежних подписчиков бота</span><span class="hint">›</span></summary>
+        <div style="margin-top:10px">
+          <div class="hint" style="font-size:12.5px;margin-bottom:8px">Файл .txt или .csv из прежней системы, или вставьте список:
+            в каждой строке Telegram ID (можно с номером и именем). Повторы и уже известные пропускаются.</div>
+          <label class="btn btn-soft" style="display:block;text-align:center;margin-bottom:8px">📎 Выбрать файл
+            <input type="file" id="imp-file" accept=".txt,.csv,text/plain,text/csv" hidden></label>
+          <textarea id="imp-text" rows="4" placeholder="6834141071&#10;745848319, +998901234567, Aziza"></textarea>
+          <button class="btn btn-main" style="width:100%" id="imp-go">Загрузить</button>
+        </div>
+      </details>
       <input id="cl-search" placeholder="Поиск: имя или номер">
       <div id="cl-list"></div>
     </div>
@@ -2304,7 +2328,8 @@ async function loadClients(more = false) {
     const meta = [esc(c.phone || "номер не указан")];
     if (c.birth) meta.push("🎂 " + c.birth);
     if (c.last_tx) meta.push("🛍 " + c.last_tx.split("-").reverse().join("."));
-    if (c.bot_id) meta.push((c.lang || "—").toUpperCase() + " · с " + c.since);
+    if (c.imported) meta.push("📥 из прежнего бота");
+    else if (c.bot_id) meta.push((c.lang || "—").toUpperCase() + " · с " + c.since);
     const right = c.bot_id
       ? `<select data-tier="${c.bot_id}">${Object.entries(tiers).map(([k, t]) => `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("")}</select>`
       : "";
@@ -2320,6 +2345,17 @@ async function loadClients(more = false) {
     action("/api/set_tier", {user_id: +s.dataset.tier, tier: s.value}).then(() => loadClients()));
 }
 let bzLoaded = 0;
+$("imp-file").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  if (f.size > 3_000_000) return toast("Файл слишком большой");
+  $("imp-text").value = await f.text(); e.target.value = "";
+  toast(`Файл «${f.name}» прочитан — нажмите «Загрузить»`);
+};
+$("imp-go").onclick = async () => {
+  const text = $("imp-text").value.trim(); if (!text) return toast("Выберите файл или вставьте список ID");
+  try { const r = await api("/api/import_clients", {text}); toast(r.msg); if (r.ok) { $("imp-text").value = ""; loadClients(); load(); } }
+  catch (e) { toast(e.message); }
+};
 function renderClientsAdmin(user = false) {
   if (!user && bzItems.length) return;  // автообновление кабинета не сбрасывает открытый список
   clearTimeout(bzTimer); bzTimer = setTimeout(() => loadClients(), user ? 250 : 0);
