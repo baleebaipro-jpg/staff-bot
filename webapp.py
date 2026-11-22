@@ -219,6 +219,8 @@ def api_me(uid, data):
             res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
         res["clients"] = core.clients_stats()
+        base = core.billz_base("", 0, 0)  # единый список: бот + база магазина без дублей
+        res["clients"].update(all=base["total"], store_at=(base["status"] or {}).get("at"))
         res["client_list"] = core.clients_list()
         res["tiers"] = {k: v["title"] for k, v in core.CLIENT_TIERS.items()}
         res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
@@ -2333,8 +2335,9 @@ $("cl-search").oninput = () => renderClientsAdmin(true);
 
 function renderNewsAdmin() {
   $("cl-count").textContent = `клиентов: ${data.clients.total} (с номером: ${data.clients.with_phone})`;
-  $("clients-folder-sub").textContent = `${data.clients.total} ${plural(data.clients.total, "клиент", "клиента", "клиентов")}` +
-    ` · с номером: ${data.clients.with_phone} · новостей: ${data.news.length}`;
+  const all = data.clients.all != null ? data.clients.all : data.clients.total;
+  $("clients-folder-sub").textContent = `${all} ${plural(all, "клиент", "клиента", "клиентов")} · в боте: ${data.clients.total}` +
+    (data.news.length ? ` · новостей: ${data.news.length}` : "");
   $("n-list").innerHTML = newsHtml(data.news, true);
   document.querySelectorAll("[data-delnews]").forEach(b => b.onclick = () =>
     tg.showConfirm("Удалить новость?", ok => ok && action("/api/delete_news", {id: +b.dataset.delnews})));
@@ -2366,7 +2369,7 @@ function renderDash() {
   $("d-proj").textContent = o ? o.projects.length : "—";
   $("d-team").textContent = (data.team || []).length;
   $("d-earn").textContent = money0(et.reduce((a, x) => a + x.total, 0), "").trim();
-  $("d-cl").textContent = cl.total != null ? cl.total : "—";
+  $("d-cl").textContent = cl.all != null ? cl.all : cl.total != null ? cl.total : "—";
   const d = o && o.day, todo = d ? d.today.length + d.overdue.length : 0;
   $("d-date").textContent = o ? o.today : "";
   $("d-day").textContent = !d ? "" : todo
