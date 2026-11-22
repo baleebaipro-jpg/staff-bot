@@ -109,6 +109,16 @@ T = {
         "ru": "💜 {name}, спасибо за покупку!\nМы очень ценим, что вы выбираете нас ✨ Ждём вас снова 🤗\n\n🛍 Сумма покупки: {sum}\n🎁 Ваши бонусы: {bonus}",
         "en": "💜 {name}, thank you for your purchase!\nWe truly appreciate you choosing us ✨ We can't wait to see you again 🤗\n\n🛍 Purchase: {sum}\n🎁 Your bonuses: {bonus}",
     },
+    "debt_paid": {
+        "uz": "✅ Qarz bo'yicha to'lov qabul qilindi: {paid}\n💳 Qolgan qarz: {left}\n\nRahmat! 💜",
+        "ru": "✅ Получена оплата по долгу: {paid}\n💳 Остаток долга: {left}\n\nСпасибо! 💜",
+        "en": "✅ Debt payment received: {paid}\n💳 Remaining debt: {left}\n\nThank you! 💜",
+    },
+    "debt_paid_full": {
+        "uz": "🎉 Qarz to'liq yopildi! To'lov: {paid}\nRahmat, sizni yana kutamiz 💜",
+        "ru": "🎉 Долг полностью погашен! Оплата: {paid}\nСпасибо, ждём вас снова 💜",
+        "en": "🎉 Your debt is fully paid! Payment: {paid}\nThank you, see you again 💜",
+    },
     "btn_debt": {"uz": "💳 Qarz", "ru": "💳 Долг", "en": "💳 Debt"},
     "debt_total": {"uz": "💳 Qarzingiz: {sum}", "ru": "💳 Ваш долг: {sum}", "en": "💳 Your debt: {sum}"},
     "debt_item": {"uz": "• Buyurtma {order}: qoldiq {left}", "ru": "• Заказ {order}: осталось {left}",

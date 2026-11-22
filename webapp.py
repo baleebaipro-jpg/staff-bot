@@ -150,6 +150,15 @@ def _ranks(uid):
     return ranks
 
 
+@app.post("/api/client_debts")
+@need_user()
+def api_client_debts(uid, data):
+    """Клиент: каждый непогашенный долг отдельно."""
+    if not as_client(uid):
+        return jsonify(ok=False, items=[])
+    return jsonify(ok=True, items=erp.debts(uid))
+
+
 @app.post("/api/client_lang")
 @need_user()
 def api_client_lang(uid, data):
@@ -1171,9 +1180,12 @@ PAGE = r"""<!doctype html>
       <div class="stat s1 soon-stat" id="cl-st-buy"><div class="ic">🛍</div><b id="cl-buy">—</b><span data-t="purchases"></span><em data-t="soon"></em></div>
       <div class="stat s3 soon-stat" id="cl-st-bonus"><div class="ic">🎁</div><b id="cl-bonus">—</b><span data-t="bonuses"></span><em data-t="soon"></em></div>
     </div>
-    <div class="card hidden" id="cl-debt" style="border-color:rgba(248,113,113,.45);display:flex;align-items:center;gap:14px">
-      <div class="f-ic" style="width:48px;height:48px;font-size:24px;display:flex;align-items:center;justify-content:center;flex:none;background:linear-gradient(150deg,#fca5a5,#ef4444 55%,#7f1d1d)!important">💳</div>
-      <div><div class="hint" style="font-size:13px" data-t="debt"></div><b id="cl-debt-sum" style="font-size:20px;color:var(--red)"></b></div></div>
+    <div class="card hidden" id="cl-debt" style="border-color:rgba(248,113,113,.45);cursor:pointer">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div class="f-ic" style="width:48px;height:48px;font-size:24px;display:flex;align-items:center;justify-content:center;flex:none;background:linear-gradient(150deg,#fca5a5,#ef4444 55%,#7f1d1d)!important">💳</div>
+        <div style="flex:1"><div class="hint" style="font-size:13px" data-t="debt"></div><b id="cl-debt-sum" style="font-size:20px;color:var(--red)"></b></div>
+        <div class="f-arrow" id="cl-debt-arrow" style="font-size:26px;color:#c4b5fd;transition:transform .2s">›</div></div>
+      <div id="cl-debt-list" class="hidden" style="margin-top:12px"></div></div>
     <div class="hint hidden" style="font-size:12.5px;text-align:center;margin:-6px 0 12px" id="cl-billz-note"></div>
     <div style="text-align:center;margin:-6px 0 12px" class="hidden" id="cl-refresh-row">
       <button class="link" id="cl-refresh" style="font-size:13px"></button></div>
@@ -2255,21 +2267,24 @@ function newsHtml(items, admin) {
 }
 const TIER_EMOJI = {bronza: "🥉", silver: "🥈", gold: "🥇"};
 const CL_T = {
-  uz: {debt: "Qarzingiz", purchases: "xaridlar summasi", bonuses: "bonuslar", soon: "tez orada", invest: "Investitsiyalar",
+  uz: {debt: "Qarzingiz · batafsil", debt_order: "Buyurtma", debt_one: "Qarz", debt_sum: "summa", debt_paid_lbl: "to'langan",
+       debt_due: "muddat", debt_no_list: "Tafsilotlar hozircha mavjud emas — umumiy qarz yuqorida ko'rsatilgan", purchases: "xaridlar summasi", bonuses: "bonuslar", soon: "tez orada", invest: "Investitsiyalar",
        invest_soon: "Bo'lim tez orada paydo bo'ladi", soon_pill: "Tez orada ⏳", news: "📰 Yangiliklar",
        no_news: "Hozircha yangiliklar yo'q", no_phone: "raqam ko'rsatilmagan", client: "Mijoz",
        finish_reg: "📱 Ro'yxatdan o'tishni bot bilan chatda yakunlang — shunda xaridlaringiz va bonuslaringizni topamiz.",
        birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…",
        billz_not_found: "Raqamingiz hali do'kon bazasida yo'q — birinchi xariddan keyin bu yerda xaridlar va bonuslar paydo bo'ladi",
        billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi", refresh: "🔄 Yangilash", refreshing: "⏳ Yangilanmoqda…"},
-  ru: {debt: "Ваш долг", purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
+  ru: {debt: "Ваш долг · подробнее", debt_order: "Заказ", debt_one: "Долг", debt_sum: "сумма", debt_paid_lbl: "оплачено",
+       debt_due: "до", debt_no_list: "Подробности пока недоступны — общий долг указан выше", purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
        invest_soon: "Раздел скоро появится", soon_pill: "Скоро ⏳", news: "📰 Новости",
        no_news: "Новостей пока нет", no_phone: "номер не указан", client: "Клиент",
        finish_reg: "📱 Завершите регистрацию в чате с ботом — так мы найдём ваши покупки и бонусы.",
        birth: "🎂 День рождения", photo: "Загружаю фото…",
        billz_not_found: "Вашего номера пока нет в базе магазина — после первой покупки здесь появятся покупки и бонусы",
        billz_error: "Сейчас не удалось получить данные, обновится позже", refresh: "🔄 Обновить", refreshing: "⏳ Обновляю…"},
-  en: {debt: "Your debt", purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
+  en: {debt: "Your debt · details", debt_order: "Order", debt_one: "Debt", debt_sum: "amount", debt_paid_lbl: "paid",
+       debt_due: "due", debt_no_list: "Details are not available yet — the total debt is shown above", purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
        invest_soon: "This section is coming soon", soon_pill: "Soon ⏳", news: "📰 News",
        no_news: "No news yet", no_phone: "no phone number", client: "Client",
        finish_reg: "📱 Please finish registration in the bot chat so we can find your purchases and bonuses.",
@@ -2303,11 +2318,34 @@ function renderClient() {
   const debt = bz.enabled && bz.linked ? +(bz.debt || 0) : 0;
   $("cl-debt").classList.toggle("hidden", !(debt > 0));
   $("cl-debt-sum").textContent = debt > 0 ? money(debt) : "";
+  $("cl-debt").onclick = () => toggleDebts(money);
+  if (debtOpen && debt > 0) loadDebts(money);
   const note = !bz.enabled ? "" : bz.error && !bz.linked ? ct("billz_error") : !bz.linked ? ct("billz_not_found") : "";
   $("cl-billz-note").textContent = note; $("cl-billz-note").classList.toggle("hidden", !note);
   $("cl-refresh-row").classList.toggle("hidden", !bz.enabled);
   $("cl-refresh").textContent = ct("refresh") + (bz.synced ? " · " + bz.synced.slice(11, 16) : "");
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
+}
+let debtOpen = false;
+function toggleDebts(money) {
+  debtOpen = !debtOpen;
+  $("cl-debt-list").classList.toggle("hidden", !debtOpen);
+  $("cl-debt-arrow").style.transform = debtOpen ? "rotate(90deg)" : "";
+  if (debtOpen) loadDebts(money);
+}
+async function loadDebts(money) {
+  const box = $("cl-debt-list");
+  if (!box.innerHTML) box.innerHTML = `<div class="empty">⏳</div>`;
+  let r; try { r = await api("/api/client_debts"); } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const items = r.items || [];
+  const dt = d => d ? d.split("-").reverse().join(".") : "";
+  box.innerHTML = items.length ? items.map(d => `
+    <div class="inv" style="padding:10px 0">
+      <div class="inv-top"><b>${d.order ? ct("debt_order") + " №" + esc(String(d.order)) : ct("debt_one")}</b>
+        <b style="color:var(--red);white-space:nowrap">${money(d.left)}</b></div>
+      <div class="inv-sub hint"><span>${ct("debt_sum")}: ${money(d.amount)}${d.paid ? " · " + ct("debt_paid_lbl") + ": " + money(d.paid) : ""}</span>
+        ${d.due ? `<span style="${d.overdue ? "color:var(--red);font-weight:700" : ""}">${d.overdue ? "⏰ " : "📅 "}${ct("debt_due")} ${dt(d.due)}</span>` : ""}</div>
+    </div>`).join("") : `<div class="hint" style="font-size:13px">${ct("debt_no_list")}</div>`;
 }
 let bzTimer = null, bzItems = [], bzPoll = null;
 async function loadClients(more = false) {
