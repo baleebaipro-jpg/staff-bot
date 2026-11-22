@@ -283,6 +283,8 @@ def sync_client(uid: int, force: bool = False) -> dict:
         if purchases is not None:
             core.auto_tier(uid, purchases)
             _notify_purchase(uid, purchases, balance)
+        if bid and not cl.get("billz_id"):  # клиент только что связан с магазином — статус, выставленный заранее
+            core.apply_store_tier(uid, bid)
         if debt is not None:
             _notify_debt(uid, debt)
     except BillzError as e:

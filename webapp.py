@@ -395,7 +395,10 @@ def api_import_clients(uid, data):
 @app.post("/api/set_tier")
 @need_user(admin=True)
 def api_set_tier(uid, data):
-    ok, msg = core.set_client_tier(int(data.get("user_id", 0)), str(data.get("tier", "")))
+    if data.get("store_id"):  # клиент из базы магазина (ещё не в боте)
+        ok, msg = core.set_store_tier(str(data["store_id"]), str(data.get("tier", "")))
+    else:
+        ok, msg = core.set_client_tier(int(data.get("user_id", 0)), str(data.get("tier", "")))
     return jsonify(ok=ok, msg=msg)
 
 
@@ -2379,11 +2382,11 @@ async function loadClients(more = false) {
     if (c.last_tx) meta.push("🛍 " + c.last_tx.split("-").reverse().join("."));
     if (c.imported) meta.push("📥 из прежнего бота");
     else if (c.bot_id) meta.push((c.lang || "—").toUpperCase() + " · с " + c.since);
-    const right = c.bot_id
-      ? `<select data-tier="${c.bot_id}">${Object.entries(tiers).map(([k, t]) => `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("")}</select>`
-      : "";
+    const opts = Object.entries(tiers).map(([k, t]) => `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("");
+    const right = c.bot_id ? `<select data-tier="${c.bot_id}">${opts}</select>`
+      : `<select data-stier="${esc(c.store_id)}">${opts}</select>`;
     const bonus = c.balance ? `<span style="color:var(--green);font-weight:700">🎁 ${money(c.balance)}</span>` : "";
-    return `<div class="cl-row"><div style="font-size:20px">${c.bot_id ? (TIER_EMOJI[c.tier] || "🤖") : "👤"}</div>
+    return `<div class="cl-row"><div style="font-size:20px">${TIER_EMOJI[c.tier] || (c.bot_id ? "🤖" : "👤")}</div>
       <div style="flex:1;min-width:0"><b>${esc(c.name)}</b>${c.bot_id ? ` <span class="chip active" style="font-size:10.5px;padding:2px 7px">в боте</span>` : ""}
         <div class="hint" style="font-size:12px">${meta.join(" · ")}</div>${bonus ? `<div style="font-size:12.5px;margin-top:2px">${bonus}</div>` : ""}</div>
       ${right}</div>`;
@@ -2392,6 +2395,8 @@ async function loadClients(more = false) {
   if ($("bz-more")) $("bz-more").onclick = () => loadClients(true);
   document.querySelectorAll("#cl-list [data-tier]").forEach(s => s.onchange = () =>
     action("/api/set_tier", {user_id: +s.dataset.tier, tier: s.value}).then(() => loadClients()));
+  document.querySelectorAll("#cl-list [data-stier]").forEach(s => s.onchange = () =>
+    action("/api/set_tier", {store_id: s.dataset.stier, tier: s.value}).then(() => loadClients()));
 }
 let bzLoaded = 0;
 $("imp-file").onchange = async e => {

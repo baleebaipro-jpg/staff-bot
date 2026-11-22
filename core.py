@@ -309,6 +309,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS billz_clients(
                 id TEXT PRIMARY KEY, first_name TEXT, last_name TEXT, phone TEXT, phones TEXT, phone_tail TEXT,
                 birth_date TEXT, balance REAL, last_tx TEXT, synced TEXT);
+            CREATE TABLE IF NOT EXISTS store_tiers(billz_id TEXT PRIMARY KEY, tier TEXT, set_at TEXT);
             CREATE TABLE IF NOT EXISTS purchase_seen(order_id TEXT PRIMARY KEY, seen_at TEXT);
             CREATE TABLE IF NOT EXISTS channel_links(
                 link TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, created_at TEXT, expires TEXT, used_at TEXT);
@@ -1368,6 +1369,10 @@ def set_client_tier(uid: int, tier: str):
         if not r:
             return False, "Клиент не найден."
         c.execute("UPDATE clients SET tier=? WHERE user_id=?", (tier, uid))
+        bid = c.execute("SELECT billz_id FROM clients WHERE user_id=?", (uid,)).fetchone()["billz_id"]
+        if bid:  # статус привязан и к клиенту магазина — не потеряется, если клиент выйдет и войдёт снова
+            c.execute("INSERT OR REPLACE INTO store_tiers(billz_id, tier, set_at) VALUES(?, ?, ?)",
+                      (bid, tier, now().strftime(FMT)))
         if (r["tier"] or "bronza") != tier:
             notify(c, uid, i18n.t(r["lang"], "tier_changed", tier=tier_title(tier)))
     return True, f"{r['first_name'] or uid}: {tier_title(tier)}"
@@ -1376,6 +1381,34 @@ def set_client_tier(uid: int, tier: str):
 CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username",
                  "billz_id", "billz_balance", "billz_purchases", "billz_synced", "billz_debt", "purchases_notified", "debt_notified",
                  "billz_first", "billz_last"}
+
+
+def set_store_tier(billz_id: str, tier: str):
+    """Статус клиенту из базы магазина (даже если его ещё нет в боте). Когда он придёт в бот — статус применится."""
+    if tier not in CLIENT_TIERS:
+        return False, "Такого статуса нет."
+    with db() as c:
+        r = c.execute("SELECT * FROM billz_clients WHERE id=?", (billz_id,)).fetchone()
+        if not r:
+            return False, "Клиент не найден."
+        c.execute("INSERT OR REPLACE INTO store_tiers(billz_id, tier, set_at) VALUES(?, ?, ?)",
+                  (billz_id, tier, now().strftime(FMT)))
+        bot = c.execute("SELECT user_id FROM clients WHERE billz_id=?", (billz_id,)).fetchone()
+        if not bot and r["phone_tail"]:
+            bot = c.execute("SELECT user_id FROM clients WHERE phone LIKE ?", ("%" + r["phone_tail"],)).fetchone()
+    if bot:
+        return set_client_tier(bot["user_id"], tier)
+    name = " ".join(x for x in (r["first_name"], r["last_name"]) if x) or "Клиент"
+    return True, f"{name}: {tier_title(tier)}"
+
+
+def apply_store_tier(uid: int, billz_id: str) -> None:
+    """Клиент бота связан с клиентом магазина — применить статус, выставленный ему в панели заранее."""
+    with db() as c:
+        r = c.execute("SELECT tier FROM store_tiers WHERE billz_id=?", (billz_id,)).fetchone()
+        cl = c.execute("SELECT tier FROM clients WHERE user_id=?", (uid,)).fetchone()
+    if r and cl and (cl["tier"] or "bronza") != r["tier"]:
+        set_client_tier(uid, r["tier"])
 
 
 def auto_tier(uid: int, purchases: float):
@@ -1520,6 +1553,8 @@ def billz_base(q: str = "", offset: int = 0, limit: int = 50) -> dict:
         rest_all = c.execute(f"SELECT COUNT(*) FROM billz_clients WHERE {base_where}", base_args).fetchone()[0]
         rows = c.execute(f"SELECT * FROM billz_clients WHERE {where} ORDER BY COALESCE(last_tx,'') DESC, first_name "
                          f"LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+        stiers = {r["billz_id"]: r["tier"] for r in c.execute(
+            "SELECT billz_id, tier FROM store_tiers WHERE billz_id IN (%s)" % ",".join("?" * len(rows)), [r["id"] for r in rows])}
     items = []
     if offset == 0:
         for x in bot:
@@ -1538,7 +1573,8 @@ def billz_base(q: str = "", offset: int = 0, limit: int = 50) -> dict:
     for r in rows:
         items.append({"name": " ".join(v for v in (r["first_name"], r["last_name"]) if v) or "Без имени",
                       "phone": r["phone"] or "", "birth": _bday(r["birth_date"]), "balance": r["balance"] or 0,
-                      "last_tx": r["last_tx"] or "", "in_store": True})
+                      "last_tx": r["last_tx"] or "", "in_store": True, "store_id": r["id"],
+                      "tier": stiers.get(r["id"]) if stiers.get(r["id"]) in CLIENT_TIERS else "bronza"})
     return {"items": items, "more": max(0, found - offset - len(rows)), "loaded_store": offset + len(rows),
             "total": len(bot) + rest_all, "in_bot": len(bot), "status": flag_json("billz_import") or {}}
 
