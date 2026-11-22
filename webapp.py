@@ -1049,7 +1049,7 @@ PAGE = r"""<!doctype html>
   <!-- ПОСТИНГ -->
   <div id="view-posting" class="hidden">
     <div class="page-title">📣 Постинг</div>
-    <div class="page-sub">Посты от имени бота — клиентам, сотрудникам, в группы и каналы</div>
+    <div class="page-sub">Публикации в бот клиентов, бот сотрудников, группы и каналы</div>
     <div class="card">
       <div id="po-langs"></div>
       <div class="hint" style="font-size:12px;display:flex;justify-content:space-between;margin:-6px 0 8px">
@@ -1067,7 +1067,7 @@ PAGE = r"""<!doctype html>
           <input id="po-btn-url" maxlength="500" placeholder="Ссылка: https://t.me/xupingSilver" inputmode="url">
         </div>
       </details>
-      <div class="po-lbl">Кому</div>
+      <div class="po-lbl">Где опубликовать <span style="font-size:11.5px">(можно несколько)</span></div>
       <div class="quick" id="po-aud" style="margin:0"></div>
       <label class="chk"><input type="checkbox" id="po-news">📰 Показать и в «Новостях» в панели клиентов</label>
       <div class="po-lbl">Когда</div>
@@ -2036,7 +2036,7 @@ let poPhoto = null, poWhen = "now";
 const poAud = new Set();
 function renderPosting() {
   const a = data.posting.audience, h = data.posting.history;
-  const opts = [["clients", `👥 Клиенты (${a.clients})`], ["staff", `🧑‍💼 Сотрудники (${a.staff})`],
+  const opts = [["clients", `🤖 Бот клиентов XUPING Bonus · ${a.clients}`], ["staff", `🤖 Бот сотрудников · ${a.staff}`],
                 ...a.chats.map(c => ["chat:" + c.id, "📢 " + c.title])];
   $("po-aud").innerHTML = opts.map(([k, t]) => `<button data-aud="${k}" class="${poAud.has(k) ? "on" : ""}">${esc(t)}</button>`).join("");
   document.querySelectorAll("[data-aud]").forEach(b => b.onclick = () => {

@@ -200,7 +200,7 @@ def cancel(owner: int, pid: int):
 
 def history(limit: int = 20) -> list:
     out = []
-    names = {"clients": "клиенты", "staff": "сотрудники"}
+    names = {"clients": "бот клиентов", "staff": "бот сотрудников"}
     titles = {f"chat:{ch['id']}": ch["title"] for ch in chats()}
     with core.db() as c:
         for p in c.execute("SELECT * FROM posts WHERE status!='cancelled' ORDER BY id DESC LIMIT ?", (limit,)):
