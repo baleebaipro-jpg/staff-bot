@@ -274,6 +274,7 @@ def sync_client(uid: int, force: bool = False) -> dict:
                            billz_synced=core.now().strftime(core.FMT))
         if purchases is not None:
             core.auto_tier(uid, purchases)
+            _notify_purchase(uid, purchases, balance)
     except BillzError as e:
         logging.warning("BILLZ: не удалось обновить клиента %s: %s", uid, e)
         last_error.update(text=f"клиент {uid}: {e}", at=core.now().strftime("%d.%m %H:%M"))
@@ -363,14 +364,43 @@ def import_due() -> None:
 
 
 # ---------- «спасибо за покупку» ----------
+# Покупку замечаем по росту суммы покупок клиента (purchase_amount) относительно purchases_notified —
+# суммы, о которой мы уже сказали «спасибо». Поэтому обновление данных где угодно (кабинет, кнопки)
+# не «съедает» покупку: при любом обновлении рост будет замечен и сообщение уйдёт один раз.
+# Отчёт по продажам (каждые 2 минуты) лишь подсказывает, чью карточку обновить прямо сейчас,
+# а фоновый обход клиентов бота страхует, если отчёт недоступен.
 
 WATCH_SECONDS = 120
-_watch = {"started": False, "mode": "report"}
+WATCH_BATCH = 30
+_watch = {"started": False, "report": True}
 
 
 def _money(v, lang) -> str:
     import i18n
     return f"{int(round(v or 0)):,}".replace(",", " ") + " " + i18n.t(lang, "currency")
+
+
+def _notify_purchase(uid: int, purchases, balance) -> None:
+    """Вызывается из sync_client: сумма покупок выросла — «спасибо» и бонусы (один раз на рост)."""
+    if purchases is None or not getattr(config, "THANK_AFTER_PURCHASE", False):
+        return
+    cl = core.get_client(uid) or {}
+    before = cl.get("purchases_notified")
+    if before is None or purchases < before - 0.5:  # первый раз — запоминаем; возврат — просто обновляем
+        core.update_client(uid, purchases_notified=purchases)
+        return
+    if purchases <= before + 0.5:
+        return
+    import i18n
+    lang = i18n.lang_of(cl.get("lang"))
+    name = cl.get("first_name") or {"uz": "Hurmatli mijoz", "ru": "Дорогой клиент", "en": "Dear customer"}[lang]
+    text = i18n.t(lang, "thanks_purchase", name=name, sum=_money(purchases - before, lang), bonus=_money(balance, lang))
+    core.update_client(uid, purchases_notified=purchases)
+    with core.db() as c:
+        c.execute("INSERT INTO outbox(chat_id, text, via) VALUES(?, ?, 'client')", (uid, text))
+    st = core.flag_json("purchase_watch") or {}
+    core.flag_json("purchase_watch", dict(st, sent=int(st.get("sent") or 0) + 1, last_sent=core.now().strftime("%d.%m %H:%M")))
+    logging.info("Спасибо за покупку → %s (+%s)", uid, purchases - before)
 
 
 def _bot_client_for(billz_id: str):
@@ -389,18 +419,6 @@ def _bot_client_for(billz_id: str):
     return None
 
 
-def _thank(uid: int, amount: float) -> None:
-    """Обновить бонусы и поставить в очередь «спасибо за покупку» (через бот клиентов)."""
-    import i18n
-    st = sync_client(uid, force=True)
-    cl = core.get_client(uid) or {}
-    lang = i18n.lang_of(cl.get("lang"))
-    name = cl.get("first_name") or {"uz": "Hurmatli mijoz", "ru": "Дорогой клиент", "en": "Dear customer"}[lang]
-    text = i18n.t(lang, "thanks_purchase", name=name, sum=_money(amount, lang), bonus=_money(st.get("balance"), lang))
-    with core.db() as c:
-        c.execute("INSERT INTO outbox(chat_id, text, via) VALUES(?, ?, 'client')", (uid, text))
-
-
 def _sales_rows() -> list:
     """Продажи за вчера и сегодня из отчёта по транзакциям."""
     today = core.now().date()
@@ -417,12 +435,12 @@ def _sales_rows() -> list:
     return [r for r in rows if (r.get("order_type") or "SALE").upper() == "SALE"]
 
 
-def check_purchases(first: bool = False) -> int:
-    """Новые продажи → клиентам бота «спасибо». first=True — только запомнить уже прошедшие (без сообщений)."""
+def check_purchases() -> int:
+    """Новые продажи из отчёта → обновить карточки этих клиентов бота (рост суммы даст «спасибо»)."""
     rows = _sales_rows()
-    sent = 0
     with core.db() as c:
         seen = {r["order_id"] for r in c.execute("SELECT order_id FROM purchase_seen")}
+    found = 0
     for r in rows:
         oid = r.get("order_id") or r.get("row_id")
         if not oid or oid in seen:
@@ -430,33 +448,36 @@ def check_purchases(first: bool = False) -> int:
         seen.add(oid)
         with core.db() as c:
             c.execute("INSERT OR IGNORE INTO purchase_seen(order_id, seen_at) VALUES(?, ?)", (oid, core.now().strftime(core.FMT)))
-        if first or not r.get("customer_id"):
-            continue
-        uid = _bot_client_for(r["customer_id"])
+        uid = _bot_client_for(r["customer_id"]) if r.get("customer_id") else None
         if uid:
-            amount = float(r.get("total_price") or r.get("gross_sales") or 0)
-            _thank(uid, amount)
-            sent += 1
+            found += 1
+            sync_client(uid, force=True)
+            # карточка в магазине иногда обновляется с задержкой — проверим этого клиента ещё раз в следующем круге
+            core.update_client(uid, billz_synced="2000-01-01 00:00:00")
     with core.db() as c:
         c.execute("DELETE FROM purchase_seen WHERE seen_at<?", ((core.now() - timedelta(days=7)).strftime(core.FMT),))
-    return sent
+    return found
 
 
-def check_purchases_by_cards(batch: int = 40) -> int:
-    """Запасной путь (нет доступа к отчёту): сравниваем сумму покупок в карточках клиентов бота."""
-    sent = 0
+def check_cards(batch: int = WATCH_BATCH) -> None:
+    """Обход клиентов бота по кругу (давно не обновлённые — первыми)."""
     with core.db() as c:
-        rows = [dict(r) for r in c.execute(
-            "SELECT user_id, billz_purchases FROM clients WHERE billz_id IS NOT NULL ORDER BY COALESCE(billz_synced,'') LIMIT ?",
-            (batch,))]
-    for r in rows:
-        before = r["billz_purchases"]
-        st = sync_client(r["user_id"], force=True)
-        after = st.get("purchases")
-        if before is not None and after is not None and after > before + 0.5:
-            _thank(r["user_id"], after - before)
-            sent += 1
-    return sent
+        ids = [r["user_id"] for r in c.execute(
+            "SELECT user_id FROM clients WHERE billz_id IS NOT NULL AND phone IS NOT NULL "
+            "ORDER BY COALESCE(billz_synced,'') LIMIT ?", (batch,))]
+    for uid in ids:
+        sync_client(uid, force=True)
+
+
+def watch_status() -> str:
+    st = core.flag_json("purchase_watch") or {}
+    if not getattr(config, "THANK_AFTER_PURCHASE", False):
+        return "🙏 «Спасибо за покупку»: выключено"
+    return ("🙏 «Спасибо за покупку»: " + ("работает" if _watch["started"] else "не запущено") +
+            f"\n   отчёт продаж: {'доступен' if _watch['report'] else 'нет доступа — проверяю карточки клиентов'}" +
+            (f"\n   последняя проверка: {st['last_run']}" if st.get("last_run") else "") +
+            (f"\n   отправлено: {st.get('sent', 0)}" + (f", последнее {st['last_sent']}" if st.get("last_sent") else "")) +
+            (f"\n   ⚠️ {st['error']}" if st.get("error") else ""))
 
 
 def start_purchase_watch() -> None:
@@ -466,27 +487,24 @@ def start_purchase_watch() -> None:
     _watch["started"] = True
 
     def run():
-        first = not (core.flag_json("purchase_watch") or {}).get("started")
         while True:
+            err = None
             try:
-                if _watch["mode"] == "report":
+                if _watch["report"]:
                     try:
-                        n = check_purchases(first)
-                        if first:
-                            core.flag_json("purchase_watch", {"started": core.now().strftime(core.FMT)})
-                            first = False
-                        if n:
-                            logging.info("Спасибо за покупку: отправлено %s", n)
+                        check_purchases()
                     except BillzError as e:
-                        if e.code in (403, 404):
-                            logging.warning("BILLZ: нет доступа к отчёту продаж (%s) — проверяю карточки клиентов", e)
-                            _watch["mode"] = "cards"
+                        if e.code in (400, 403, 404):
+                            logging.warning("BILLZ: отчёт продаж недоступен (%s) — только обход карточек", e)
+                            _watch["report"] = False
                         else:
-                            raise
-                if _watch["mode"] == "cards":
-                    check_purchases_by_cards()
-            except Exception:  # noqa: BLE001 — фоновая проверка не должна падать навсегда
+                            err = str(e)[:150]
+                check_cards()
+            except Exception as e:  # noqa: BLE001 — фоновая проверка не должна падать навсегда
                 logging.exception("Проверка новых покупок")
+                err = str(e)[:150]
+            st = core.flag_json("purchase_watch") or {}
+            core.flag_json("purchase_watch", dict(st, last_run=core.now().strftime("%d.%m %H:%M"), error=err))
             time.sleep(WATCH_SECONDS)
     threading.Thread(target=run, daemon=True).start()
 

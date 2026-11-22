@@ -332,7 +332,7 @@ def init_db():
         for col, ddl in (("tier", "TEXT DEFAULT 'bronza'"), ("lang", "TEXT"), ("last_name", "TEXT"),
                          ("birth_date", "TEXT"), ("step", "TEXT"), ("billz_id", "TEXT"), ("billz_balance", "REAL"),
                          ("billz_purchases", "REAL"), ("billz_synced", "TEXT"), ("source", "TEXT"),
-                         ("billz_debt", "REAL")):
+                         ("billz_debt", "REAL"), ("purchases_notified", "REAL")):
             if col not in ccols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN {col} {ddl}")
         ocols = {r[1] for r in c.execute("PRAGMA table_info(outbox)")}
@@ -1369,7 +1369,7 @@ def set_client_tier(uid: int, tier: str):
 
 
 CLIENT_FIELDS = {"phone", "first_name", "last_name", "birth_date", "lang", "step", "username",
-                 "billz_id", "billz_balance", "billz_purchases", "billz_synced", "billz_debt"}
+                 "billz_id", "billz_balance", "billz_purchases", "billz_synced", "billz_debt", "purchases_notified"}
 
 
 def auto_tier(uid: int, purchases: float):
