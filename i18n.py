@@ -104,6 +104,11 @@ T = {
     "open_cabinet": {"uz": "🏠 Kabinetingizni oching 👇", "ru": "🏠 Откройте ваш кабинет 👇", "en": "🏠 Open your account 👇"},
     "open_cabinet_btn": {"uz": "🏠 Kabinetni ochish", "ru": "🏠 Открыть кабинет", "en": "🏠 Open account"},
     "btn_lang": {"uz": "🌐 Til", "ru": "🌐 Язык", "en": "🌐 Language"},
+    "thanks_purchase": {
+        "uz": "💜 {name}, xaridingiz uchun katta rahmat!\nBizni tanlaganingizni juda qadrlaymiz ✨ Sizni yana kutib qolamiz 🤗\n\n🛍 Xarid summasi: {sum}\n🎁 Bonuslaringiz: {bonus}",
+        "ru": "💜 {name}, спасибо за покупку!\nМы очень ценим, что вы выбираете нас ✨ Ждём вас снова 🤗\n\n🛍 Сумма покупки: {sum}\n🎁 Ваши бонусы: {bonus}",
+        "en": "💜 {name}, thank you for your purchase!\nWe truly appreciate you choosing us ✨ We can't wait to see you again 🤗\n\n🛍 Purchase: {sum}\n🎁 Your bonuses: {bonus}",
+    },
     "btn_debt": {"uz": "💳 Qarz", "ru": "💳 Долг", "en": "💳 Debt"},
     "debt_total": {"uz": "💳 Qarzingiz: {sum}", "ru": "💳 Ваш долг: {sum}", "en": "💳 Your debt: {sum}"},
     "debt_item": {"uz": "• Buyurtma {order}: qoldiq {left}", "ru": "• Заказ {order}: осталось {left}",

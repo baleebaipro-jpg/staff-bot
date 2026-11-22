@@ -307,6 +307,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS billz_clients(
                 id TEXT PRIMARY KEY, first_name TEXT, last_name TEXT, phone TEXT, phones TEXT, phone_tail TEXT,
                 birth_date TEXT, balance REAL, last_tx TEXT, synced TEXT);
+            CREATE TABLE IF NOT EXISTS purchase_seen(order_id TEXT PRIMARY KEY, seen_at TEXT);
             CREATE TABLE IF NOT EXISTS channel_links(
                 link TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, created_at TEXT, expires TEXT, used_at TEXT);
             CREATE TABLE IF NOT EXISTS projects(

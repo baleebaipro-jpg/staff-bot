@@ -81,6 +81,9 @@ CLIENT_CHANNEL_ID = -1001214388881  # Xuping (Bronza) OPTOM
 CLIENT_CHANNEL_MIN_PURCHASES = 1  # с какой суммы покупок (сум) открывается канал
 CLIENT_CHANNEL_LINK_HOURS = 24
 
+# После каждой покупки в магазине клиенту из бота приходит «спасибо» и новый баланс бонусов.
+THANK_AFTER_PURCHASE = True
+
 POST_CHATS = [
     {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None, "lang": "uz"},
     {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None, "lang": "uz"},
