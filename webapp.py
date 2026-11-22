@@ -276,7 +276,7 @@ def api_my_task(uid, data):
     if data.get("action") == "delete":
         ok, msg = core.delete_self_task(uid, int(data.get("id") or 0))
     else:
-        ok, msg = core.add_self_task(uid, data.get("title"), "tomorrow" if data.get("day") == "tomorrow" else "today")
+        ok, msg = core.add_self_task(uid, data.get("title"), str(data.get("day") or "today"))
     return jsonify(ok=ok, msg=msg)
 
 
@@ -1029,7 +1029,8 @@ PAGE = r"""<!doctype html>
       <div class="add-row" style="margin-bottom:6px"><input id="mt-title" maxlength="300" data-sxp="mt_ph">
         <button class="btn btn-main" id="mt-add">＋</button></div>
       <div class="quick" id="mt-day" style="margin:0 0 6px"><button data-day="today" class="on" data-sx="mt_today"></button>
-        <button data-day="tomorrow" data-sx="mt_tomorrow"></button></div>
+        <button data-day="tomorrow" data-sx="mt_tomorrow"></button><button data-day="pick" data-sx="mt_pick"></button></div>
+      <input type="date" id="mt-date" class="hidden" style="margin-bottom:6px">
       <div id="tasks"></div>
     </div>
 
@@ -1476,7 +1477,7 @@ tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 /* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
 const SX = {
   ru: {h: "ч", per_month: "за месяц", in_row: "подряд", cur_rank: "текущее звание", invest: "Инвестиции",
-       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_mine: "моя", last_visits: "Последние посещения",
+       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_pick: "📅 Дата…", mt_mine: "моя", last_visits: "Последние посещения",
        all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
        close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
@@ -1492,7 +1493,7 @@ const SX = {
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
-       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
+       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_pick: "📅 Sana…", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
        close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
@@ -2511,10 +2512,14 @@ let mtDay = "today";
 document.querySelectorAll("#mt-day [data-day]").forEach(b => b.onclick = () => {
   mtDay = b.dataset.day;
   document.querySelectorAll("#mt-day [data-day]").forEach(x => x.classList.toggle("on", x === b));
+  $("mt-date").classList.toggle("hidden", mtDay !== "pick");
+  if (mtDay === "pick") { const t = new Date(); $("mt-date").min = t.toISOString().slice(0, 10); if ($("mt-date").showPicker) try { $("mt-date").showPicker(); } catch (e) {} }
 });
 $("mt-add").onclick = () => {
   const title = $("mt-title").value.trim(); if (!title) return toast(sx("mt_ph"));
-  action("/api/my_task", {action: "add", title, day: mtDay}).then(() => { $("mt-title").value = ""; });
+  const day = mtDay === "pick" ? $("mt-date").value : mtDay;
+  if (!day) return toast(sx("mt_pick"));
+  action("/api/my_task", {action: "add", title, day}).then(() => { $("mt-title").value = ""; });
 };
 $("mt-title").onkeydown = e => { if (e.key === "Enter") $("mt-add").onclick(); };
 $("go-inv").onclick = () => data.invest_enabled ? show("invest") : toast(data.profile ? sx("invest_soon") : SOON);

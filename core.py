@@ -976,11 +976,10 @@ def spawn_recurring() -> int:
 
 
 def _unfinished(c, uid) -> list:
-    """Незакрытые задачи от руководителя на сегодня (перенесённые на будущее и свои задачи сотрудника не считаются:
-    свои не мешают отметить уход)."""
+    """Незакрытые задачи на сегодня — от руководителя и свои (перенесённые на будущее не считаются).
+    Пока они не закрыты, уход отметить нельзя."""
     return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
-                     "AND COALESCE(self, 0)=0 AND (due_date IS NULL OR due_date <= ?) ORDER BY id",
-                     (uid, now().strftime("%Y-%m-%d"))).fetchall()
+                     "AND (due_date IS NULL OR due_date <= ?) ORDER BY id", (uid, now().strftime("%Y-%m-%d"))).fetchall()
 
 
 def _all_open(c, uid) -> list:
@@ -1012,21 +1011,34 @@ SELF_TASKS_MAX = 20
 
 
 def add_self_task(uid: int, title: str, day: str = "today"):
-    """Сотрудник сам ставит себе задачу на сегодня или завтра (без проверки руководителем)."""
+    """Сотрудник сам ставит себе задачу на любой день: day = today / tomorrow / YYYY-MM-DD (без проверки руководителем).
+    Пока задача на сегодня не выполнена — уход не отметить."""
     L = staff_lang(uid)
     title = str(title or "").strip()[:300]
     if not employee(uid):
         return False, st.s(L, "not_staff")
     if not title:
         return False, st.s(L, "self_task_empty")
-    due = (now() + timedelta(days=1 if day == "tomorrow" else 0)).strftime("%Y-%m-%d")
+    if day in ("today", "tomorrow", "", None):
+        due = (now() + timedelta(days=1 if day == "tomorrow" else 0)).strftime("%Y-%m-%d")
+    else:
+        try:
+            d = datetime.strptime(str(day)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return False, st.s(L, "self_task_bad_date")
+        if d < now().date() or d > now().date() + timedelta(days=365):
+            return False, st.s(L, "self_task_bad_date")
+        due = d.strftime("%Y-%m-%d")
     with db() as c:
         n = c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND self=1 AND status!='done'", (uid,)).fetchone()[0]
         if n >= SELF_TASKS_MAX:
             return False, st.s(L, "self_task_limit", n=SELF_TASKS_MAX)
         c.execute("INSERT INTO tasks(user_id, title, created_at, due_date, self) VALUES(?, ?, ?, ?, 1)",
                   (uid, title, now().strftime(FMT), due))
-    return True, st.s(L, "self_task_added_tomorrow" if day == "tomorrow" else "self_task_added")
+    if due == now().strftime("%Y-%m-%d"):
+        return True, st.s(L, "self_task_added")
+    dd = datetime.strptime(due, "%Y-%m-%d")
+    return True, st.s(L, "self_task_added_on", d=f"{st.WEEKDAYS[L][dd.weekday()]} {dd:%d.%m}")
 
 
 def delete_self_task(uid: int, task_id: int):
