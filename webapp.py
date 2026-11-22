@@ -1107,8 +1107,6 @@ PAGE = r"""<!doctype html>
     <div class="page-sub">Список клиентов, статусы и новости для клиентов</div>
     <div class="card">
       <div class="head"><h3>💎 Клиенты</h3><span class="hint" style="font-size:13px" id="cl-total"></span></div>
-      <div class="seg" id="cl-src" style="margin-bottom:10px"><button data-src="bot" class="on">🤖 Из бота</button>
-        <button data-src="billz">🗂 База BILLZ</button></div>
       <div class="hint hidden" style="font-size:12.5px;margin:-2px 0 10px;display:flex;gap:8px;align-items:center" id="bz-status"></div>
       <input id="cl-search" placeholder="Поиск: имя или номер">
       <div id="cl-list"></div>
@@ -2284,61 +2282,50 @@ function renderClient() {
   $("cl-refresh").textContent = ct("refresh") + (bz.synced ? " · " + bz.synced.slice(11, 16) : "");
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
 }
-let clSrc = "bot", bzTimer = null, bzItems = [], bzPoll = null;
-document.querySelectorAll("#cl-src [data-src]").forEach(b => b.onclick = () => {
-  clSrc = b.dataset.src;
-  document.querySelectorAll("#cl-src [data-src]").forEach(x => x.classList.toggle("on", x === b));
-  $("cl-search").value = "";
-  renderClientsAdmin(true);
-});
-async function loadBillzBase(more = false) {
+let bzTimer = null, bzItems = [], bzPoll = null;
+async function loadClients(more = false) {
   let r;
-  try { r = await api("/api/billz_base", {q: $("cl-search").value, offset: more ? bzItems.length : 0}); }
+  try { r = await api("/api/billz_base", {q: $("cl-search").value, offset: more ? bzLoaded : 0}); }
   catch (e) { $("cl-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-  if (clSrc !== "billz") return;
   bzItems = more ? bzItems.concat(r.items) : r.items;
+  bzLoaded = r.loaded_store;
   const st = r.status || {};
-  $("cl-total").textContent = `в BILLZ: ${r.total}`;
-  const line = !r.enabled ? "BILLZ не подключён" : st.running
-    ? `⏳ Загружается из BILLZ… ${st.loaded || 0}${st.total ? " из " + st.total : ""}`
-    : st.error ? `⚠️ Не удалось загрузить: ${esc(st.error)}` : st.at ? `Обновлено ${st.at} · каждый день в 04:00` : "Ещё не загружалась";
-  $("bz-status").innerHTML = `<span style="flex:1">${line}</span>` +
-    (r.enabled && !st.running ? `<button class="btn btn-soft btn-sm" id="bz-refresh">🔄 Обновить</button>` : "");
-  $("bz-status").classList.remove("hidden");
-  if ($("bz-refresh")) $("bz-refresh").onclick = async () => { await action("/api/billz_base", {action: "refresh"}); loadBillzBase(); };
+  $("cl-total").textContent = `всего: ${r.total}`;
+  const line = !r.enabled ? "" : st.running
+    ? `⏳ Загружается база магазина… ${st.loaded || 0}${st.total ? " из " + st.total : ""}`
+    : st.error ? `⚠️ База магазина не загрузилась: ${esc(st.error)}`
+    : st.at ? `🤖 в боте: ${r.in_bot} · база магазина: ${st.at}` : "База магазина ещё не загружалась";
+  $("bz-status").innerHTML = line ? `<span style="flex:1">${line}</span>` +
+    (!st.running ? `<button class="btn btn-soft btn-sm" id="bz-refresh">🔄</button>` : "") : "";
+  $("bz-status").classList.toggle("hidden", !line);
+  if ($("bz-refresh")) $("bz-refresh").onclick = async () => { await action("/api/billz_base", {action: "refresh"}); loadClients(); };
   clearTimeout(bzPoll);
-  if (st.running) bzPoll = setTimeout(() => clSrc === "billz" && view === "clients" && loadBillzBase(), 3000);
+  if (st.running) bzPoll = setTimeout(() => view === "clients" && loadClients(), 3000);
   const money = v => Math.round(v || 0).toLocaleString("ru-RU");
-  $("cl-list").innerHTML = bzItems.length ? bzItems.map(c => `
-    <div class="cl-row"><div style="font-size:20px">${c.in_bot ? "🤖" : "👤"}</div>
-      <div style="flex:1;min-width:0"><b>${esc(c.name)}</b>${c.in_bot ? ` <span class="chip active" style="font-size:10.5px;padding:2px 7px">в боте</span>` : ""}
-        <div class="hint" style="font-size:12px">${esc(c.phone || "номер не указан")}${c.birth ? " · 🎂 " + c.birth : ""}
-          ${c.last_tx ? " · 🛍 " + c.last_tx.split("-").reverse().join(".") : ""}</div></div>
-      <div style="text-align:right;white-space:nowrap"><b style="color:var(--green)">${money(c.balance)}</b>
-        <div class="hint" style="font-size:11px">бонусы</div></div></div>`).join("")
-    + (bzItems.length < r.found ? `<button class="btn btn-soft" style="width:100%;margin-top:10px" id="bz-more">Показать ещё (${r.found - bzItems.length})</button>` : "")
-    : `<div class="empty">${$("cl-search").value.trim() ? "Никого не нашли" : st.running ? "Загружается…" : "База пока пустая — нажмите «Обновить»"}</div>`;
-  if ($("bz-more")) $("bz-more").onclick = () => loadBillzBase(true);
+  const tiers = data.tiers || {};
+  $("cl-list").innerHTML = bzItems.length ? bzItems.map(c => {
+    const meta = [esc(c.phone || "номер не указан")];
+    if (c.birth) meta.push("🎂 " + c.birth);
+    if (c.last_tx) meta.push("🛍 " + c.last_tx.split("-").reverse().join("."));
+    if (c.bot_id) meta.push((c.lang || "—").toUpperCase() + " · с " + c.since);
+    const right = c.bot_id
+      ? `<select data-tier="${c.bot_id}">${Object.entries(tiers).map(([k, t]) => `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("")}</select>`
+      : "";
+    const bonus = c.balance ? `<span style="color:var(--green);font-weight:700">🎁 ${money(c.balance)}</span>` : "";
+    return `<div class="cl-row"><div style="font-size:20px">${c.bot_id ? (TIER_EMOJI[c.tier] || "🤖") : "👤"}</div>
+      <div style="flex:1;min-width:0"><b>${esc(c.name)}</b>${c.bot_id ? ` <span class="chip active" style="font-size:10.5px;padding:2px 7px">в боте</span>` : ""}
+        <div class="hint" style="font-size:12px">${meta.join(" · ")}</div>${bonus ? `<div style="font-size:12.5px;margin-top:2px">${bonus}</div>` : ""}</div>
+      ${right}</div>`;
+  }).join("") + (r.more ? `<button class="btn btn-soft" style="width:100%;margin-top:10px" id="bz-more">Показать ещё (${r.more})</button>` : "")
+    : `<div class="empty">${$("cl-search").value.trim() ? "Никого не нашли" : "Клиентов пока нет"}</div>`;
+  if ($("bz-more")) $("bz-more").onclick = () => loadClients(true);
+  document.querySelectorAll("#cl-list [data-tier]").forEach(s => s.onchange = () =>
+    action("/api/set_tier", {user_id: +s.dataset.tier, tier: s.value}).then(() => loadClients()));
 }
+let bzLoaded = 0;
 function renderClientsAdmin(user = false) {
-  $("bz-status").classList.toggle("hidden", clSrc !== "billz");
-  if (clSrc === "billz") {
-    if (!user && bzItems.length) return;  // автообновление кабинета не сбрасывает открытый список
-    clearTimeout(bzTimer); bzTimer = setTimeout(() => loadBillzBase(), 250); return; }
-  const q = ($("cl-search").value || "").trim().toLowerCase();
-  const list = (data.client_list || []).filter(c =>
-    !q || (c.name + " " + (c.phone || "") + " " + c.username).toLowerCase().includes(q));
-  $("cl-total").textContent = `всего: ${data.client_list.length}`;
-  $("cl-list").innerHTML = list.length ? list.slice(0, 100).map(c => `
-    <div class="cl-row"><div style="font-size:20px">${TIER_EMOJI[c.tier] || ""}</div>
-      <div style="flex:1;min-width:0"><b>${esc(c.name || "Без имени")}</b>
-        <div class="hint" style="font-size:12px">${esc(c.phone || "номер не указан")}${c.birth ? " · 🎂 " + c.birth : ""}
-          · ${(c.lang || "—").toUpperCase()} · с ${c.since}</div></div>
-      <select data-tier="${c.id}">${Object.entries(data.tiers).map(([k, t]) =>
-        `<option value="${k}" ${k === c.tier ? "selected" : ""}>${t}</option>`).join("")}</select></div>`).join("")
-    : `<div class="empty">${q ? "Никого не нашли" : "Клиентов пока нет"}</div>`;
-  document.querySelectorAll("[data-tier]").forEach(s => s.onchange = () =>
-    action("/api/set_tier", {user_id: +s.dataset.tier, tier: s.value}));
+  if (!user && bzItems.length) return;  // автообновление кабинета не сбрасывает открытый список
+  clearTimeout(bzTimer); bzTimer = setTimeout(() => loadClients(), user ? 250 : 0);
 }
 $("cl-search").oninput = () => renderClientsAdmin(true);
 
