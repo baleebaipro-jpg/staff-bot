@@ -130,6 +130,9 @@ def set_staff(owner: int, uid: int, role: str, point_id, kpi_pct, senior_id, sen
         with core.db() as c:
             c.execute("DELETE FROM shop_staff WHERE user_id=?", (uid,))
             c.execute("UPDATE shop_staff SET senior_id=NULL WHERE senior_id=?", (uid,))
+            import staff_text as st
+            c.execute("INSERT INTO outbox(chat_id, text, markup, via) VALUES(?, ?, 'staff_kb', 'staff')",
+                      (uid, st.s(core.staff_lang(uid), "shop_closed")))
         return True, f"{core.name(uid)}: доступ к ERP закрыт"
     if role not in ROLES or role == "owner":
         return False, "Неверная роль."
@@ -153,8 +156,14 @@ def set_staff(owner: int, uid: int, role: str, point_id, kpi_pct, senior_id, sen
         s = (staff_row(s) or {}).get("senior_id")
     perms = sorted(p for p in (perms or []) if p in PERMS)
     with core.db() as c:
+        had = c.execute("SELECT role FROM shop_staff WHERE user_id=?", (uid,)).fetchone()
         c.execute("INSERT OR REPLACE INTO shop_staff(user_id, role, point_id, kpi_pct, senior_id, senior_pct, perms) "
                   "VALUES(?, ?, ?, ?, ?, ?, ?)", (uid, role, point_id, kpi_pct, senior_id, senior_pct, json.dumps(perms)))
+        if not had or had["role"] != role:  # сотруднику — сообщение и новая клавиатура с кнопкой «🧾 Продажи»
+            import staff_text as st
+            L = core.staff_lang(uid)
+            c.execute("INSERT INTO outbox(chat_id, text, markup, via) VALUES(?, ?, 'staff_kb', 'staff')",
+                      (uid, st.s(L, "shop_access", role=ROLES[role])))
     return True, f"{core.name(uid)}: {ROLES[role]}"
 
 

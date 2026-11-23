@@ -2514,6 +2514,7 @@ function earnSheet(uid, keep) {
       .then(() => earnSheet(uid, true))));
 }
 
+let openedShop = false;
 async function load(fresh = false) {
   try {
     data = await api("/api/me", fresh ? {fresh: true} : {});
@@ -2533,6 +2534,10 @@ async function load(fresh = false) {
                          if (data.projects) renderProjects(); if (data.posting) renderPosting();
                          if (data.earnings_team) renderEarnAdmin(); renderDash(); }
     if (!data.is_employee && view === "me") view = "team";
+    if (!openedShop && new URLSearchParams(location.search).get("open") === "shop" && data.shop_access) {
+      openedShop = true; view = "shop"; shopTab = data.is_admin ? "home" : "sell"; show(view); loadShop(); return;
+    }
+    openedShop = true;
     show(view);
   } catch (e) {
     $("loading").classList.add("hidden");

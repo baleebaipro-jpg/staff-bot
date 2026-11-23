@@ -66,6 +66,8 @@ def keyboard(uid: int) -> ReplyKeyboardMarkup:
         # поэтому по нажатию бот присылает кнопку «Открыть кабинет» под сообщением (она данные передаёт)
         rows.append([st.s(L, "btn_cabinet"),
                      st.s(L, "btn_lang")])
+    if shop.has_access(uid):  # ERP: кнопка кассы — тем, кому выдана роль (и руководителю)
+        rows.append([st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "btn_shop")])
     if core.is_admin(uid):
         rows.append([BTN_TEAM] + ([] if core.employee(uid) else [BTN_INVEST]))
         if not core.employee(uid):
@@ -1008,6 +1010,20 @@ async def open_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await reply(update, st.s(L, "open_cabinet"), reply_markup=cabinet_button(st.s(L, "open_cabinet_btn")))
 
 
+def shop_url() -> str:
+    return config.WEBAPP_URL + ("&" if "?" in config.WEBAPP_URL else "?") + "open=shop"
+
+
+async def open_shop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Кнопка «🧾 Продажи»: мини-приложение сразу на кассе."""
+    uid = update.effective_user.id
+    if not known(uid) or not shop.has_access(uid):
+        return await open_cabinet(update, context)
+    L = core.staff_lang(uid) if core.employee(uid) else "ru"
+    await reply(update, st.s(L, "open_shop"), reply_markup=InlineKeyboardMarkup([[
+        InlineKeyboardButton(st.s(L, "open_shop_btn"), web_app=WebAppInfo(url=shop_url()))]]))
+
+
 async def set_menu_button(app: Application, title: str = "Kabinet") -> None:
     """Кнопка меню слева от поля ввода — сразу открывает кабинет (с данными пользователя)."""
     try:
@@ -1113,6 +1129,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text(list(dict.fromkeys([BTN_INVEST] + st.variants("btn_invest")))), invest))
     app.add_handler(MessageHandler(filters.Text(st.variants("btn_lang")), staff_lang_cmd))
     app.add_handler(MessageHandler(filters.Text(list(dict.fromkeys([BTN_CABINET] + st.variants("btn_cabinet")))), open_cabinet))
+    app.add_handler(MessageHandler(filters.Text(st.variants("btn_shop")), open_shop))
     app.add_handler(CommandHandler("news", news_cmd))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))
