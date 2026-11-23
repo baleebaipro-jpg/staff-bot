@@ -221,6 +221,7 @@ RELAY_COPY_THREAD_ID = 35740
 # (фото с ценами туда НЕ отправляются)
 RELAY_COPY_ONLY_CHATS = [
     {"title": "Xuping Uzbekistan", "chat_id": -1002645398648, "thread_id": None},
+    {"title": "Канал 2154024519", "chat_id": -1002154024519, "thread_id": None},  # t.me/c/2154024519
 ]
 
 # Похвала: после каждого альбома с ценами бот отвечает отправителю.
