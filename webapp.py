@@ -224,10 +224,14 @@ def api_me(uid, data):
                              "max": invest.MAX_AMOUNT, "currency": invest.CURRENCY,
                              "annual_min": invest.ANNUAL_MIN, "annual_max": invest.ANNUAL_MAX,
                              "history": invest.history_public()}
+    if res["is_admin"] or (staff_view and is_poster(uid)):
+        aud = posts.audience_info()
+        if not res["is_admin"]:
+            aud["bonus_on"] = False  # бонусы в постах начисляет только руководитель
+        res["posting"] = {"audience": aud, "history": posts.history()}
     if res["is_admin"]:
         res["projects"] = projects.overview(uid)
         res["earnings_team"] = core.earnings_team()
-        res["posting"] = {"audience": posts.audience_info(), "history": posts.history()}
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
@@ -551,9 +555,17 @@ def api_delete_task(uid, data):
 
 # ---------- постинг ----------
 
+def is_poster(uid) -> bool:
+    return core.is_admin(uid) or uid in getattr(config, "POSTERS", [])
+
+
 @app.post("/api/post")
-@need_user(admin=True)
+@need_user(staff=True)
 def api_post(uid, data):
+    if not is_poster(uid):
+        return jsonify(ok=False, msg="Постинг доступен только руководителю."), 403
+    if not core.is_admin(uid):
+        data["bonus"] = 0  # бонусы в постах начисляет только руководитель
     act = data.get("action")
     if act == "cancel":
         ok, msg = posts.cancel(uid, int(data.get("id") or 0))
@@ -1192,6 +1204,11 @@ PAGE = r"""<!doctype html>
         <div><b id="done-total" style="font-size:22px">0</b><div class="hint" style="font-size:11px" data-sx="done_total"></div></div>
       </div>
     </button>
+    <button class="card folder hidden" id="go-posting-me">
+      <div class="f-ic">📣</div>
+      <div style="min-width:0"><b data-sx="posting_title"></b><div class="f-sub" data-sx="posting_sub"></div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder hidden" id="go-shop-me">
       <div class="f-ic">🧾</div>
       <div style="min-width:0"><b data-sx="shop_title"></b><div class="f-sub" data-sx="shop_sub"></div></div>
@@ -1697,7 +1714,7 @@ tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 /* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
 const SX = {
   ru: {h: "ч", per_month: "за месяц", in_row: "подряд", cur_rank: "текущее звание", invest: "Инвестиции",
-       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", shop_title: "Продажи", shop_sub: "Новая продажа и мои продажи", done_title: "Выполненные задачи", done_sub: "Так держать! 💪",
+       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", posting_title: "Постинг", posting_sub: "Посты в бот, группы и каналы", shop_title: "Продажи", shop_sub: "Новая продажа и мои продажи", done_title: "Выполненные задачи", done_sub: "Так держать! 💪",
        done_month: "в этом месяце", done_total: "за всё время", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_pick: "📅 Дата…", mt_mine: "моя", last_visits: "Последние посещения",
        all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
@@ -1714,7 +1731,7 @@ const SX = {
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
-       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", shop_title: "Savdo", shop_sub: "Yangi savdo va savdolarim", done_title: "Bajarilgan vazifalar", done_sub: "Shunday davom eting! 💪",
+       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", posting_title: "Posting", posting_sub: "Bot, guruh va kanallarga postlar", shop_title: "Savdo", shop_sub: "Yangi savdo va savdolarim", done_title: "Bajarilgan vazifalar", done_sub: "Shunday davom eting! 💪",
        done_month: "shu oyda", done_total: "jami", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_pick: "📅 Sana…", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
@@ -2548,8 +2565,11 @@ async function load(fresh = false) {
     if (!data.invest_enabled) investSoon();
     SUBPAGES.invest = data.is_employee ? "me" : "team";
     if (data.is_admin) { renderTeam(); renderNewsAdmin(); renderClientsAdmin(); if (data.invest_admin) renderInvestAdmin();
-                         if (data.projects) renderProjects(); if (data.posting) renderPosting();
+                         if (data.projects) renderProjects();
                          if (data.earnings_team) renderEarnAdmin(); renderDash(); }
+    if (data.posting) renderPosting();
+    $("go-posting-me").classList.toggle("hidden", !(data.posting && !data.is_admin));
+    SUBPAGES.posting = data.is_admin ? "team" : "me";
     if (!data.is_employee && view === "me") view = "team";
     if (!openedShop && new URLSearchParams(location.search).get("open") === "shop" && data.shop_access) {
       openedShop = true; view = "shop"; shopTab = data.is_admin ? "home" : "sell"; show(view); loadShop(); return;
@@ -3199,6 +3219,7 @@ document.querySelectorAll(".page-title").forEach(t => {
 $("go-staff").onclick = () => show("staff");
 $("go-projects").onclick = () => show("projects");
 $("go-posting").onclick = () => show("posting");
+$("go-posting-me").onclick = () => show("posting");
 $("go-earn").onclick = () => show("earn");
 $("go-done").onclick = () => $("my-tasks-card").scrollIntoView({behavior: "smooth", block: "start"});
 $("go-earn-admin").onclick = () => show("earn-admin");
