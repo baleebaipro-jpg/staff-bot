@@ -34,6 +34,7 @@ import config
 import core
 import erp
 import shop
+import appauth
 import i18n
 import invest as invest_mod
 import posts
@@ -477,6 +478,10 @@ async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
+    if context.args and context.args[0].startswith("applogin_"):  # вход в мобильное приложение
+        L = core.staff_lang(uid) if core.employee(uid) else "ru"
+        ok = appauth.confirm(context.args[0][9:], uid)
+        return await reply(update, st.s(L, "app_login_ok" if ok else ("app_login_bad" if known(uid) else "app_login_denied")))
     if not known(uid):
         if client_bot_on():
             return await to_client_bot(update)
@@ -1009,6 +1014,19 @@ async def open_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await reply(update, st.s(L, "open_cabinet"), reply_markup=cabinet_button(st.s(L, "open_cabinet_btn")))
 
 
+async def send_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/app — прислать Android-приложение RADI Team (APK) сотруднику или руководителю."""
+    uid = update.effective_user.id
+    if not known(uid):
+        return await other(update, context)
+    L = core.staff_lang(uid) if core.employee(uid) else "ru"
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "radi-team.apk")
+    if not os.path.exists(path):
+        return await reply(update, "APK ещё не готов.")
+    with open(path, "rb") as f:
+        await update.effective_message.reply_document(f, filename="RADI-Team.apk", caption=st.s(L, "app_install"))
+
+
 def shop_url() -> str:
     return config.WEBAPP_URL + ("&" if "?" in config.WEBAPP_URL else "?") + "open=shop"
 
@@ -1032,6 +1050,7 @@ async def set_menu_button(app: Application, title: str = "Kabinet") -> None:
 
 
 async def post_init(app: Application) -> None:
+    core.flag_json("staff_bot", {"username": app.bot.username})
     await set_menu_button(app)
     app.bot_data["outbox"] = asyncio.create_task(outbox_loop(app))
 
@@ -1082,6 +1101,7 @@ async def _run_both(app: Application, capp: Application) -> None:
             await capp.start()
             await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         outbox = asyncio.create_task(outbox_loop(app, capp))
+        core.flag_json("staff_bot", {"username": app.bot.username})  # для ссылки входа в приложение
         print(f"Боты запущены: сотрудники @{app.bot.username}, клиенты @{CLIENT_BOT['username'] or '— (не запущен)'}")
         try:
             await asyncio.Event().wait()
@@ -1134,6 +1154,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Text(st.variants("btn_lang")), staff_lang_cmd))
     app.add_handler(MessageHandler(filters.Text(list(dict.fromkeys([BTN_CABINET] + st.variants("btn_cabinet")))), open_cabinet))
     app.add_handler(MessageHandler(filters.Text(st.variants("btn_shop")), open_shop))
+    app.add_handler(CommandHandler("app", send_app))
     app.add_handler(CommandHandler("news", news_cmd))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, got_contact))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.VIDEO_NOTE, got_video_note))

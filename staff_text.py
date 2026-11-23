@@ -36,6 +36,15 @@ S = {
     "btn_shop": {"ru": "🧾 Продажи", "uz": "🧾 Savdo"},
     "open_shop": {"ru": "🧾 Откройте продажи 👇", "uz": "🧾 Savdoni oching 👇"},
     "open_shop_btn": {"ru": "🧾 Открыть продажи", "uz": "🧾 Savdoni ochish"},
+    "app_install": {"ru": "📱 Приложение RADI Team для Android.\n1) Откройте файл → «Установить» (если спросит — разрешите установку из этого источника).\n"
+                            "2) Откройте RADI Team → «Войти через Telegram» → «Start» в боте → вернитесь в приложение.",
+                    "uz": "📱 Android uchun RADI Team ilovasi.\n1) Faylni oching → «O'rnatish» (so'rasa — shu manbadan o'rnatishga ruxsat bering).\n"
+                            "2) RADI Team'ni oching → «Telegram orqali kirish» → botda «Start» → ilovaga qayting."},
+    "app_login_ok": {"ru": "✅ Вход в приложение RADI Team подтверждён — вернитесь в приложение.",
+                     "uz": "✅ RADI Team ilovasiga kirish tasdiqlandi — ilovaga qayting."},
+    "app_login_bad": {"ru": "Ссылка входа устарела — нажмите «Войти через Telegram» в приложении ещё раз.",
+                      "uz": "Kirish havolasi eskirgan — ilovada «Telegram orqali kirish»ni qayta bosing."},
+    "app_login_denied": {"ru": "Приложение RADI Team — только для сотрудников.", "uz": "RADI Team ilovasi faqat xodimlar uchun."},
     "shop_closed": {"ru": "🧾 Доступ к продажам закрыт", "uz": "🧾 Savdo bo'limiga kirish yopildi"},
     "shop_access": {"ru": "🧾 Вам открыт доступ к продажам: {role}.\nРаздел «🧾 Продажи» — в личном кабинете.",
                     "uz": "🧾 Sizga savdo bo'limi ochildi: {role}.\n«🧾 Savdo» bo'limi — shaxsiy kabinetda."},

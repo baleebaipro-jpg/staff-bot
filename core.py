@@ -378,6 +378,8 @@ def init_db():
             c.execute("ALTER TABLE penalties ADD COLUMN note TEXT")
     import shop  # таблицы ERP (учёт продаж)
     shop.init()
+    import appauth  # вход в мобильное приложение
+    appauth.init()
 
 
 def notify_admins(c, text: str, buttons=None):
