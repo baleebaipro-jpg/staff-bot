@@ -402,6 +402,16 @@ def _open_session(c, uid):
     ).fetchone()
 
 
+def _self_emp(uid: int):
+    """Сотрудник — или руководитель, который отмечает свой рабочий день (свободный график, без окон и штрафов)."""
+    e = employee(uid)
+    if e:
+        return e
+    if is_admin(uid):
+        return {"id": uid, "name": name(uid), "shift": None, "days": list(range(7)), "hours_before": 0, "boss": True}
+    return None
+
+
 def _close_stale(c, uid):
     """Если человек забыл отметить уход в прошлый день — закрыть по графику."""
     s = _open_session(c, uid)
@@ -419,6 +429,8 @@ def _close_stale(c, uid):
     if end <= cin:
         end = cin
     c.execute("UPDATE sessions SET check_out=?, auto_closed=1 WHERE id=?", (end.strftime(FMT), s["id"]))
+    if not emp and is_admin(uid):
+        return  # руководитель сам себе не пишет
     notify_admins(
         c,
         f"🤷 {name(uid)} не отметил(а) уход {cin:%d.%m}. Закрыто автоматически в {end:%H:%M}.",
@@ -428,7 +440,7 @@ def _close_stale(c, uid):
 def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: bool = True):
     """Отметить приход. dry_run — только проверить, можно ли.
     t — время прихода (например, время нажатия кнопки, если ждали кружок)."""
-    emp = employee(uid)
+    emp = _self_emp(uid)
     L = staff_lang(uid)
     if not emp:
         return False, st.s(L, "not_staff")
@@ -454,7 +466,7 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
             if diff > config.GRACE_MINUTES:
                 late = diff
         c.execute("INSERT INTO sessions(user_id, check_in, late_min) VALUES(?, ?, ?)", (uid, t.strftime(FMT), late))
-        if not notify_boss:
+        if not notify_boss or emp.get("boss"):
             pass
         elif late:
             notify_admins(c, f"⚠️ {emp['name']} пришёл(ла) в {t:%H:%M} — опоздание {fmt_min(late)} (по графику {shift_start(emp, t)})")
@@ -473,7 +485,7 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
 
 
 def check_out(uid: int):
-    emp = employee(uid)
+    emp = _self_emp(uid)
     L = staff_lang(uid)
     if not emp:
         return False, st.s(L, "not_staff")
@@ -486,7 +498,7 @@ def check_out(uid: int):
         if not in_window(emp, "out", t):
             a, b = window(emp, "out", t)
             return False, st.s(L, "out_not_before", a=f"{a:%H:%M}", t=f"{t:%H:%M}")
-        left = _unfinished(c, uid)
+        left = [] if emp.get("boss") else _unfinished(c, uid)
         if left:
             lines = "\n".join(f"• {r['title']}" + (" — " + st.s(L, "task_review") if r["status"] == "review" else "")
                               for r in left)
@@ -502,7 +514,8 @@ def check_out(uid: int):
         text = f"🚪 {emp['name']} ушёл(ла) в {t:%H:%M}, отработал(а) {fmt_min(worked)}"
         if early:
             text += f"\n⚠️ Ранний уход: на {fmt_min(early)} раньше графика ({shift_end(emp, t)})"
-        notify_admins(c, text)
+        if not emp.get("boss"):
+            notify_admins(c, text)
     msg = st.s(L, "out_ok", t=f"{t:%H:%M}", w=fmt_min(worked, L))
     if early:
         msg += st.s(L, "early", m=fmt_min(early, L))
@@ -542,6 +555,36 @@ def _streak(c, uid, emp) -> int:
             break
         d -= timedelta(days=1)
     return count
+
+
+def boss_day(uid: int) -> dict:
+    """Рабочий день руководителя: статус, часы за сегодня / неделю / месяц и последние смены."""
+    t = now()
+    with db() as c:
+        _close_stale(c, uid)
+        s = _open_session(c, uid)
+        today = t.strftime("%Y-%m-%d")
+        h_today = _hours(c, uid, today)
+        h_week = _hours(c, uid, (t - timedelta(days=t.weekday())).strftime("%Y-%m-%d"))
+        month = t.strftime("%Y-%m-01")
+        h_month = _hours(c, uid, month)
+        days_month = c.execute("SELECT COUNT(DISTINCT substr(check_in, 1, 10)) FROM sessions WHERE user_id=? AND check_in >= ?",
+                               (uid, month)).fetchone()[0]
+        past_days = c.execute("SELECT COUNT(DISTINCT substr(check_in, 1, 10)) FROM sessions WHERE user_id=? AND check_in >= ? "
+                              "AND check_in < ?", (uid, month, today)).fetchone()[0]
+        came_today = bool(c.execute("SELECT 1 FROM sessions WHERE user_id=? AND check_in >= ?", (uid, today)).fetchone())
+        rows = c.execute("SELECT * FROM sessions WHERE user_id=? ORDER BY check_in DESC LIMIT 14", (uid,)).fetchall()
+    hist = []
+    for r in rows:
+        a = parse(r["check_in"]); b = parse(r["check_out"]) if r["check_out"] else None
+        hist.append({"day": f"{a:%d.%m}", "wd": a.weekday(), "in": f"{a:%H:%M}", "out": f"{b:%H:%M}" if b else "",
+                     "h": round(max(0, ((b or t) - a).total_seconds()) / 3600, 2), "auto": bool(r["auto_closed"])})
+    return {"on_site": bool(s), "since": s["check_in"][11:16] if s else "",
+            "since_ts": int(parse(s["check_in"]).timestamp()) if s else 0,
+            "today": round(h_today, 2), "week": round(h_week, 2), "month": round(h_month, 2),
+            "days_month": days_month, "came_today": came_today, "history": hist,
+            # среднее — по законченным дням месяца (сегодняшний ещё идёт)
+            "avg": round((h_month - h_today) / past_days, 2) if past_days else round(h_today, 2)}
 
 
 def profile(uid: int) -> dict:
