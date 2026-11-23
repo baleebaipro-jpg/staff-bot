@@ -224,9 +224,40 @@ RELAY_COPY_ONLY_CHATS = [
     {"title": "Канал 2154024519", "chat_id": -1002154024519, "thread_id": None},  # t.me/c/2154024519
 ]
 
-# Похвала: после каждого альбома с ценами бот отвечает отправителю.
-# {mention} — отметка того, кто отправил. None — выключить.
-RELAY_PRAISE = "{mention} Siz to'g'ri yo'ldasiz, bosing jigarr💫❤️"
+# Похвала: после каждого альбома с ценами бот отвечает отправителю — каждый раз случайная фраза
+# из списка (подряд не повторяется). {mention} — отметка того, кто отправил. None — выключить.
+RELAY_PRAISE = [
+    "{mention} Siz to'g'ri yo'ldasiz, bosing jigarr💫❤️",
+    "{mention} Voy, qanday chiroyli suratlar! Qo'lingiz dard ko'rmasin 📸✨",
+    "{mention} Har bir kadr — san'at asari! Barakalla 👏💎",
+    "{mention} Mana bu professionallik! Mijozlar ko'rib hayratda qoladi 😍",
+    "{mention} Rasmlaringizdan nur yog'ilyapti, zo'rsiz! ☀️💛",
+    "{mention} Ko'zim quvondi! Davom eting, siz eng zo'risiz 🔥",
+    "{mention} Bu suratlarni ko'rib, hammasini sotib olgim keldi 😄🛍",
+    "{mention} Ranglar, yorug'lik, kompozitsiya — hammasi joyida! 🎨👌",
+    "{mention} Siz bilan ishlash — baxt! Ajoyib kadrlar uchun rahmat 💜",
+    "{mention} Bugun ham a'lo darajada! Sizga qoyil qoldim 🙌",
+    "{mention} Zargarlik buyumlarini sizdek hech kim ko'rsata olmaydi 💍✨",
+    "{mention} Har safar oldingisidan ham chiroyliroq! Ofarin 🌟",
+    "{mention} Mana shunaqa rasmlar savdoni ko'taradi! Rahmat sizga 📈❤️",
+    "{mention} Kamera sizni yaxshi ko'radi, siz esa kamerani 😍📷",
+    "{mention} Juda nafis chiqibdi! Didingizga gap yo'q 💐",
+    "{mention} Shu ishni yurakdan qilayotganingiz bilinib turibdi 💗",
+    "{mention} Super! Bu kadrlar to'g'ridan-to'g'ri jurnal muqovasiga 📖✨",
+    "{mention} Siz — jamoamizning yulduzi! ⭐️ Barakalla",
+    "{mention} Mijozlarimiz bu suratlarni ko'rib, albatta buyurtma beradi 🛒💫",
+    "{mention} Bitta rasm ming so'zdan afzal — sizniki esa million so'zdan! 😄",
+    "{mention} Nur, soya, rang — hammasi mukammal! Usta ekansiz 🎯",
+    "{mention} Rahmat! Siz tufayli mahsulotlarimiz yanada chiroyli ko'rinadi 💎",
+    "{mention} Ishingizga mehr bilan qaraysiz — bu darrov seziladi 🤍",
+    "{mention} Bugungi suratlar — olov! 🔥🔥🔥",
+    "{mention} Mana bu darajani saqlang, siz bilan faxrlanamiz 🏆",
+    "{mention} Har bir detal shunday aniq — zo'r ish bo'pti! 🔍✨",
+    "{mention} Kayfiyatimni ko'tardingiz, juda chiroyli! 🥰",
+    "{mention} Siz suratga olsangiz, oddiy narsa ham durdonaga aylanadi 💫",
+    "{mention} Charchamang! Bugun ham ajoyib natija 💪📸",
+    "{mention} Qoyilmaqom! Shu tarzda davom etamiz, jigar 🚀❤️",
+]
 
 # Подколка фотографа: если к указанному времени альбомов с ценами
 # за день меньше min_albums — бот пишет text в группу фотографа.
