@@ -1011,8 +1011,8 @@ SELF_TASKS_MAX = 20
 
 
 def add_self_task(uid: int, title: str, day: str = "today"):
-    """Сотрудник сам ставит себе задачу на любой день: day = today / tomorrow / YYYY-MM-DD (без проверки руководителем).
-    Пока задача на сегодня не выполнена — уход не отметить."""
+    """Сотрудник сам ставит себе задачу на любой день: day = today / tomorrow / YYYY-MM-DD.
+    Выполнение, как и у задач руководителя, принимает руководитель; пока задача на сегодня не принята — уход не отметить."""
     L = staff_lang(uid)
     title = str(title or "").strip()[:300]
     if not employee(uid):
@@ -1042,10 +1042,8 @@ def add_self_task(uid: int, title: str, day: str = "today"):
 
 
 def delete_self_task(uid: int, task_id: int):
-    L = staff_lang(uid)
-    with db() as c:
-        cur = c.execute("DELETE FROM tasks WHERE id=? AND user_id=? AND self=1", (task_id, uid))
-    return (True, st.s(L, "self_task_deleted")) if cur.rowcount else (False, st.s(L, "task_not_found"))
+    """Удалять задачи сотрудник не может — только руководитель (в «Команде»)."""
+    return False, st.s(staff_lang(uid), "self_task_no_delete")
 
 
 def tasks(uid: int) -> list:
@@ -1073,11 +1071,9 @@ def complete_task(task_id: int, uid: int):
             return False, st.s(L, "task_already_done")
         if r["status"] == "review":
             return False, st.s(L, "task_already_review")
-        if r["self"]:  # свою задачу сотрудник закрывает сам — без проверки руководителем
-            c.execute("UPDATE tasks SET status='done', done_at=? WHERE id=?", (now().strftime(FMT), task_id))
-            return True, st.s(L, "self_task_done")
         c.execute("UPDATE tasks SET status='review' WHERE id=?", (task_id,))
-        notify_admins(c, f"📝 {name(uid)} выполнил(а) задачу — проверьте:\n{r['title']}",
+        own = " (поставил(а) себе сам(а))" if r["self"] else ""
+        notify_admins(c, f"📝 {name(uid)} выполнил(а) задачу{own} — проверьте:\n{r['title']}",
                       [[("✅ Принять", f"task:ok:{task_id}"), ("↩️ Вернуть", f"task:back:{task_id}")],
                        [("📅 Оставить на завтра", f"task:later:{task_id}")]])
     return True, st.s(L, "task_sent")
