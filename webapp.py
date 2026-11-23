@@ -311,6 +311,8 @@ def api_shop_client(uid, data):
     bad = _shop_guard(uid)
     if bad:
         return bad
+    if data.get("q") is not None:  # гибкий поиск: часть номера или имя
+        return jsonify(items=shop.search_clients(data.get("q")))
     return jsonify(shop.find_client(data.get("phone")))
 
 
@@ -2906,22 +2908,44 @@ function valueSheet(title, modeKey, valKey, allowPct, hint) {
     cart[modeKey] = mode; cart[valKey] = v; invSheetClose(); sellDetails(); };
 }
 function clientSheet() {
-  invSheet(`<h3>👤 Клиент</h3><div class="add-row"><input id="cs-phone" inputmode="tel" placeholder="Телефон: 90 123 45 67" value="${esc(cart.client ? cart.client.phone : "")}" style="margin:0">
-    <button class="btn btn-main" id="cs-find">🔍</button></div><div id="cs-res" style="margin-top:10px"></div>
-    <button class="btn btn-soft" style="width:100%;margin-top:6px" id="is-cancel">Отмена</button>`);
+  invSheet(`<h3>👤 Клиент</h3>
+    <input id="cs-q" placeholder="Номер (часть) или имя / фамилия" autocomplete="off" value="" style="margin-bottom:6px">
+    <div class="hint" style="font-size:12px;margin-bottom:8px">Например: <b>4567</b>, <b>90 123</b>, <b>Malika</b>, <b>Karimova</b></div>
+    <div id="cs-res" style="max-height:52vh;overflow-y:auto"></div>
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="is-cancel">Отмена</button>`);
   $("is-cancel").onclick = invSheetClose;
-  const find = async () => {
-    let c; try { c = await api("/api/shop/client", {phone: $("cs-phone").value}); } catch (e) { return toast(e.message); }
+  const SRC = {erp: "🧾", bot: "🤖", store: "🏪"};
+  const pick = async phone => {
+    let c; try { c = await api("/api/shop/client", {phone}); } catch (e) { return toast(e.message); }
     if (c.error) return toast(c.error);
     $("cs-res").innerHTML = `<div class="cl-card"><b>${esc(c.name || "Новый клиент")}</b> ${c.in_bot ? '<span class="badge">в боте</span>' : ""}${c.tier ? `<span class="badge">${esc(c.tier)}</span>` : ""}
       <div class="hint" style="font-size:12.5px">${esc(c.phone)} · 🎁 баллы: <b style="color:var(--green)">${sm(c.points)}</b>${c.frozen ? ` · 🧊 ${sm(c.frozen)}` : ""}</div>
-      ${!c.found ? `<input id="cs-name" maxlength="80" placeholder="Имя и фамилия" value="${esc(c.name || "")}" style="margin:8px 0 0">` : ""}</div>
+      ${!c.found ? `<input id="cs-name" maxlength="80" placeholder="Имя и фамилия" value="${esc(c.name || "")}" style="margin:8px 0 0">` : ""}
+      ${c.note ? `<div class="hint" style="font-size:12px;margin-top:4px">📝 ${esc(c.note)}</div>` : ""}</div>
       <button class="btn btn-main" style="width:100%" id="cs-ok">Выбрать клиента</button>`;
     $("cs-ok").onclick = () => { if (!c.found) c.name = ($("cs-name").value || "").trim() || c.name;
       cart.client = c; if (snum(cart.spend) > c.points) cart.spend = 0; invSheetClose(); sellDetails(); };
   };
-  $("cs-find").onclick = find; $("cs-phone").onkeydown = e => { if (e.key === "Enter") find(); };
-  if (cart.client) find(); else setTimeout(() => $("cs-phone").focus(), 100);
+  let t = null, seq = 0;
+  const search = async () => {
+    const q = $("cs-q").value.trim(), digits = q.replace(/\D/g, ""), my = ++seq;
+    if (digits.length < 3 && q.replace(/[\d\s+()-]/g, "").length < 2) { $("cs-res").innerHTML = ""; return; }
+    let r; try { r = await api("/api/shop/client", {q}); } catch (e) { return toast(e.message); }
+    if (my !== seq) return;
+    const items = r.items || [], full = digits.length >= 9;
+    const exact = full && items.some(x => x.tail === digits.slice(-9));
+    $("cs-res").innerHTML = items.map(x => `<button class="card row-btn" data-cpick="${esc(x.phone)}" style="padding:12px 14px !important;margin-bottom:8px">
+        <span class="rt"><b style="font-size:15px">${esc(x.name || "Без имени")}</b><span style="color:var(--hint);font-weight:500">${esc(x.phone)} ${x.src.map(k => SRC[k]).join("")}</span></span>
+        ${x.points ? `<span class="ra" style="color:var(--green)">🎁 ${sm(x.points)}</span>` : '<span class="ra">›</span>'}</button>`).join("")
+      + (full && !exact ? `<button class="card row-btn" id="cs-new" style="padding:12px 14px !important"><span class="ri">➕</span><span class="rt"><b style="font-size:15px">Новый клиент</b><span>${esc(digits.length === 9 ? "+998" + digits : "+" + digits)}</span></span></button>` : "")
+      + (!items.length && !full ? `<div class="empty">Никого не нашли. Введите номер полностью, чтобы добавить нового клиента.</div>` : "");
+    document.querySelectorAll("[data-cpick]").forEach(b => b.onclick = () => pick(b.dataset.cpick));
+    if ($("cs-new")) $("cs-new").onclick = () => pick(digits);
+  };
+  $("cs-q").oninput = () => { clearTimeout(t); t = setTimeout(search, 300); };
+  $("cs-q").onkeydown = e => { if (e.key === "Enter") { clearTimeout(t); search(); } };
+  if (cart.client) { $("cs-q").value = cart.client.phone; search(); }
+  setTimeout(() => $("cs-q").focus(), 100);
 }
 /* --- продажа: 3) оплата --- */
 function sellPay() {
