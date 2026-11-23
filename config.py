@@ -84,6 +84,9 @@ CLIENT_CHANNEL_LINK_HOURS = 24
 # После каждой покупки в магазине клиенту из бота приходит «спасибо» и новый баланс бонусов.
 THANK_AFTER_PURCHASE = True
 
+# Сотрудники, которым открыт раздел «📣 Постинг» (без начисления бонусов — это только руководитель)
+POSTERS = [6658459389]  # Omina Sadikova
+
 POST_CHATS = [
     {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None, "lang": "uz"},
     {"title": "XUPING (Silver Tarif)", "chat_id": -1004354596254, "thread_id": None, "lang": "uz"},
