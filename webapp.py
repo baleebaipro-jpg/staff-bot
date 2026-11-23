@@ -2737,11 +2737,12 @@ function earnSheet(uid, keep) {
 
 let openedShop = false;
 const splashT0 = Date.now();
-function hideSplash() {
+function hideSplash(fast = false) {
   const s = document.getElementById("splash"); if (!s || s.classList.contains("out")) return;
-  setTimeout(() => s.classList.add("out"), Math.max(0, 1100 - (Date.now() - splashT0)));  // заставка — минимум ~1 секунда
+  if (fast) { s.style.transition = "opacity .25s ease, visibility .25s"; s.classList.add("out"); return; }  // клиентам — сразу
+  setTimeout(() => s.classList.add("out"), Math.max(0, 700 - (Date.now() - splashT0)));  // сотрудникам — минимум ~0.7 с
 }
-setTimeout(hideSplash, 8000);  // на всякий случай: не держать заставку дольше 8 секунд
+setTimeout(hideSplash, 6000);  // на всякий случай: не держать заставку дольше 8 секунд
 /* Надписи кабинета (руководитель меняет кнопкой ✏️ на главной) */
 const BRAND_DEF = {title: "RADI TEAM", sub: () => IS_APP ? "приложение" : "мини-приложение", welcome: "Добро пожаловать!",
                    welcome_sub: "Ваш личный кабинет команды RADI"};
@@ -2770,7 +2771,7 @@ async function load(fresh = false) {
     data = await api("/api/me", fresh ? {fresh: true} : {});
     $("loading").classList.add("hidden");
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
-    if (data.is_client) { renderClient(); show("client"); return; }
+    if (data.is_client) { renderClient(); show("client"); hideSplash(true); return; }
     applyBranding(); hideSplash();
     if (data.is_employee) { renderMe(); renderEarn(); }
     $("go-shop-me").classList.toggle("hidden", !(data.shop_access && data.is_employee));
