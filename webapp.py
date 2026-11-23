@@ -1529,12 +1529,18 @@ PAGE = r"""<!doctype html>
       <button class="card dtile" data-dgo="staff"><div class="f-ic">👥</div><div><b id="d-team">—</b><span>Команда</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="earn-admin"><div class="f-ic">📈</div><div><b id="d-earn" style="font-size:17px">—</b><span>Foyda сотрудников</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="clients"><div class="f-ic">💎</div><div><b id="d-cl">—</b><span>Клиенты</span></div><i>›</i></button>
+      <button class="card dtile" id="d-shop-tile"><div class="f-ic">🧾</div><div><b style="font-size:16px">Продажи</b><span>ERP · касса</span></div><i>›</i></button>
+      <button class="card dtile" data-dgo="posting"><div class="f-ic">📣</div><div><b style="font-size:16px">Постинг</b><span id="d-post">посты</span></div><i>›</i></button>
     </div>
-    <button class="card dayc" data-dgo="projects">
-      <div class="top"><div class="f-ic">📅</div><div><span>Мой день</span><b id="d-date"></b></div><span class="day-pill">☀️ Сегодня</span></div>
-      <div class="bottom"><span style="font-size:18px">🕘</span><span id="d-day" style="flex:1"></span><span id="d-day-ok"></span></div>
-    </button>
-    <div class="sec-h">Разделы</div>
+    <div class="card dayc" style="cursor:default">
+      <div class="top"><div class="f-ic">📅</div><div><span>Мои задачи на сегодня</span><b id="d-date"></b></div>
+        <button class="day-pill" data-dgo="projects">📁 Все проекты ›</button></div>
+      <div id="d-tasks" style="margin-top:10px"></div>
+      <div class="add-row" id="d-add-row" style="margin-top:10px"><input id="d-add" placeholder="Быстрая задача на сегодня…" maxlength="300" style="margin:0">
+        <button class="btn btn-main" id="d-add-btn">＋</button></div>
+      <select id="d-add-proj" style="margin:8px 0 0"></select>
+    </div>
+    <div class="hidden" id="old-sections">
     <button class="card folder" id="go-shop">
       <div class="f-ic">🧾</div>
       <div style="min-width:0"><b>Продажи (ERP)</b><div class="f-sub">Новая продажа, баллы, бонусы, настройки</div></div>
@@ -1576,7 +1582,7 @@ PAGE = r"""<!doctype html>
         <div class="f-sub" id="inv-admin-folder-sub"></div></div>
       <div class="f-arrow">›</div>
     </button>
-  </div>
+  </div></div>
 
   <!-- КОМАНДА: сотрудники, задачи и штрафы (отдельная страница руководителя) -->
   <div id="view-staff" class="hidden">
@@ -3360,13 +3366,31 @@ function renderDash() {
   $("d-team").textContent = (data.team || []).length;
   $("d-earn").textContent = money0(et.reduce((a, x) => a + x.total, 0), "").trim();
   $("d-cl").textContent = cl.all != null ? cl.all : cl.total != null ? cl.total : "—";
-  const d = o && o.day, todo = d ? d.today.length + d.overdue.length : 0;
+  const d = o && o.day;
   $("d-date").textContent = o ? o.today : "";
-  $("d-day").textContent = !d ? "" : todo
-    ? `На сегодня задач: ${todo}` + (d.overdue.length ? ` · просрочено: ${d.overdue.length}` : "")
-    : "На сегодня задач нет. Отличная работа!";
-  $("d-day-ok").innerHTML = d && !todo ? `<span class="pcheck" style="background:var(--accent);border-color:var(--accent);color:#fff">✓</span>` : "";
+  const pa = data.posting && data.posting.history;
+  $("d-post").textContent = pa ? `постов: ${pa.length}` : "посты";
+  // мои задачи на сегодня: просроченные, на сегодня, сделанные сегодня
+  if (!d) { $("d-tasks").innerHTML = ""; return; }
+  const sec = (title, rows) => rows.length ? `<div class="day-h">${title}</div>` + rows.map(x => ptaskRow(x, true)).join("") : "";
+  const todo = d.today.length + d.overdue.length;
+  $("d-tasks").innerHTML = (todo || d.done_today.length)
+    ? sec(`<span style="color:var(--red)">🔴 Просрочено (${d.overdue.length})</span>`, d.overdue)
+      + sec(`📅 Сегодня (${d.today.length})`, d.today) + sec("✅ Сделано сегодня", d.done_today)
+    : `<div class="empty">На сегодня задач нет. Отличная работа! ✨</div>`;
+  bindPtasks();
+  const projs = o.projects || [];
+  $("d-add-row").style.display = $("d-add-proj").style.display = projs.length ? "" : "none";
+  const keep = $("d-add-proj").value;
+  $("d-add-proj").innerHTML = projs.map(p => `<option value="${p.id}">📁 ${esc(p.title)}</option>`).join("");
+  if (keep && projs.some(p => String(p.id) === keep)) $("d-add-proj").value = keep;
 }
+$("d-shop-tile").onclick = () => $("go-shop").onclick();
+$("d-add-btn").onclick = () => {
+  const title = $("d-add").value.trim(); if (!title) return toast("Введите задачу");
+  projAct({action: "add_task", id: +$("d-add-proj").value, title, due: P().today_iso}).then(() => { $("d-add").value = ""; });
+};
+$("d-add").onkeydown = e => { if (e.key === "Enter") $("d-add-btn").onclick(); };
 /* Заголовки страниц — в виде карточки с логотипом */
 document.querySelectorAll(".page-title").forEach(t => {
   const sub = t.nextElementSibling;
