@@ -33,6 +33,7 @@ from telegram.ext import (
 import config
 import core
 import erp
+import shop
 import i18n
 import invest as invest_mod
 import posts
@@ -919,6 +920,7 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         try:
             posts.dispatch_due()
             erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
+            shop.daily()  # ERP: напоминания о разморозке бонусов, сгорание баллов
             erp.start_purchase_watch()  # «спасибо за покупку» — проверка продаж каждые 30 с (запускается один раз)
         except Exception:
             logging.exception("Ошибка запланированных постов")

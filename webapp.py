@@ -15,6 +15,7 @@ import config
 import core
 import i18n
 import erp
+import shop
 import invest
 import posts
 import projects
@@ -189,6 +190,7 @@ def api_staff_lang(uid, data):
 def api_me(uid, data):
     staff_view = g.via == "staff"  # из бота клиентов — всегда кабинет клиента, даже у сотрудника
     res = {"is_admin": staff_view and core.is_admin(uid), "is_employee": staff_view and bool(core.employee(uid)),
+           "shop_access": staff_view and shop.has_access(uid),
            "goal": config.GOAL_HOURS,
            "ranks": _ranks(uid),
            "today_wd": core.now().weekday()}
@@ -214,7 +216,8 @@ def api_me(uid, data):
                          "ava_v": ava_version(uid), "lang": i18n.lang_of(cl.get("lang")),
                          "registered": cl.get("step") == "done",
                          "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None,
-                         "billz": dict(billz, enabled=bool(billz) or erp.enabled())}
+                         "billz": dict(billz, enabled=bool(billz) or erp.enabled()),
+                         "erp": shop.client_wallet_for_bot(uid)}
         res["news"] = core.news_list(10, i18n.lang_of(cl.get("lang")))  # каждый клиент — на своём языке
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
@@ -266,6 +269,83 @@ def api_checkout(uid, data):
 @need_user(staff=True)
 def api_task_done(uid, data):
     ok, msg = core.complete_task(int(data.get("id", 0)), uid)
+    return jsonify(ok=ok, msg=msg)
+
+
+# ---------- ERP: учёт продаж ----------
+
+def _shop_guard(uid):
+    if not shop.has_access(uid):
+        return jsonify(ok=False, msg="Нет доступа к продажам — попросите руководителя выдать роль."), 403
+    return None
+
+
+@app.post("/api/shop/state")
+@need_user(staff=True)
+def api_shop_state(uid, data):
+    bad = _shop_guard(uid)
+    if bad:
+        return bad
+    me = shop.staff_row(uid)
+    rows = shop.sales_list(uid, data.get("from") or None, data.get("to") or None)
+    res = {"me": {"id": uid, "role": me["role"], "role_title": shop.ROLES[me["role"]], "perms": me["perms"],
+                  "point_id": me.get("point_id")},
+           "settings": shop.settings(), "points": shop.points(), "pay_types": shop.pay_types(),
+           "pay_kinds": shop.PAY_KINDS, "roles": shop.ROLES, "perm_titles": shop.PERMS,
+           "sellers": [{"id": s["id"], "name": s["name"], "point_id": s["point_id"]} for s in shop.staff_list()
+                       if s["role"] != "none"] + [{"id": a, "name": core.name(a) + " (руководитель)", "point_id": None}
+                                                  for a in config.ADMINS],
+           "sales": rows, "summary": shop.summary(rows)}
+    if me["role"] == "owner" or "settings" in me["perms"]:
+        res["staff"] = shop.staff_list()
+    if "unfreeze" in me["perms"]:
+        res["bonuses"] = shop.bonuses_due()
+    return jsonify(res)
+
+
+@app.post("/api/shop/client")
+@need_user(staff=True)
+def api_shop_client(uid, data):
+    bad = _shop_guard(uid)
+    if bad:
+        return bad
+    return jsonify(shop.find_client(data.get("phone")))
+
+
+@app.post("/api/shop/sale")
+@need_user(staff=True)
+def api_shop_sale(uid, data):
+    bad = _shop_guard(uid)
+    if bad:
+        return bad
+    ok, msg, sid = shop.create_sale(uid, data)
+    return jsonify(ok=ok, msg=msg, id=sid)
+
+
+@app.post("/api/shop/unfreeze")
+@need_user(staff=True)
+def api_shop_unfreeze(uid, data):
+    ok, msg = shop.unfreeze(uid, int(data.get("id") or 0))
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/shop/settings")
+@need_user(staff=True)
+def api_shop_settings(uid, data):
+    if not shop.can(uid, "settings"):
+        return jsonify(ok=False, msg="Нет права менять настройки ERP.")
+    act = data.get("action")
+    if act == "settings":
+        ok, msg = shop.save_settings(data)
+    elif act == "point":
+        ok, msg = shop.save_point(data.get("id"), data.get("title"), data.get("address"), data.get("active", True))
+    elif act == "pay_type":
+        ok, msg = shop.save_pay_type(data.get("id"), data.get("title"), data.get("icon"), data.get("kind"), data.get("active", True))
+    elif act == "staff":
+        ok, msg = shop.set_staff(uid, int(data.get("user_id") or 0), data.get("role"), data.get("point_id"), data.get("kpi_pct"),
+                                 data.get("senior_id"), data.get("senior_pct"), data.get("perms"))
+    else:
+        ok, msg = False, "Неизвестное действие."
     return jsonify(ok=ok, msg=msg)
 
 
@@ -944,6 +1024,30 @@ PAGE = r"""<!doctype html>
     background: rgba(255,255,255,.03) !important; border: 1px solid var(--line) !important; border-radius: 12px !important;
     padding: 11px 14px !important; font-size: 14px !important; }
   .po-bot-list button.on { border-color: #a78bfa !important; background: rgba(139,92,246,.2) !important; }
+  /* ERP: продажи */
+  .sw { position: relative; width: 50px; height: 30px; flex: none; display: inline-block; }
+  .sw input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .sw span { position: absolute; inset: 0; border-radius: 99px; background: rgba(255,255,255,.14); transition: .2s; cursor: pointer; }
+  .sw span::before { content: ""; position: absolute; left: 3px; top: 3px; width: 24px; height: 24px; border-radius: 50%;
+    background: #fff; transition: .2s; box-shadow: 0 2px 6px rgba(0,0,0,.4); }
+  .sw input:checked + span { background: linear-gradient(135deg, #34d399, #10b981); }
+  .sw input:checked + span::before { transform: translateX(20px); }
+  .sw-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .sw-row:first-child { border-top: none; }
+  .f-lbl { font-size: 12.5px; color: var(--hint); margin: 10px 0 5px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pay-row { display: grid; grid-template-columns: 1.3fr 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .pay-row select, .pay-row input { margin: 0; }
+  .cl-card { background: rgba(139,92,246,.14); border: 1px solid rgba(167,139,250,.35); border-radius: 14px; padding: 10px 12px; margin: 8px 0; }
+  .tot { background: rgba(255,255,255,.05); border-radius: 12px; padding: 10px 12px; margin-top: 10px; font-size: 13.5px; line-height: 1.7; }
+  .sale { padding: 11px 0; border-top: 1px solid var(--line); }
+  .sale:first-child { border-top: none; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 7px; background: rgba(255,255,255,.08); margin-right: 4px; }
+  .st-row { padding: 10px 0; border-top: 1px solid var(--line); }
+  .st-row:first-child { border-top: none; }
+  .perm-chk { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12.5px; margin-top: 6px; }
+  .perm-chk label { display: flex; align-items: center; gap: 5px; }
+  .perm-chk input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
   /* нижнее меню */
   .tabbar { position: fixed; left: 12px; right: 12px; bottom: 12px; max-width: 536px; margin: 0 auto; z-index: 8;
     display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px; border-radius: 26px;
@@ -1003,6 +1107,11 @@ PAGE = r"""<!doctype html>
         <div><b id="done-month" style="font-size:22px;color:var(--green)">0</b><div class="hint" style="font-size:11px" data-sx="done_month"></div></div>
         <div><b id="done-total" style="font-size:22px">0</b><div class="hint" style="font-size:11px" data-sx="done_total"></div></div>
       </div>
+    </button>
+    <button class="card folder hidden" id="go-shop-me">
+      <div class="f-ic">🧾</div>
+      <div style="min-width:0"><b data-sx="shop_title"></b><div class="f-sub" data-sx="shop_sub"></div></div>
+      <div class="f-arrow">›</div>
     </button>
     <button class="card folder" id="go-earn">
       <div class="f-ic" style="background:rgba(52,211,153,.16)">💵</div>
@@ -1109,6 +1218,14 @@ PAGE = r"""<!doctype html>
     <div class="page-title">💵 Foyda сотрудников</div>
     <div class="page-sub">Сколько прибыли получил каждый за всё время в компании. Пока вводится вручную — нажмите на сотрудника.</div>
     <div class="card"><div id="earn-team"></div></div>
+  </div>
+
+  <!-- ERP: ПРОДАЖИ -->
+  <div id="view-shop" class="hidden">
+    <div class="page-title">🧾 Продажи</div>
+    <div class="page-sub" id="shop-sub">Учёт продаж, баллов и бонусов</div>
+    <div class="seg" id="shop-tabs" style="flex-wrap:wrap"></div>
+    <div id="shop-body"></div>
   </div>
 
   <!-- ПОСТИНГ -->
@@ -1226,7 +1343,7 @@ PAGE = r"""<!doctype html>
     <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)" data-t="finish_reg"></div>
     <div class="stats" style="grid-template-columns:1fr 1fr">
       <div class="stat s1 soon-stat" id="cl-st-buy"><div class="ic">🛍</div><b id="cl-buy">—</b><span data-t="purchases"></span><em data-t="soon"></em></div>
-      <div class="stat s3 soon-stat" id="cl-st-bonus"><div class="ic">🎁</div><b id="cl-bonus">—</b><span data-t="bonuses"></span><em data-t="soon"></em></div>
+      <div class="stat s3 soon-stat" id="cl-st-bonus"><div class="ic">🎁</div><b id="cl-bonus">—</b><div class="hint hidden" style="font-size:11.5px" id="cl-frozen"></div><span data-t="bonuses"></span><em data-t="soon"></em></div>
     </div>
     <div class="card hidden" id="cl-debt" style="border-color:rgba(248,113,113,.45);cursor:pointer">
       <div style="display:flex;align-items:center;gap:14px">
@@ -1263,6 +1380,11 @@ PAGE = r"""<!doctype html>
       <div class="bottom"><span style="font-size:18px">🕘</span><span id="d-day" style="flex:1"></span><span id="d-day-ok"></span></div>
     </button>
     <div class="sec-h">Разделы</div>
+    <button class="card folder" id="go-shop">
+      <div class="f-ic">🧾</div>
+      <div style="min-width:0"><b>Продажи (ERP)</b><div class="f-sub">Новая продажа, баллы, бонусы, настройки</div></div>
+      <div class="f-arrow">›</div>
+    </button>
     <button class="card folder" id="go-projects">
       <div class="f-ic" style="background:rgba(251,191,36,.16)">📁</div>
       <div style="min-width:0"><b>Мои проекты<span id="proj-badge"></span></b><div class="f-sub" id="proj-folder-sub"></div></div>
@@ -1465,11 +1587,11 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team",
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team",
                   projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1485,7 +1607,7 @@ tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 /* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
 const SX = {
   ru: {h: "ч", per_month: "за месяц", in_row: "подряд", cur_rank: "текущее звание", invest: "Инвестиции",
-       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", done_title: "Выполненные задачи", done_sub: "Так держать! 💪",
+       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", shop_title: "Продажи", shop_sub: "Новая продажа и мои продажи", done_title: "Выполненные задачи", done_sub: "Так держать! 💪",
        done_month: "в этом месяце", done_total: "за всё время", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_pick: "📅 Дата…", mt_mine: "моя", last_visits: "Последние посещения",
        all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
@@ -1502,7 +1624,7 @@ const SX = {
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
-       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", done_title: "Bajarilgan vazifalar", done_sub: "Shunday davom eting! 💪",
+       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", shop_title: "Savdo", shop_sub: "Yangi savdo va savdolarim", done_title: "Bajarilgan vazifalar", done_sub: "Shunday davom eting! 💪",
        done_month: "shu oyda", done_total: "jami", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_pick: "📅 Sana…", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
@@ -2326,6 +2448,9 @@ async function load(fresh = false) {
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); return; }
     if (data.is_employee) { renderMe(); renderEarn(); }
+    $("go-shop-me").classList.toggle("hidden", !(data.shop_access && data.is_employee));
+    $("go-shop").classList.toggle("hidden", !data.is_admin);
+    SUBPAGES.shop = data.is_admin && !data.is_employee ? "team" : (view === "shop" && SUBPAGES.shop) || (data.is_employee ? "me" : "team");
     if (data.invest) renderInvestMe();
     // руководитель без кабинета сотрудника открывает свои инвестиции с вкладки «Команда»
     $("go-inv-own").classList.toggle("hidden", !(data.invest_enabled && data.is_admin && !data.is_employee));
@@ -2400,6 +2525,13 @@ function renderClient() {
   document.querySelectorAll("#cl-st-buy em, #cl-st-bonus em").forEach(e => e.classList.toggle("hidden", !!bz.enabled));
   $("cl-buy").textContent = bz.enabled && bz.linked ? money(bz.purchases) : "—";
   $("cl-bonus").textContent = bz.enabled && bz.linked ? money(bz.balance) : "—";
+  if (c.erp) {  // ERP — основной: баллы и замороженный бонус из своего учёта
+    $("cl-st-bonus").classList.remove("soon-stat");
+    $("cl-bonus").textContent = money(c.erp.points);
+  }
+  const fr = c.erp && c.erp.frozen;
+  $("cl-frozen").textContent = fr ? `🧊 ${money(c.erp.frozen)} → ${c.erp.frozen_until.split("-").reverse().join(".")}` : "";
+  $("cl-frozen").classList.toggle("hidden", !fr);
   const debt = bz.enabled && bz.linked ? +(bz.debt || 0) : 0;
   $("cl-debt").classList.toggle("hidden", !(debt > 0));
   $("cl-debt-sum").textContent = debt > 0 ? money(debt) : "";
@@ -2518,7 +2650,202 @@ function langSwitch(id, langs, cur, onPick) {
   box.innerHTML = langs.map(([k, t]) => `<button data-lng="${k}" class="${k === cur ? "on" : ""}">${t}</button>`).join("");
   box.querySelectorAll("[data-lng]").forEach(b => b.onclick = () => { if (b.dataset.lng !== cur) onPick(b.dataset.lng); });
 }
+/* ================= ERP: продажи ================= */
+let shopS = null, shopTab = "sell", shopDay = null, shopClient = null, shopPays = [];
+const sm = v => Math.round(v || 0).toLocaleString("ru-RU");
+const snum = v => +String(v || "").replace(/[^\d.,]/g, "").replace(",", ".") || 0;
+async function loadShop() {
+  try { shopS = await api("/api/shop/state", shopDay ? {from: shopDay.from, to: shopDay.to} : {}); }
+  catch (e) { $("shop-body").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+  const p = shopS.me.perms, tabs = [];
+  if (p.includes("sell")) tabs.push(["sell", "➕ Продажа"]);
+  tabs.push(["list", "📋 Продажи"]);
+  if (p.includes("unfreeze")) tabs.push(["bonus", "🧊 Бонусы"]);
+  if (p.includes("settings")) tabs.push(["set", "⚙️ Настройки"]);
+  if (!tabs.find(t => t[0] === shopTab)) shopTab = tabs[0][0];
+  $("shop-tabs").innerHTML = tabs.map(([k, t]) => `<button data-stab="${k}" class="${k === shopTab ? "on" : ""}">${t}</button>`).join("");
+  document.querySelectorAll("[data-stab]").forEach(b => b.onclick = () => { shopTab = b.dataset.stab; loadShop(); });
+  $("shop-sub").textContent = `${shopS.me.role_title} · ${((shopS.points.find(x => x.id === shopS.me.point_id) || {}).title) || "все точки"}`;
+  ({sell: shopSell, list: shopList, bonus: shopBonus, set: shopSettings})[shopTab]();
+}
+/* --- новая продажа --- */
+function shopSell() {
+  const S = shopS, st = S.settings, myPoint = S.me.point_id;
+  const types = S.pay_types.filter(t => t.active);
+  if (!shopPays.length) shopPays = [{type_id: (types[0] || {}).id, amount: ""}];
+  const sellers = S.sellers.filter(x => !myPoint || !x.point_id || x.point_id === myPoint);
+  $("shop-body").innerHTML = `<div class="card">
+    <div class="f-lbl" style="margin-top:0">Клиент</div>
+    <div class="add-row"><input id="sh-phone" inputmode="tel" placeholder="Телефон: 90 123 45 67" style="margin:0">
+      <button class="btn btn-soft" id="sh-find">🔍</button></div>
+    <div id="sh-client"></div>
+    ${S.me.role === "owner" ? `<div class="f-lbl">Точка</div><select id="sh-point">${S.points.filter(p => p.active).map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join("")}</select>` : ""}
+    <div class="two"><div><div class="f-lbl">Сумма покупки</div><input id="sh-amount" inputmode="numeric" placeholder="0"></div>
+      <div><div class="f-lbl">Продавец</div><select id="sh-seller"><option value="">— выберите —</option>${sellers.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></div></div>
+    <div class="f-lbl">Оплата (можно несколько способов)</div>
+    <div id="sh-pays"></div>
+    <button class="link" id="sh-addpay" style="font-size:13px">＋ ещё способ оплаты</button>
+    <div class="f-lbl">Оплатить баллами <span id="sh-spend-hint"></span></div>
+    <input id="sh-spend" inputmode="numeric" placeholder="0">
+    <div class="sw-row" style="border-top:1px solid var(--line);margin-top:6px"><div><b>Баллы лояльности</b><div class="hint" style="font-size:12px">начислить клиенту с этой покупки</div></div>
+      <label class="sw"><input type="checkbox" id="sh-loy-on" checked><span></span></label></div>
+    <div class="two" id="sh-loy-box"><select id="sh-loy-mode"><option value="pct">% от покупки</option><option value="sum">сумма</option></select>
+      <input id="sh-loy-val" inputmode="decimal" value="${st.loyalty_pct}"></div>
+    <div class="f-lbl">Бонус (необязательно)</div>
+    <div class="two"><select id="sh-bon-mode"><option value="sum">сумма</option><option value="pct">% от покупки</option></select>
+      <input id="sh-bon-val" inputmode="decimal" placeholder="0"></div>
+    <div class="hint" style="font-size:12px" id="sh-freeze-hint"></div>
+    <div class="sw-row" style="border-top:1px solid var(--line);margin-top:6px"><div><b>Обмен разрешён</b><div class="hint" style="font-size:12px">1 раз в течение месяца</div></div>
+      <label class="sw"><input type="checkbox" id="sh-exch"><span></span></label></div>
+    <input id="sh-note" maxlength="300" placeholder="Комментарий (необязательно)" style="margin-top:8px">
+    <div class="tot" id="sh-tot"></div>
+    <button class="btn btn-main" style="width:100%;margin-top:12px" id="sh-save">🧾 Сохранить продажу</button></div>`;
+  const drawPays = () => {
+    $("sh-pays").innerHTML = shopPays.map((p, i) => `<div class="pay-row">
+      <select data-ptype="${i}">${types.map(t => `<option value="${t.id}" ${t.id === +p.type_id ? "selected" : ""}>${t.icon} ${esc(t.title)}</option>`).join("")}</select>
+      <input data-pamt="${i}" inputmode="numeric" value="${p.amount}" placeholder="сумма">
+      ${shopPays.length > 1 ? `<button class="btn btn-soft btn-sm" data-pdel="${i}">✕</button>` : "<span></span>"}</div>`).join("");
+    document.querySelectorAll("[data-ptype]").forEach(s => s.onchange = () => { shopPays[+s.dataset.ptype].type_id = +s.value; calc(); });
+    document.querySelectorAll("[data-pamt]").forEach(s => s.oninput = () => { shopPays[+s.dataset.pamt].amount = s.value; calc(false); });
+    document.querySelectorAll("[data-pdel]").forEach(b => b.onclick = () => { shopPays.splice(+b.dataset.pdel, 1); drawPays(); calc(); });
+  };
+  const calc = (fill = true) => {
+    const amount = snum($("sh-amount").value), spend = snum($("sh-spend").value);
+    if (fill && shopPays.length === 1) { shopPays[0].amount = amount ? String(Math.max(0, amount - spend)) : ""; const f = document.querySelector("[data-pamt='0']"); if (f) f.value = shopPays[0].amount; }
+    const paid = shopPays.reduce((a, p) => a + snum(p.amount), 0);
+    const kinds = shopPays.map(p => (types.find(t => t.id === +p.type_id) || {}).kind);
+    const rev = amount - spend, loyOn = $("sh-loy-on").checked;
+    const loy = !loyOn ? 0 : $("sh-loy-mode").value === "pct" ? rev * snum($("sh-loy-val").value) / 100 : snum($("sh-loy-val").value);
+    const bon = $("sh-bon-mode").value === "pct" ? amount * snum($("sh-bon-val").value) / 100 : snum($("sh-bon-val").value);
+    const freeze = kinds.includes("nasiya");
+    $("sh-loy-box").style.display = loyOn ? "" : "none";
+    $("sh-freeze-hint").textContent = freeze ? "🧊 Рассрочка: бонус будет заморожен на 6 месяцев" : bon ? "Бонус сразу станет баллами клиента" : "";
+    const diff = paid + spend - amount;
+    $("sh-tot").innerHTML = `Покупка: <b>${sm(amount)}</b> · баллами: <b>${sm(spend)}</b><br>
+      Оплачено: <b style="color:${Math.abs(diff) > 0.5 && amount ? "var(--red)" : "var(--green)"}">${sm(paid)}</b>${Math.abs(diff) > 0.5 && amount ? ` (${diff > 0 ? "лишние" : "не хватает"} ${sm(Math.abs(diff))})` : ""}
+      ${kinds.includes("debt") ? "<br>📝 В долг: " + sm(shopPays.filter(p => (types.find(t => t.id === +p.type_id) || {}).kind === "debt").reduce((a, p) => a + snum(p.amount), 0)) : ""}
+      <br>➕ Начислится баллов: <b>${sm(loy)}</b>${bon ? ` · 🎁 бонус: <b>${sm(bon)}</b>${freeze ? " 🧊" : ""}` : ""}`;
+  };
+  drawPays(); calc();
+  $("sh-addpay").onclick = () => { shopPays.push({type_id: (types[1] || types[0]).id, amount: ""}); drawPays(); calc(false); };
+  ["sh-amount", "sh-spend"].forEach(id => $(id).oninput = () => calc());
+  ["sh-loy-on", "sh-loy-mode", "sh-loy-val", "sh-bon-mode", "sh-bon-val"].forEach(id => { $(id).oninput = () => calc(false); $(id).onchange = () => calc(false); });
+  const find = async () => {
+    const phone = $("sh-phone").value.trim(); if (!phone) return toast("Введите телефон клиента");
+    try { shopClient = await api("/api/shop/client", {phone}); } catch (e) { return toast(e.message); }
+    if (shopClient.error) { shopClient = null; return toast(shopClient && shopClient.error || "Введите номер полностью"); }
+    const c = shopClient, lim = st.spend_limit_pct;
+    $("sh-client").innerHTML = `<div class="cl-card"><b>${esc(c.name || "Новый клиент")}</b> ${c.in_bot ? '<span class="badge">в боте</span>' : ""}${c.tier ? `<span class="badge">${esc(c.tier)}</span>` : ""}
+      <div class="hint" style="font-size:12.5px">${esc(c.phone)} · 🎁 баллы: <b style="color:var(--green)">${sm(c.points)}</b>${c.frozen ? ` · 🧊 ${sm(c.frozen)} до ${c.frozen_until.split("-").reverse().join(".")}` : ""}</div>
+      ${!c.found ? `<input id="sh-name" maxlength="80" placeholder="Имя и фамилия нового клиента" value="${esc(c.name || "")}" style="margin:8px 0 0">` : ""}
+      ${c.note ? `<div class="hint" style="font-size:12px;margin-top:4px">📝 ${esc(c.note)}</div>` : ""}</div>`;
+    $("sh-spend-hint").textContent = `(есть ${sm(c.points)}, максимум ${lim}% покупки)`;
+  };
+  $("sh-find").onclick = find;
+  $("sh-phone").onkeydown = e => { if (e.key === "Enter") find(); };
+  $("sh-phone").onchange = find;
+  $("sh-save").onclick = () => {
+    if (!shopClient) return toast("Сначала найдите клиента по телефону");
+    const amount = snum($("sh-amount").value), seller = $("sh-seller").value;
+    if (!amount) return toast("Введите сумму покупки");
+    if (!seller) return toast("Выберите продавца");
+    const body = {phone: shopClient.phone, name: $("sh-name") ? $("sh-name").value.trim() : "", amount, seller_id: +seller,
+      point_id: $("sh-point") ? +$("sh-point").value : null, points_spent: snum($("sh-spend").value),
+      payments: shopPays.map(p => ({type_id: +p.type_id, amount: snum(p.amount)})),
+      loyalty_on: $("sh-loy-on").checked, loyalty_mode: $("sh-loy-mode").value, loyalty_value: snum($("sh-loy-val").value),
+      bonus_mode: $("sh-bon-mode").value, bonus_value: snum($("sh-bon-val").value), exchange: $("sh-exch").checked,
+      note: $("sh-note").value};
+    tg.showConfirm(`Сохранить продажу ${sm(amount)} сум — ${shopClient.name || shopClient.phone}?`, async ok => {
+      if (!ok) return;
+      try { const r = await api("/api/shop/sale", body); toast(r.msg);
+        if (r.ok) { shopClient = null; shopPays = []; if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); shopSell(); }
+      } catch (e) { toast(e.message); }
+    });
+  };
+}
+/* --- список продаж --- */
+function shopList() {
+  const S = shopS, sum = S.summary, today = new Date().toISOString().slice(0, 10);
+  const d = shopDay || {from: today, to: today};
+  $("shop-body").innerHTML = `<div class="card">
+    <div class="two"><input type="date" id="sl-from" value="${d.from}" style="margin:0"><input type="date" id="sl-to" value="${d.to}" style="margin:0"></div>
+    <div class="inv-tiles" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
+      <div><b>${sum.count}</b><span>продаж</span></div><div><b>${sm(sum.amount)}</b><span>сумма</span></div>
+      <div><b style="color:var(--green)">${sm(sum.revenue)}</b><span>выручка (без баллов)</span></div></div>
+    <div class="hint" style="font-size:12.5px;line-height:1.7">${Object.entries(sum.by_pay).map(([k, v]) => `${esc(k)}: <b>${sm(v)}</b>`).join(" · ") || ""}
+      ${sum.count ? `<br>➖ баллами: ${sm(sum.points_spent)} · ➕ начислено: ${sm(sum.loyalty)} · 🎁 бонусы: ${sm(sum.bonus)}` : ""}</div></div>
+    <div class="card">${S.sales.length ? S.sales.map(x => `<div class="sale">
+      <div class="inv-top"><b>№${x.id} · ${esc(x.client_name || x.client_phone || "—")}</b><b style="white-space:nowrap">${sm(x.amount)}</b></div>
+      <div class="pmeta"><span>${x.date} ${x.time}</span><span>👤 ${esc(x.seller)}</span>${x.point ? `<span>📍 ${esc(x.point)}</span>` : ""}</div>
+      <div class="pmeta">${x.pays.map(p => `<span>${p.icon} ${esc(p.title)} ${sm(p.amount)}</span>`).join("")}${x.points_spent ? `<span>➖ баллами ${sm(x.points_spent)}</span>` : ""}</div>
+      <div style="margin-top:4px">${x.loyalty_amount ? `<span class="badge">➕ ${sm(x.loyalty_amount)} баллов</span>` : ""}${x.bonus_amount ? `<span class="badge">${x.bonus_frozen ? "🧊" : "🎁"} бонус ${sm(x.bonus_amount)}</span>` : ""}${x.exchange ? '<span class="badge">🔁 обмен</span>' : ""}${x.debt_amount ? `<span class="badge" style="color:var(--orange)">📝 долг ${sm(x.debt_amount)}</span>` : ""}</div>
+      ${x.note ? `<div class="hint" style="font-size:12px;margin-top:3px">${esc(x.note)}</div>` : ""}</div>`).join("") : `<div class="empty">Продаж за этот период нет</div>`}</div>`;
+  const upd = () => { shopDay = {from: $("sl-from").value || today, to: $("sl-to").value || $("sl-from").value || today}; loadShop(); };
+  $("sl-from").onchange = upd; $("sl-to").onchange = upd;
+}
+/* --- замороженные бонусы --- */
+function shopBonus() {
+  const list = shopS.bonuses || [], now = new Date().toISOString().slice(0, 10);
+  $("shop-body").innerHTML = `<div class="card"><div class="hint" style="font-size:12.5px;margin-bottom:8px">Бонусы за Uzum Nasiya / рассрочку. Когда клиент закроет рассрочку — разморозьте: бонус перейдёт в баллы.</div>
+    ${list.length ? list.map(b => { const due = b.unfreeze_at.slice(0, 10) <= now; return `<div class="sale"><div class="inv-top"><b>${esc(b.name || b.phone)}</b><b>${sm(b.amount)}</b></div>
+      <div class="pmeta"><span>продажа №${b.sale_id}</span><span style="${due ? "color:var(--green);font-weight:700" : ""}">${due ? "✅ срок наступил" : "🧊 до"} ${b.unfreeze_at.slice(0, 10).split("-").reverse().join(".")}</span></div>
+      <button class="btn ${due ? "btn-main" : "btn-soft"} btn-sm" style="margin-top:6px" data-unf="${b.id}">🔓 Разморозить</button></div>`; }).join("")
+    : `<div class="empty">Замороженных бонусов нет</div>`}</div>`;
+  document.querySelectorAll("[data-unf]").forEach(b => b.onclick = () => tg.showConfirm("Клиент закрыл рассрочку? Разморозить бонус и перевести в баллы?", ok => ok &&
+    api("/api/shop/unfreeze", {id: +b.dataset.unf}).then(r => { toast(r.msg); loadShop(); }).catch(e => toast(e.message))));
+}
+/* --- настройки --- */
+function shopSettings() {
+  const S = shopS, st = S.settings;
+  const opt = (list, cur, empty) => (empty ? `<option value="">${empty}</option>` : "") + list.map(([v, t]) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${esc(t)}</option>`).join("");
+  const staffName = id => (S.staff.find(x => x.id === id) || {}).name || "";
+  $("shop-body").innerHTML = `
+    <div class="card"><h3>🎁 Баллы лояльности</h3>
+      <div class="two"><div><div class="f-lbl" style="margin-top:0">% по умолчанию</div><input id="ss-pct" inputmode="decimal" value="${st.loyalty_pct}"></div>
+        <div><div class="f-lbl" style="margin-top:0">Оплата баллами до, %</div><input id="ss-lim" inputmode="decimal" value="${st.spend_limit_pct}"></div></div>
+      <div class="f-lbl">Сгорание: через сколько дней без покупок (0 — не сгорают)</div><input id="ss-exp" inputmode="numeric" value="${st.loyalty_expire_days}">
+      <div class="sw-row" style="border-top:1px solid var(--line)"><div><b>ERP — основной для клиентов</b><div class="hint" style="font-size:12px">«Спасибо за покупку» и баллы в кабинете клиента — из ERP. На тестовый месяц оставьте выключенным.</div></div>
+        <label class="sw"><input type="checkbox" id="ss-live" ${st.client_live ? "checked" : ""}><span></span></label></div>
+      <button class="btn btn-main" style="width:100%;margin-top:10px" id="ss-save">Сохранить</button></div>
+    <div class="card"><h3>📍 Точки продаж</h3>
+      ${S.points.map(p => `<div class="st-row"><div class="two"><input data-ptitle="${p.id}" value="${esc(p.title)}" style="margin:0"><input data-paddr="${p.id}" value="${esc(p.address || "")}" placeholder="адрес" style="margin:0"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><label class="chk" style="margin:0"><input type="checkbox" data-pact="${p.id}" ${p.active ? "checked" : ""}>работает</label>
+        <button class="btn btn-soft btn-sm" data-psave="${p.id}">Сохранить</button></div></div>`).join("")}
+      <div class="add-row" style="margin-top:8px"><input id="np-point" placeholder="Новая точка" style="margin:0"><button class="btn btn-main" id="np-point-add">＋</button></div></div>
+    <div class="card"><h3>💳 Типы оплаты</h3>
+      ${S.pay_types.map(t => `<div class="st-row"><div style="display:grid;grid-template-columns:56px 1fr;gap:6px"><input data-ticon="${t.id}" value="${esc(t.icon)}" style="margin:0;text-align:center"><input data-ttitle="${t.id}" value="${esc(t.title)}" style="margin:0"></div>
+        <select data-tkind="${t.id}" style="margin:6px 0 0">${opt(Object.entries(S.pay_kinds), t.kind)}</select>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><label class="chk" style="margin:0"><input type="checkbox" data-tact="${t.id}" ${t.active ? "checked" : ""}>включён</label>
+        <button class="btn btn-soft btn-sm" data-tsave="${t.id}">Сохранить</button></div></div>`).join("")}
+      <div style="display:grid;grid-template-columns:56px 1fr auto;gap:6px;margin-top:8px"><input id="nt-icon" value="💳" style="margin:0;text-align:center"><input id="nt-title" placeholder="Новый тип оплаты" style="margin:0"><button class="btn btn-main" id="nt-add">＋</button></div></div>
+    <div class="card"><h3>👥 Сотрудники, роли и KPI</h3>
+      <div class="hint" style="font-size:12px;margin-bottom:6px">Кассир вводит продажи. Продавец видит только свои. Старший — свои и прямых помощников (KPI старшего — % от их продаж).</div>
+      ${S.staff.map(x => `<div class="st-row"><b>${esc(x.name)}</b>
+        <div class="two" style="margin-top:6px"><select data-srole="${x.id}" style="margin:0">${opt([["none", "— нет доступа —"], ...Object.entries(S.roles).filter(([k]) => k !== "owner")], x.role)}</select>
+          <select data-spoint="${x.id}" style="margin:0">${opt(S.points.map(p => [p.id, p.title]), x.point_id, "— точка —")}</select></div>
+        <div class="two" style="margin-top:6px"><input data-skpi="${x.id}" inputmode="decimal" value="${x.kpi_pct}" placeholder="KPI %" style="margin:0">
+          <select data-ssen="${x.id}" style="margin:0">${opt(S.staff.filter(y => y.id !== x.id).map(y => [y.id, "старший: " + y.name]), x.senior_id, "— без старшего —")}</select></div>
+        <div class="two" style="margin-top:6px"><div class="hint" style="font-size:12px;align-self:center">KPI старшего с продаж этого сотрудника, %</div><input data-sspct="${x.id}" inputmode="decimal" value="${x.senior_pct}" style="margin:0"></div>
+        <div class="perm-chk">${Object.entries(S.perm_titles).map(([k, t]) => `<label><input type="checkbox" data-sperm="${x.id}" value="${k}" ${x.perms.includes(k) ? "checked" : ""}>${esc(t)}</label>`).join("")}</div>
+        <button class="btn btn-soft btn-sm" style="margin-top:8px" data-ssave="${x.id}">Сохранить</button></div>`).join("")}</div>`;
+  const post = body => api("/api/shop/settings", body).then(r => { toast(r.msg); if (r.ok) loadShop(); }).catch(e => toast(e.message));
+  $("ss-save").onclick = () => post({action: "settings", loyalty_pct: $("ss-pct").value, spend_limit_pct: $("ss-lim").value,
+    loyalty_expire_days: $("ss-exp").value, client_live: $("ss-live").checked});
+  document.querySelectorAll("[data-psave]").forEach(b => b.onclick = () => { const i = b.dataset.psave;
+    post({action: "point", id: +i, title: document.querySelector(`[data-ptitle="${i}"]`).value, address: document.querySelector(`[data-paddr="${i}"]`).value,
+      active: document.querySelector(`[data-pact="${i}"]`).checked}); });
+  $("np-point-add").onclick = () => post({action: "point", title: $("np-point").value});
+  document.querySelectorAll("[data-tsave]").forEach(b => b.onclick = () => { const i = b.dataset.tsave;
+    post({action: "pay_type", id: +i, title: document.querySelector(`[data-ttitle="${i}"]`).value, icon: document.querySelector(`[data-ticon="${i}"]`).value,
+      kind: document.querySelector(`[data-tkind="${i}"]`).value, active: document.querySelector(`[data-tact="${i}"]`).checked}); });
+  $("nt-add").onclick = () => post({action: "pay_type", title: $("nt-title").value, icon: $("nt-icon").value, kind: "normal"});
+  document.querySelectorAll("[data-ssave]").forEach(b => b.onclick = () => { const i = b.dataset.ssave, q = k => document.querySelector(`[data-${k}="${i}"]`);
+    post({action: "staff", user_id: +i, role: q("srole").value, point_id: q("spoint").value, kpi_pct: q("skpi").value, senior_id: q("ssen").value,
+      senior_pct: q("sspct").value, perms: [...document.querySelectorAll(`[data-sperm="${i}"]:checked`)].map(x => x.value)}); });
+}
 const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
+$("go-shop").onclick = () => { show("shop"); loadShop(); };
+$("go-shop-me").onclick = () => { show("shop"); loadShop(); };
 /* Своя задача сотрудника: на сегодня или завтра */
 let mtDay = "today";
 document.querySelectorAll("#mt-day [data-day]").forEach(b => b.onclick = () => {

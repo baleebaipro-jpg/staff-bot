@@ -373,6 +373,8 @@ def init_db():
         cols = {r[1] for r in c.execute("PRAGMA table_info(penalties)")}
         if "note" not in cols:
             c.execute("ALTER TABLE penalties ADD COLUMN note TEXT")
+    import shop  # таблицы ERP (учёт продаж)
+    shop.init()
 
 
 def notify_admins(c, text: str, buttons=None):
