@@ -1106,6 +1106,14 @@ PAGE = r"""<!doctype html>
     background: rgba(255,255,255,.03) !important; border: 1px solid var(--line) !important; border-radius: 12px !important;
     padding: 11px 14px !important; font-size: 14px !important; }
   .po-bot-list button.on { border-color: #a78bfa !important; background: rgba(139,92,246,.2) !important; }
+  /* команда: список сотрудников */
+  .emp-row { display: flex; align-items: center; gap: 12px; width: 100%; background: none; padding: 12px 0; border-top: 1px solid var(--line); }
+  .emp-row:first-child { border-top: none; }
+  .emp-row .ava { width: 50px; height: 50px; padding: 2px; box-shadow: none; flex: none; }
+  .emp-row .ava > div, .emp-row .ava > img { font-size: 18px; border-width: 2px; }
+  .emp-row b { display: block; font-size: 15.5px; }
+  .emp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .emp-badges:empty { display: none; }
   /* ERP: продажи — экраны в стиле кассы */
   .sh-head { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 14px; }
   .sh-title { font-size: 30px; font-weight: 800; letter-spacing: -.5px; }
@@ -1364,6 +1372,9 @@ PAGE = r"""<!doctype html>
     <div class="page-sub">Сколько прибыли получил каждый за всё время в компании. Пока вводится вручную — нажмите на сотрудника.</div>
     <div class="card"><div id="earn-team"></div></div>
   </div>
+
+  <!-- КАРТОЧКА СОТРУДНИКА -->
+  <div id="view-emp" class="hidden"><div id="emp-body"></div></div>
 
   <!-- ERP: ПРОДАЖИ -->
   <div id="view-shop" class="hidden">
@@ -1773,11 +1784,11 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team",
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff",
                   projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -1972,46 +1983,84 @@ function renderStaffFolder() {
   $("staff-page-sub").textContent = txt;
   $("staff-badge").innerHTML = review ? `<span class="f-badge">${review}</span>` : "";
 }
+let empId = null;
 function renderTeam() {
   renderStaffFolder();
   $("f-user").innerHTML = data.team.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
   renderTaskUsers();
-  $("team").innerHTML = data.team.map(e => {
-    const [lvl] = levelOf(e.total_hours, data.goal);
-    const pct = Math.min(100, e.total_hours / data.goal * 100);
-    return `<div class="card">
-      <div class="member"><div class="ava">${avatar(e.id, e.name, e.ava_v)}</div>
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;justify-content:space-between;gap:8px"><button class="name-btn" data-week="${e.id}">${esc(e.name)} ✏️</button><span>${e.icon}</span></div>
-          <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
-          <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div>
-
-        </div></div>
-      ${weekChips(e.week, data.today_wd)}
-      <div class="bar mini-bar"><div style="width:${pct}%"></div></div>
-      <div class="hint" style="font-size:13px;margin-top:6px"><span class="rank-sm">${lvl.icon()}</span> ${esc(lvl.name)} · ${num(e.total_hours)} / ${num(data.goal)} ч</div>
-      <div style="font-size:13px;margin-top:4px;color:${e.penalties_total ? "var(--red)" : "var(--hint)"}">🔴 Штрафов: всего ${e.penalties_total} · за месяц ${e.penalties_month}</div>
-      ${e.penalties.map(x => `<div class="pen"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
-        <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div>`).join("")}
-      ${(e.recurring || []).length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🔁 Повторяющиеся задачи:</div>` +
-        e.recurring.map(r => `<div class="task"><div class="tt">🔁 ${esc(r.title)}<div style="font-size:12px" class="hint">${esc(r.when)}</div></div>
-          <button class="btn btn-soft btn-sm" data-stoprep="${r.id}" title="Остановить повтор">✕</button></div>`).join("") : ""}
-      ${e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : t.self ? "✍️" : "📌"} ${esc(t.title)}${t.self ? ` <span class="hint" style="font-size:11.5px">(сам себе)</span>` : ""}${t.due
+  // компактный список: нажатие — карточка сотрудника
+  $("team").innerHTML = `<div class="card" style="padding:4px 14px">${data.team.map(e => {
+    const review = e.tasks.filter(t => t.status === "review" && !t.due).length, open = e.tasks.filter(t => !t.due).length;
+    return `<button class="emp-row" data-emp="${e.id}"><div class="ava">${avatar(e.id, e.name, e.ava_v)}</div>
+      <div style="flex:1;min-width:0;text-align:left"><b>${esc(e.name)}</b>
+        <div class="hint" style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.status)}${e.late ? ` · <span style="color:var(--red)">опоздание ${e.late}</span>` : ""}</div>
+        <div class="emp-badges">${review ? `<span class="badge" style="color:var(--orange)">⏳ ${review} на проверке</span>` : ""}${open ? `<span class="badge">📌 ${open}</span>` : ""}${e.penalties_month ? `<span class="badge" style="color:var(--red)">🔴 ${e.penalties_month}</span>` : ""}</div></div>
+      <span style="font-size:18px">${e.icon}</span><span class="f-arrow" style="font-size:22px;color:#c4b5fd">›</span></button>`; }).join("")}</div>`;
+  document.querySelectorAll("[data-emp]").forEach(b => b.onclick = () => { empId = +b.dataset.emp; show("emp"); renderEmp(); });
+  if (view === "emp") renderEmp();
+}
+/* Карточка сотрудника: всё о нём и все действия */
+function renderEmp() {
+  const e = data.team.find(x => x.id === empId);
+  if (!e) { $("emp-body").innerHTML = `<div class="card empty">Сотрудник не найден</div>`; return; }
+  const [lvl] = levelOf(e.total_hours, data.goal), pct = Math.min(100, e.total_hours / data.goal * 100);
+  const earn = (data.earnings_team || []).find(x => x.id === e.id);
+  $("emp-body").innerHTML = `
+    <div class="card"><div class="member"><div class="ava" style="width:72px;height:72px">${avatar(e.id, e.name, e.ava_v)}</div>
+      <div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:20px">${esc(e.name)}</b><span style="font-size:20px">${e.icon}</span></div>
+        <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
+        <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div></div></div>
+      <div class="bar mini-bar" style="margin-top:12px"><div style="width:${pct}%"></div></div>
+      <div class="hint" style="font-size:13px;margin-top:6px"><span class="rank-sm">${lvl.icon()}</span> ${esc(lvl.name)} · ${num(e.total_hours)} / ${num(data.goal)} ч</div></div>
+    <div class="menu-grid" style="margin-bottom:14px">
+      <button class="card" id="ec-task"><span>📌</span>Задача</button>
+      <button class="card" id="ec-week"><span>🗓</span>График</button>
+      <button class="card" id="ec-fine"><span>🔴</span>Штраф</button>
+      <button class="card" id="ec-earn"><span>💵</span>Foyda${earn ? `<div class="hint" style="font-size:12px;font-weight:600">${money0(earn.total, "сум")}</div>` : ""}</button></div>
+    <div class="card"><div class="head"><h3>🗓 График на неделю</h3><button class="link" id="ec-week2">Изменить</button></div>${weekChips(e.week, data.today_wd)}</div>
+    <div class="card"><div class="head"><h3>📋 Задачи</h3><span class="hint" style="font-size:13px">${e.tasks.length}</span></div>
+      ${e.tasks.length ? e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : t.self ? "✍️" : "📌"} ${esc(t.title)}${t.self ? ` <span class="hint" style="font-size:11.5px">(сам себе)</span>` : ""}${t.due
           ? `<div style="font-size:12px" class="hint">📅 на ${t.due}</div>`
           : t.status === "review" ? `<div style="font-size:12px;color:var(--orange)">⏳ ждёт вашей проверки</div>` : ""}</div>
         ${t.status === "review" && !t.due ? `<button class="btn btn-main btn-sm" data-review="${t.id}" data-act="ok">✅</button>
         <button class="btn btn-soft btn-sm" data-review="${t.id}" data-act="back">↩️</button>` : ""}
         ${t.due ? "" : `<button class="btn btn-soft btn-sm" data-review="${t.id}" data-act="later" title="На завтра">📅</button>`}
-        ${t.status === "review" ? "" : `<button class="btn btn-soft btn-sm" data-del="${t.id}">✕</button>`}</div>`).join("")}
-    </div>`; }).join("");
-  document.querySelectorAll("[data-week]").forEach(b => b.onclick = () => openWeek(+b.dataset.week));
-  document.querySelectorAll("[data-review]").forEach(b => b.onclick = () =>
+        ${t.status === "review" ? "" : `<button class="btn btn-soft btn-sm" data-del="${t.id}">✕</button>`}</div>`).join("") : `<div class="empty">Открытых задач нет</div>`}
+      ${(e.recurring || []).length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🔁 Повторяющиеся:</div>` +
+        e.recurring.map(r => `<div class="task"><div class="tt">🔁 ${esc(r.title)}<div style="font-size:12px" class="hint">${esc(r.when)}</div></div>
+          <button class="btn btn-soft btn-sm" data-stoprep="${r.id}" title="Остановить повтор">✕</button></div>`).join("") : ""}</div>
+    <div class="card"><div class="head"><h3>🔴 Штрафы</h3><span class="hint" style="font-size:13px">всего ${e.penalties_total} · за месяц ${e.penalties_month}</span></div>
+      ${e.penalties.length ? e.penalties.map(x => `<div class="pen"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
+        <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div>`).join("") : `<div class="empty">Штрафов нет 👍</div>`}</div>`;
+  $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
+  $("ec-earn").onclick = () => earnSheet(e.id);
+  $("ec-task").onclick = () => {
+    invSheet(`<h3>📌 Задача — ${esc(e.name)}</h3><input id="ek-t" maxlength="500" placeholder="Что нужно сделать?">
+      <div class="quick" id="ek-rep" style="margin:0 0 10px"><button data-r="once" class="on">Один раз</button><button data-r="daily">🔁 Каждый день</button><button data-r="weekly">🔁 Каждую неделю</button></div>
+      <select id="ek-wd" class="hidden">${["понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам", "воскресеньям"].map((d, i) => `<option value="${i}">по ${d}</option>`).join("")}</select>
+      ${sheetBtns("Поставить")}`);
+    let rep = "once";
+    document.querySelectorAll("#ek-rep [data-r]").forEach(b => b.onclick = () => { rep = b.dataset.r;
+      document.querySelectorAll("#ek-rep [data-r]").forEach(x => x.classList.toggle("on", x === b)); $("ek-wd").classList.toggle("hidden", rep !== "weekly"); });
+    $("is-cancel").onclick = invSheetClose;
+    $("is-ok").onclick = () => { const title = $("ek-t").value.trim(); if (!title) return toast("Введите задачу");
+      const body = {user_ids: [e.id], title, repeat: rep}; if (rep === "weekly") body.weekday = +$("ek-wd").value;
+      invSheetClose(); action("/api/add_task", body); };
+  };
+  $("ec-fine").onclick = () => {
+    invSheet(`<h3>🔴 Штраф — ${esc(e.name)}</h3><input id="efn-amount" maxlength="50" placeholder="Сумма, например 50 000 сум (можно пусто)">
+      <input id="efn-reason" maxlength="300" placeholder="Причина">${sheetBtns("Выписать")}`);
+    $("is-cancel").onclick = invSheetClose;
+    $("is-ok").onclick = () => { const reason = $("efn-reason").value.trim(); if (!reason) return toast("Укажите причину");
+      const amount = $("efn-amount").value.trim(); invSheetClose(); action("/api/add_penalty", {user_id: e.id, reason, amount}); };
+  };
+  document.querySelectorAll("#emp-body [data-review]").forEach(b => b.onclick = () =>
     action("/api/task_review", {id: +b.dataset.review, action: b.dataset.act}));
-  document.querySelectorAll("[data-delpen]").forEach(b => b.onclick = () =>
+  document.querySelectorAll("#emp-body [data-delpen]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить штраф?", ok => ok && action("/api/delete_penalty", {id: +b.dataset.delpen})));
-  document.querySelectorAll("[data-del]").forEach(b => b.onclick = () =>
+  document.querySelectorAll("#emp-body [data-del]").forEach(b => b.onclick = () =>
     tg.showConfirm("Удалить задачу?", ok => ok && action("/api/delete_task", {id: +b.dataset.del})));
-  document.querySelectorAll("[data-stoprep]").forEach(b => b.onclick = () =>
+  document.querySelectorAll("#emp-body [data-stoprep]").forEach(b => b.onclick = () =>
     tg.showConfirm("Остановить повтор? Новые задачи перестанут появляться (уже созданные останутся).",
       ok => ok && action("/api/stop_recurring", {id: +b.dataset.stoprep})));
 }
