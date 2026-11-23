@@ -1285,6 +1285,13 @@ def start_proof(uid: int):
     return True, st.s(staff_lang(uid), "proof_prompt", minutes=PROOF_MINUTES, code=code, min_sec=PROOF_MIN_SECONDS)
 
 
+def proof_code(uid: int) -> str:
+    """Число, которое нужно сказать в видео (для записи прямо в кабинете)."""
+    with db() as c:
+        r = c.execute("SELECT code FROM proof_pending WHERE user_id=?", (uid,)).fetchone()
+    return r[0] if r else ""
+
+
 def proof_pending(uid: int) -> bool:
     with db() as c:
         r = c.execute("SELECT expires_at FROM proof_pending WHERE user_id=?", (uid,)).fetchone()

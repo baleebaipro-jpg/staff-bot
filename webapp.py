@@ -273,6 +273,7 @@ def api_me(uid, data):
         res["projects"] = projects.overview(uid)
         if not res["is_employee"]:
             res["boss_day"] = core.boss_day(uid)  # «Пришёл / Ушёл» руководителя
+            res["boss_day"]["video"] = core.PROOF_REQUIRED
         res["earnings_team"] = core.earnings_team()
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
@@ -293,15 +294,72 @@ def api_me(uid, data):
 @app.post("/api/checkin")
 @need_user(staff=True)
 def api_checkin(uid, data):
-    if core.PROOF_REQUIRED and core.employee(uid):  # руководителю кружок не нужен
+    if core.PROOF_REQUIRED:
         ok, msg = core.start_proof(uid)
         if not ok:
             return jsonify(ok=False, msg=msg)
+        # руководитель и мобильное приложение — видео записывается прямо в кабинете
+        if not core.employee(uid) or data.get("video"):
+            return jsonify(ok=True, video=True, code=core.proof_code(uid), min_sec=core.PROOF_MIN_SECONDS,
+                           minutes=core.PROOF_MINUTES)
         with core.db() as c:
             core.notify(c, uid, "HTML:" + msg)  # бот пришлёт просьбу о кружке в чат
         return jsonify(ok=True, close=True, msg=st.s(core.staff_lang(uid), "proof_closed"))
     ok, msg = core.check_in(uid)
     return jsonify(ok=ok, msg=msg)
+
+
+PROOF_DIR = os.path.join(config.DATA_DIR, "proofs")
+PROOF_KEEP_DAYS = 30
+
+
+@app.post("/api/proof_video")
+@need_user(staff=True)
+def api_proof_video(uid, data):
+    """Видео-подтверждение прихода, записанное прямо в кабинете (вместо кружка в чате)."""
+    raw = str(data.get("video") or "")
+    mime = raw[5:raw.find(";")] if raw.startswith("data:") and ";" in raw else ""
+    if "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except Exception:
+        return jsonify(ok=False, msg="Видео не загрузилось, запишите ещё раз.")
+    if len(blob) < 2000 or len(blob) > 25 * 1024 * 1024:
+        return jsonify(ok=False, msg="Видео не подходит, запишите ещё раз (3–10 секунд).")
+    try:
+        dur = float(data.get("duration") or 0)
+    except (TypeError, ValueError):
+        dur = 0
+    os.makedirs(PROOF_DIR, exist_ok=True)
+    old = time.time() - PROOF_KEEP_DAYS * 86400
+    for f in os.listdir(PROOF_DIR):  # старые видео — удаляем
+        fp = os.path.join(PROOF_DIR, f)
+        try:
+            if os.path.getmtime(fp) < old:
+                os.remove(fp)
+        except OSError:
+            pass
+    sha = hashlib.sha256(blob).hexdigest()
+    ok, msg, code = core.take_proof(uid, file_unique_id="app:" + sha, duration=int(round(dur)))
+    if not ok:
+        return jsonify(ok=False, msg=msg)
+    ext = "mp4" if "mp4" in mime or "quicktime" in mime else "webm"
+    path = os.path.join(PROOF_DIR, f"{uid}_{core.now():%Y%m%d_%H%M%S}.{ext}")
+    with open(path, "wb") as f:
+        f.write(blob)
+    if core.employee(uid):  # видео сотрудника — руководителю / в группу проверки, как кружок
+        cin, late = core.last_checkin(uid)
+        note = f"📹 {core.name(uid)}: приход отмечен в {cin} (видео из приложения)\n🔢 Код: {code} — проверьте, что назвал(а) его"
+        if late:
+            note += f"\n⚠️ Опоздание: {core.fmt_min(late)}"
+        chat = getattr(config, "PROOF_CHAT_ID", None)
+        targets = [(chat, getattr(config, "PROOF_THREAD_ID", None))] if chat else [(a, None) for a in config.ADMINS]
+        with core.db() as c:
+            for chat_id, thread in targets:
+                c.execute("INSERT INTO outbox(chat_id, text, photo, thread_id) VALUES(?, ?, ?, ?)",
+                          (chat_id, note, "video:" + path, thread))
+    return jsonify(ok=True, msg=msg)
 
 
 @app.post("/api/checkout")
@@ -1107,6 +1165,20 @@ PAGE = r"""<!doctype html>
   .bd-hist summary { cursor: pointer; font-size: 14px; color: var(--muted); list-style: none; }
   .bd-row { display: flex; justify-content: space-between; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 14px; font-variant-numeric: tabular-nums; }
   .bd-row:last-child { border-bottom: 0; }
+  #rec { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 24px; background: radial-gradient(420px 320px at 50% 30%, rgba(124,58,237,.3), transparent 70%), #06050c; }
+  #rec.hidden { display: none; }
+  .rec-code { text-align: center; color: var(--muted); font-size: 15px; }
+  .rec-code b { display: block; font-size: 56px; color: #fff; font-weight: 800; letter-spacing: 2px; margin-top: 4px; }
+  .rec-ring { position: relative; width: min(72vw, 300px); aspect-ratio: 1; }
+  .rec-ring svg { position: absolute; inset: -8px; width: calc(100% + 16px); height: calc(100% + 16px); transform: rotate(-90deg); }
+  .rec-ring circle { fill: none; stroke: #a78bfa; stroke-width: 2.4; stroke-dasharray: 301.6; stroke-dashoffset: 301.6; stroke-linecap: round; }
+  .rec-ring video { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; transform: scaleX(-1); background: #120f22;
+    border: 1px solid var(--line); }
+  .rec-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 54px; pointer-events: none; }
+  .rec-hint { color: var(--muted); font-size: 14px; text-align: center; min-height: 20px; }
+  .rec-btn { width: min(80vw, 320px); }
+  .rec-x { background: none; border: 0; color: var(--muted); font-size: 15px; padding: 8px; }
   #splash.out { opacity: 0; visibility: hidden; }
   #splash img { width: 70%; max-width: 360px; animation: spIn 1.1s cubic-bezier(.2,.8,.2,1) both, spGlow 2.4s ease-in-out 1.1s infinite; }
   .sp-line { width: 120px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
@@ -1273,6 +1345,15 @@ PAGE = r"""<!doctype html>
 </style>
 </head>
 <body>
+<div id="rec" class="hidden">
+  <div class="rec-code">Скажите вслух число<b id="rec-code">—</b></div>
+  <div class="rec-ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" id="rec-prog"/></svg>
+    <video id="rec-v" playsinline muted autoplay></video><div class="rec-ph" id="rec-ph">📹</div></div>
+  <div class="rec-hint" id="rec-hint">Включаю камеру…</div>
+  <button class="btn btn-main rec-btn" id="rec-btn" disabled>● Записать</button>
+  <label class="btn btn-soft rec-btn hidden" id="rec-file">📹 Открыть камеру<input type="file" accept="video/*" capture="user" hidden id="rec-input"></label>
+  <button class="rec-x" id="rec-x">Отмена</button>
+</div>
 <div id="splash"><img src="/static/radi-logo.png" alt="RADI &amp; CO."><div class="sp-line"><i></i></div></div>
 <div class="wrap">
   <div class="brand brand-c hidden" id="brand">
@@ -1745,6 +1826,7 @@ if (IS_APP) {
   document.documentElement.classList.add("app");
   window.appBack = () => {  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
     try {
+      if (!document.getElementById("rec").classList.contains("hidden")) { recClose(); return true; }
       const bg = document.getElementById("inv-sheet-bg");
       if (bg && !bg.classList.contains("hidden")) { invSheetClose(); return true; }
       const sb = document.getElementById("sheet-bg");
@@ -1859,7 +1941,9 @@ async function api(path, body = {}) {
   return j;
 }
 async function action(path, body) {
-  try { const r = await api(path, body); toast(r.msg);
+  try { const r = await api(path, body);
+    if (r.video) return openRecorder(r);
+    toast(r.msg);
     if (r.close) { setTimeout(() => tg.close(), 1800); }
     if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
     await load();
@@ -3553,6 +3637,83 @@ function renderBossDay() {
     : `<div class="empty">Смен пока нет</div>`;
 }
 $("bd-btn").onclick = () => action(data.boss_day.on_site ? "/api/checkout" : "/api/checkin");
+/* Видео-подтверждение прихода прямо в кабинете: камера на экране, человек говорит вслух число */
+const REC_MAX = 8;
+let recStream = null, recRec = null, recTimer = null;
+function recStop() {
+  clearInterval(recTimer);
+  if (recRec && recRec.state !== "inactive") { recRec.onstop = null; recRec.stop(); }
+  if (recStream) recStream.getTracks().forEach(t => t.stop());
+  recStream = recRec = null;
+}
+function recClose() { recStop(); $("rec").classList.add("hidden"); $("rec-v").srcObject = null; }
+async function recSend(blob, dur) {
+  $("rec-hint").textContent = "Отправляю…"; $("rec-btn").disabled = true;
+  const url = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
+  try {
+    const r = await api("/api/proof_video", {video: url, duration: dur});
+    if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
+    if (!r.ok) { $("rec-hint").textContent = r.msg; $("rec-btn").disabled = false; $("rec-btn").textContent = "● Записать ещё раз";
+                 return recCamera(); }
+    recClose(); toast(r.msg); load();
+  } catch (e) { $("rec-hint").textContent = e.message; $("rec-btn").disabled = false; }
+}
+async function recCamera() {
+  if (recStream) return true;
+  try {
+    recStream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user", width: {ideal: 480}, height: {ideal: 480}},
+                                                           audio: true});
+  } catch (e) { return false; }
+  $("rec-v").srcObject = recStream; $("rec-ph").classList.add("hidden");
+  return true;
+}
+async function openRecorder(r) {
+  const minSec = r.min_sec || 3;
+  $("rec-code").textContent = r.code; $("rec").classList.remove("hidden");
+  $("rec-prog").style.transition = "none"; $("rec-prog").style.strokeDashoffset = 301.6;
+  $("rec-ph").classList.remove("hidden"); $("rec-btn").textContent = "● Записать";
+  $("rec-x").onclick = recClose;
+  const canRec = window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && await recCamera();
+  $("rec-btn").classList.toggle("hidden", !canRec); $("rec-file").classList.toggle("hidden", !!canRec);
+  if (!canRec) {  // камера в странице недоступна — системная камера телефона
+    $("rec-hint").textContent = `Запишите видео ${minSec}–${REC_MAX} сек и назовите число. У вас ${r.minutes} мин.`;
+    $("rec-input").value = "";
+    $("rec-input").onchange = () => {
+      const f = $("rec-input").files[0]; if (!f) return;
+      const v = document.createElement("video"); v.preload = "metadata";
+      v.onloadedmetadata = () => { URL.revokeObjectURL(v.src); recSend(f, v.duration || 0); };
+      v.onerror = () => recSend(f, 0);
+      v.src = URL.createObjectURL(f);
+    };
+    return;
+  }
+  $("rec-hint").textContent = `Нажмите «Записать» и назовите число. ${minSec}–${REC_MAX} сек.`;
+  $("rec-btn").disabled = false;
+  $("rec-btn").onclick = () => {
+    if (recRec && recRec.state === "recording") {
+      if ((Date.now() - recRec.t0) / 1000 < minSec) return toast(`Не короче ${minSec} сек`);
+      return recRec.stop();
+    }
+    const type = ["video/mp4", "video/webm;codecs=vp8,opus", "video/webm"].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+    const chunks = [];
+    recRec = new MediaRecorder(recStream, Object.assign({videoBitsPerSecond: 700000}, type ? {mimeType: type} : {}));
+    recRec.ondataavailable = e => e.data && e.data.size && chunks.push(e.data);
+    recRec.onstop = () => {
+      clearInterval(recTimer);
+      const dur = (Date.now() - recRec.t0) / 1000, mime = (recRec.mimeType || type || "video/webm").split(";")[0];
+      if (recStream) recStream.getTracks().forEach(t => t.stop()); recStream = null;
+      recSend(new Blob(chunks, {type: mime}), dur);
+    };
+    recRec.t0 = Date.now(); recRec.start(250);
+    $("rec-prog").style.transition = `stroke-dashoffset ${REC_MAX}s linear`; $("rec-prog").style.strokeDashoffset = 0;
+    $("rec-btn").textContent = "■ Готово";
+    recTimer = setInterval(() => {
+      const s = (Date.now() - recRec.t0) / 1000;
+      $("rec-hint").textContent = s < minSec ? `Запись… ${Math.ceil(minSec - s)}` : "Можно нажать «Готово»";
+      if (s >= REC_MAX) recRec.stop();
+    }, 200);
+  };
+}
 function renderDash() {
   renderBossDay();
   const o = data.projects, cl = data.clients || {}, et = data.earnings_team || [];
@@ -3643,7 +3804,7 @@ $("cl-file").onchange = async (ev) => {
     await action("/api/avatar", {image: await squareJpeg(file)});
   } catch (e) { toast(e.message); }
 };
-$("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin");
+$("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin", IS_APP ? {video: 1} : {});
 let tRepeat = "once";
 const tUsers = new Set();  // кому ставим задачу (выбор сохраняется при автообновлении)
 function renderTaskUsers() {
