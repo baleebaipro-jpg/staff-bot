@@ -1577,7 +1577,7 @@ function renderMe() {
   const open = data.tasks.filter(t => !t.done), done = data.tasks.filter(t => t.done).slice(0, 3);
   $("tasks").innerHTML = (open.length || done.length) ? [...open, ...done].map(t => `
     <div class="task ${t.done ? "done" : ""}"><div class="tt">${t.repeat ? "🔁 " : t.self ? "✍️ " : ""}${esc(t.title)}<div class="hint" style="font-size:12px">${t.self ? sx("mt_mine") + " · " : ""}${t.created}</div></div>
-    ${t.self && !t.done ? `<button class="btn btn-soft btn-sm" data-mtdel="${t.id}">✕</button>` : ""}
+
     ${t.done ? "✔️" : t.due ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("due", {d: t.due})}</span>`
       : t.status === "review" ? `<span class="hint" style="font-size:13px;white-space:nowrap">${sx("review")}</span>`
       : `<button class="btn btn-main btn-sm" data-done="${t.id}">${sx("done")}</button>`}</div>`).join("")
