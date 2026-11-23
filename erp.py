@@ -504,6 +504,51 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
     return len(rows)
 
 
+_history = {"running": False}
+
+
+def history_backfill(days: int = 365) -> bool:
+    """Загрузить историю продаж BILLZ за год (в фоне, по месяцам) — для истории покупок в карточке клиента."""
+    if not enabled() or _history["running"]:
+        return False
+    _history["running"] = True
+
+    def run():
+        try:
+            end = core.now().date()
+            start = end - timedelta(days=days)
+            d = start
+            while d <= end:
+                to = min(end, d + timedelta(days=29))
+                try:
+                    mirror_sales(d.strftime("%Y-%m-%d"), to.strftime("%Y-%m-%d"))
+                except BillzError as e:
+                    logging.warning("BILLZ: история продаж %s…%s: %s", d, to, e)
+                core.flag_json("billz_history", {"from": start.strftime("%Y-%m-%d"), "upto": to.strftime("%Y-%m-%d"),
+                                                 "running": to < end, "at": core.now().strftime("%d.%m %H:%M")})
+                d = to + timedelta(days=1)
+                time.sleep(0.5)
+        except Exception:  # noqa: BLE001
+            logging.exception("История продаж BILLZ")
+        finally:
+            _history["running"] = False
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
+def customer_card(billz_id: str) -> dict:
+    """Карточка клиента BILLZ (статистика, заметки, группы)."""
+    c = _api("GET", f"/v1/customer/{billz_id}") or {}
+    keys = ("first_name", "last_name", "phone_numbers", "date_of_birth", "gender", "purchase_amount", "debt_amount", "balance",
+            "visits_count", "average_purchase_amount", "average_discount", "average_products_count", "top_transaction",
+            "first_purchase_date", "last_purchase_date", "registered_shop_name", "group_names", "tag_names", "client_type")
+    out = {k: c.get(k) for k in keys}
+    out["notes"] = [{"text": n.get("value") or "", "at": str(n.get("created_at") or "")[:16].replace("T", " "),
+                     "by": n.get("created_by") or ""} for n in (c.get("notes") or []) if n.get("value")]
+    out["cards"] = [x.get("code") for x in (c.get("cards") or []) if x.get("code")]
+    return out
+
+
 def check_purchases() -> int:
     """Новые продажи из отчёта → обновить карточки этих клиентов бота (рост суммы даст «спасибо»)."""
     rows = _sales_rows()

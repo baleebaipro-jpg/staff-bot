@@ -557,6 +557,22 @@ def api_import_clients(uid, data):
     return jsonify(ok=True, msg=msg, **r)
 
 
+@app.post("/api/client_card")
+@need_user(admin=True)
+def api_client_card(uid, data):
+    """Карточка клиента: профиль, статистика BILLZ, заметки, долги, история покупок."""
+    if data.get("action") == "note":
+        ok, msg = shop.save_note(data.get("phone"), data.get("note"), data.get("name") or "")
+        return jsonify(ok=ok, msg=msg)
+    if data.get("action") == "history":
+        started = erp.history_backfill()
+        return jsonify(ok=True, msg="📥 Загружаю историю продаж из BILLZ за год — это займёт несколько минут." if started
+                       else "Загрузка истории уже идёт…")
+    if erp.enabled() and not (core.flag_json("billz_history") or {}).get("from"):
+        erp.history_backfill()  # первый раз — история продаж за год загрузится сама (в фоне)
+    return jsonify(shop.client_card(data.get("bot_id") or None, data.get("store_id") or None))
+
+
 @app.post("/api/set_tier")
 @need_user(admin=True)
 def api_set_tier(uid, data):
@@ -1373,6 +1389,9 @@ PAGE = r"""<!doctype html>
     <div class="card"><div id="earn-team"></div></div>
   </div>
 
+  <!-- КАРТОЧКА КЛИЕНТА -->
+  <div id="view-ccard" class="hidden"><div id="cc-body"></div></div>
+
   <!-- КАРТОЧКА СОТРУДНИКА -->
   <div id="view-emp" class="hidden"><div id="emp-body"></div></div>
 
@@ -1790,11 +1809,11 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff",
+const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff", ccard: "clients",
                   projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -2878,13 +2897,17 @@ async function loadClients(more = false) {
     const right = c.bot_id ? `<select data-tier="${c.bot_id}">${opts}</select>`
       : `<select data-stier="${esc(c.store_id)}">${opts}</select>`;
     const bonus = c.balance ? `<span style="color:var(--green);font-weight:700">🎁 ${money(c.balance)}</span>` : "";
-    return `<div class="cl-row"><div style="font-size:20px">${TIER_EMOJI[c.tier] || (c.bot_id ? "🤖" : "👤")}</div>
+    return `<div class="cl-row" data-cc="${c.bot_id ? "b:" + c.bot_id : "s:" + esc(c.store_id || "")}" style="cursor:pointer"><div style="font-size:20px">${TIER_EMOJI[c.tier] || (c.bot_id ? "🤖" : "👤")}</div>
       <div style="flex:1;min-width:0"><b>${esc(c.name)}</b>${c.bot_id ? ` <span class="chip active" style="font-size:10.5px;padding:2px 7px">в боте</span>` : ""}
         <div class="hint" style="font-size:12px">${meta.join(" · ")}</div>${bonus ? `<div style="font-size:12.5px;margin-top:2px">${bonus}</div>` : ""}</div>
       ${right}</div>`;
   }).join("") + (r.more ? `<button class="btn btn-soft" style="width:100%;margin-top:10px" id="bz-more">Показать ещё (${r.more})</button>` : "")
     : `<div class="empty">${$("cl-search").value.trim() ? "Никого не нашли" : "Клиентов пока нет"}</div>`;
   if ($("bz-more")) $("bz-more").onclick = () => loadClients(true);
+  document.querySelectorAll("#cl-list [data-cc]").forEach(r => r.onclick = e => {
+    if (e.target.closest("select")) return;
+    const [k, v] = r.dataset.cc.split(":"); ccKey = k === "b" ? {bot_id: +v} : {store_id: v}; show("ccard"); loadCard();
+  });
   document.querySelectorAll("#cl-list [data-tier]").forEach(s => s.onchange = () =>
     action("/api/set_tier", {user_id: +s.dataset.tier, tier: s.value}).then(() => loadClients()));
   document.querySelectorAll("#cl-list [data-stier]").forEach(s => s.onchange = () =>
@@ -2902,6 +2925,60 @@ $("imp-go").onclick = async () => {
   try { const r = await api("/api/import_clients", {text}); toast(r.msg); if (r.ok) { $("imp-text").value = ""; loadClients(); load(); } }
   catch (e) { toast(e.message); }
 };
+/* ---------- карточка клиента ---------- */
+let ccKey = null, ccData = null;
+async function loadCard() {
+  $("cc-body").innerHTML = `<div class="card empty">⏳ Загружаю данные клиента…</div>`;
+  try { ccData = await api("/api/client_card", ccKey); } catch (e) { $("cc-body").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+  renderCard();
+}
+function renderCard() {
+  const c = ccData, k = c.card || {}, m = v => v === null || v === undefined ? "—" : Math.round(v).toLocaleString("ru-RU");
+  const dt = v => v ? String(v).slice(0, 10).split("-").reverse().join(".") : "—";
+  const tiers = data.tiers || {};
+  const hist = c.history || {}, h = c.purchases || [];
+  const sales = h.filter(x => x.type === "SALE"), ret = h.filter(x => x.type === "RETURN");
+  const initials = (c.name || "?").split(" ").map(x => x[0] || "").join("").slice(0, 2).toUpperCase();
+  $("cc-body").innerHTML = `
+    <div class="card"><div class="member"><div class="ava tier-ring ${c.tier}" style="width:72px;height:72px;padding:3px"><div style="font-size:24px">${esc(initials)}</div></div>
+      <div style="flex:1;min-width:0"><b style="font-size:20px">${esc(c.name)}</b>
+        <div class="hint" style="font-size:13.5px">${c.phone ? `<a href="tel:${esc(c.phone)}" style="color:#b9a2ff">${esc(c.phone)}</a>` : "номер не указан"}${c.birth ? " · 🎂 " + dt(c.birth) : ""}</div>
+        <div style="margin-top:6px">${c.in_bot ? '<span class="badge">🤖 в боте</span>' : ""}${c.lang ? `<span class="badge">${c.lang.toUpperCase()}</span>` : ""}${c.since ? `<span class="badge">с ${dt(c.since)}</span>` : ""}
+          ${(k.group_names || []).map(g => `<span class="badge">👥 ${esc(g)}</span>`).join("")}${(k.tag_names || []).map(g => `<span class="badge">🏷 ${esc(g)}</span>`).join("")}</div></div></div>
+      <select id="cc-tier" style="margin:12px 0 0">${Object.entries(tiers).map(([t, n]) => `<option value="${t}" ${t === c.tier ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+    ${c.card_error ? `<div class="card hint" style="font-size:13px">⚠️ BILLZ: ${esc(c.card_error)}</div>` : ""}
+    ${c.card ? `<div class="card"><b style="font-size:18px">📊 Статистика (BILLZ)</b>
+      <div class="inv-tiles" style="grid-template-columns:1fr 1fr;margin-top:10px">
+        <div><b>${m(k.purchase_amount)}</b><span>сумма покупок</span></div><div><b style="color:var(--green)">${m(k.balance)}</b><span>бонусы</span></div>
+        <div><b>${m(k.visits_count)}</b><span>визитов</span></div><div><b>${m(k.average_purchase_amount)}</b><span>средний чек</span></div>
+        <div><b>${m(k.top_transaction)}</b><span>крупнейшая покупка</span></div><div><b style="${k.debt_amount ? "color:var(--red)" : ""}">${m(k.debt_amount)}</b><span>долг</span></div></div>
+      <div class="kv"><span>Первая покупка</span><b>${dt(k.first_purchase_date)}</b></div>
+      <div class="kv"><span>Последняя покупка</span><b>${dt(k.last_purchase_date)}</b></div>
+      ${k.average_discount ? `<div class="kv"><span>Средняя скидка</span><b>${Math.round(k.average_discount * 10) / 10}%</b></div>` : ""}
+      ${k.registered_shop_name ? `<div class="kv"><span>Магазин регистрации</span><b>${esc(k.registered_shop_name)}</b></div>` : ""}
+      ${(k.cards || []).length ? `<div class="kv"><span>Карты</span><b>${k.cards.map(esc).join(", ")}</b></div>` : ""}
+      ${c.erp_points ? `<div class="kv"><span>🧾 Баллы ERP</span><b>${m(c.erp_points)}</b></div>` : ""}</div>` : ""}
+    <div class="card"><b style="font-size:18px">📝 Заметки</b>
+      ${(k.notes || []).map(n => `<div class="pen"><div class="tt">${esc(n.text)}<div class="hint" style="font-size:11.5px">BILLZ · ${esc(n.at)}</div></div></div>`).join("")}
+      <textarea id="cc-note" rows="3" maxlength="1000" placeholder="Ваша заметка о клиенте…" style="margin-top:10px">${esc(c.note)}</textarea>
+      <button class="btn btn-soft" style="width:100%" id="cc-note-save">Сохранить заметку</button></div>
+    ${c.debts.length ? `<div class="card"><b style="font-size:18px">💳 Долги</b>${c.debts.map(d => `<div class="inv" style="padding:10px 0">
+      <div class="inv-top"><b>${d.order ? "Заказ №" + esc(String(d.order)) : "Долг"}</b><b style="color:var(--red)">${m(d.left)}</b></div>
+      <div class="inv-sub hint"><span>сумма ${m(d.amount)}${d.paid ? " · оплачено " + m(d.paid) : ""}</span>${d.due ? `<span style="${d.overdue ? "color:var(--red);font-weight:700" : ""}">${d.overdue ? "⏰" : "📅"} до ${dt(d.due)}</span>` : ""}</div></div>`).join("")}</div>` : ""}
+    <div class="card"><div class="head"><b style="font-size:18px">🛍 История покупок</b><span class="hint" style="font-size:12.5px">${sales.length} покупок${ret.length ? ` · ${ret.length} возвр.` : ""}</span></div>
+      <div class="hint" style="font-size:12px;margin-bottom:6px">${hist.from ? `Из BILLZ с ${dt(hist.from)}${hist.running ? " · загружается…" : ""}` : "История из BILLZ ещё не загружена"}
+        <button class="link" id="cc-hist" style="font-size:12px">🔄 ${hist.from ? "Обновить за год" : "Загрузить за год"}</button></div>
+      ${h.length ? h.map(x => `<div class="sale"><div class="inv-top"><b style="${x.type === "RETURN" ? "color:var(--red)" : ""}">${x.type === "RETURN" ? "↩️ Возврат" : x.type === "EXCHANGE" ? "🔁 Обмен" : "🛍 Покупка"} · ${dt(x.date)} ${x.date.slice(11, 16)}</b>
+        <b style="${x.type === "RETURN" ? "color:var(--red)" : ""}">${m(x.total)}</b></div>
+        <div class="pmeta"><span>📍 ${esc(x.shop)}</span>${x.seller ? `<span>👤 ${esc(x.seller)}</span>` : ""}${x.units ? `<span>${x.units} ед.</span>` : ""}${x.receipt ? `<span>#${esc(x.receipt)}</span>` : ""}</div>
+        <div class="pmeta">${x.pays.map(p => `<span>${p.icon} ${esc(p.name)} ${m(p.sum)}</span>`).join("")}</div></div>`).join("")
+      : `<div class="empty">Покупок не найдено</div>`}
+      ${c.erp_sales.length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🧾 В нашем учёте: ${c.erp_sales.map(x => `№${x.id} ${dt(x.date)} — ${m(x.amount)}`).join(" · ")}</div>` : ""}</div>`;
+  $("cc-tier").onchange = e => action("/api/set_tier", c.bot_id ? {user_id: c.bot_id, tier: e.target.value} : {store_id: c.store_id, tier: e.target.value});
+  $("cc-note-save").onclick = () => api("/api/client_card", {action: "note", phone: c.phone, name: c.name, note: $("cc-note").value})
+    .then(r => toast(r.msg)).catch(e => toast(e.message));
+  $("cc-hist").onclick = () => api("/api/client_card", {action: "history"}).then(r => { toast(r.msg); setTimeout(loadCard, 8000); }).catch(e => toast(e.message));
+}
 function renderClientsAdmin(user = false) {
   if (!user && bzItems.length) return;  // автообновление кабинета не сбрасывает открытый список
   clearTimeout(bzTimer); bzTimer = setTimeout(() => loadClients(), user ? 250 : 0);
