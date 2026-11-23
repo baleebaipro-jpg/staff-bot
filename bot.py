@@ -60,14 +60,13 @@ def keyboard(uid: int) -> ReplyKeyboardMarkup:
     rows = []
     if core.employee(uid):
         L = core.staff_lang(uid)
-        rows.append([st.s(L, "btn_in"), st.s(L, "btn_out")])
-        rows.append([st.s(L, "btn_tasks"), st.s(L, "btn_invest")])
-        # кабинет — обычной кнопкой: мини-приложение с клавиатуры Telegram открывает без данных о пользователе,
-        # поэтому по нажатию бот присылает кнопку «Открыть кабинет» под сообщением (она данные передаёт)
-        rows.append([st.s(L, "btn_cabinet"),
-                     st.s(L, "btn_lang")])
-    if shop.has_access(uid):  # ERP: кнопка кассы — тем, кому выдана роль (и руководителю)
-        rows.append([st.s(core.staff_lang(uid) if core.employee(uid) else "ru", "btn_shop")])
+        # у сотрудника — только кабинет и язык: приход/уход, задачи, продажи и всё остальное — в кабинете.
+        # Кабинет — обычной кнопкой: мини-приложение с клавиатуры Telegram открывает без данных о пользователе,
+        # поэтому по нажатию бот присылает кнопку «Открыть кабинет» под сообщением (она данные передаёт).
+        # Старые кнопки (Keldim, Ketdim, Vazifalarim…) продолжают работать, если у кого-то остались.
+        rows.append([st.s(L, "btn_cabinet"), st.s(L, "btn_lang")])
+    elif shop.has_access(uid):  # руководитель: кнопка ERP
+        rows.append([st.s("ru", "btn_shop")])
     if core.is_admin(uid):
         rows.append([BTN_TEAM] + ([] if core.employee(uid) else [BTN_INVEST]))
         if not core.employee(uid):
@@ -1098,6 +1097,11 @@ async def _run_both(app: Application, capp: Application) -> None:
 
 def main() -> None:
     core.init_db()
+    if core.flag_once("kb_cabinet_only_v1"):  # один раз: сотрудникам — новая клавиатура (только кабинет и язык)
+        with core.db() as c:
+            for uid in config.EMPLOYEES:
+                c.execute("INSERT INTO outbox(chat_id, text, markup, via) VALUES(?, ?, 'staff_kb', 'staff')",
+                          (uid, st.s(core.staff_lang(uid), "kb_cabinet_only")))
     two_bots = client_bot_on()
     builder = Application.builder().token(config.BOT_TOKEN)
     app = (builder if two_bots else builder.post_init(post_init)).build()
