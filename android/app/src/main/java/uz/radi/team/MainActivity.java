@@ -5,7 +5,9 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.window.OnBackInvokedDispatcher;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
@@ -91,6 +93,12 @@ public class MainActivity extends Activity {
             }
         });
 
+        // Android 13+: «Назад» (кнопка и жест) — новым системным способом, иначе система может сразу закрыть приложение
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
+        }
+
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else web.loadUrl(BuildConfig.SERVER + "?app=android");
     }
@@ -136,10 +144,17 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // сначала — «назад» внутри кабинета (закрыть окно, вернуться на прошлый экран); если некуда — свернуть
-        web.evaluateJavascript("(window.appBack && window.appBack()) ? 'yes' : 'no'", value -> {
-            if (!"\"yes\"".equals(value)) moveTaskToBack(true);
-        });
+        handleBack();
+    }
+
+    /** «Назад»: сначала внутри кабинета (закрыть окно, прошлый шаг, прошлый экран); с главного — свернуть приложение. */
+    private void handleBack() {
+        web.evaluateJavascript(
+                "(function(){try{return (window.appBack && window.appBack()) ? 'yes' : 'no'}catch(e){return 'no'}})()",
+                value -> {
+                    if (value != null && value.contains("yes")) return;
+                    moveTaskToBack(true);
+                });
     }
 
     @Override
