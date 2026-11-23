@@ -287,7 +287,8 @@ def api_shop_state(uid, data):
     if bad:
         return bad
     me = shop.staff_row(uid)
-    rows = shop.sales_list(uid, data.get("from") or None, data.get("to") or None)
+    rows = shop.sales_list(uid, data.get("from") or None, data.get("to") or None, q=data.get("q") or "",
+                           point_id=data.get("point_id") or None)
     res = {"me": {"id": uid, "role": me["role"], "role_title": shop.ROLES[me["role"]], "perms": me["perms"],
                   "point_id": me.get("point_id")},
            "settings": shop.settings(), "points": shop.points(), "pay_types": shop.pay_types(),
@@ -295,7 +296,8 @@ def api_shop_state(uid, data):
            "sellers": [{"id": s["id"], "name": s["name"], "point_id": s["point_id"]} for s in shop.staff_list()
                        if s["role"] != "none"] + [{"id": a, "name": core.name(a) + " (руководитель)", "point_id": None}
                                                   for a in config.ADMINS],
-           "sales": rows, "summary": shop.summary(rows)}
+           "sales": rows, "summary": shop.summary(rows), "drafts": shop.drafts(uid) if "sell" in me["perms"] else [],
+           "billz_on": erp.enabled()}
     if me["role"] == "owner" or "settings" in me["perms"]:
         res["staff"] = shop.staff_list()
     if "unfreeze" in me["perms"]:
@@ -322,6 +324,16 @@ def api_shop_sale(uid, data):
     return jsonify(ok=ok, msg=msg, id=sid)
 
 
+@app.post("/api/shop/draft")
+@need_user(staff=True)
+def api_shop_draft(uid, data):
+    if data.get("action") == "delete":
+        ok, msg = shop.delete_draft(uid, int(data.get("id") or 0))
+        return jsonify(ok=ok, msg=msg)
+    ok, msg, did = shop.save_draft(uid, data.get("data") or {}, data.get("id"))
+    return jsonify(ok=ok, msg=msg, id=did)
+
+
 @app.post("/api/shop/unfreeze")
 @need_user(staff=True)
 def api_shop_unfreeze(uid, data):
@@ -341,6 +353,8 @@ def api_shop_settings(uid, data):
         ok, msg = shop.save_point(data.get("id"), data.get("title"), data.get("address"), data.get("active", True))
     elif act == "pay_type":
         ok, msg = shop.save_pay_type(data.get("id"), data.get("title"), data.get("icon"), data.get("kind"), data.get("active", True))
+    elif act == "import_billz":
+        ok, msg = shop.import_from_billz()
     elif act == "staff":
         ok, msg = shop.set_staff(uid, int(data.get("user_id") or 0), data.get("role"), data.get("point_id"), data.get("kpi_pct"),
                                  data.get("senior_id"), data.get("senior_pct"), data.get("perms"))
@@ -1024,6 +1038,59 @@ PAGE = r"""<!doctype html>
     background: rgba(255,255,255,.03) !important; border: 1px solid var(--line) !important; border-radius: 12px !important;
     padding: 11px 14px !important; font-size: 14px !important; }
   .po-bot-list button.on { border-color: #a78bfa !important; background: rgba(139,92,246,.2) !important; }
+  /* ERP: продажи — экраны в стиле кассы */
+  .sh-head { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 14px; }
+  .sh-title { font-size: 30px; font-weight: 800; letter-spacing: -.5px; }
+  .sh-icon { width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,.07) !important; border: 1px solid var(--line);
+    font-size: 20px; display: flex; align-items: center; justify-content: center; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chips button { flex: none; padding: 9px 14px; border-radius: 99px; background: rgba(255,255,255,.05); border: 1.5px solid var(--line);
+    font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+  .chips button.on { border-color: #a78bfa; background: rgba(139,92,246,.22); color: #e9e3ff; }
+  .big-sum { font-size: 34px; font-weight: 800; color: #b9a2ff; font-variant-numeric: tabular-nums; }
+  .big-sum small { font-size: 18px; color: var(--hint); font-weight: 700; }
+  .bars { display: flex; align-items: flex-end; gap: 3px; height: 110px; margin-top: 12px; }
+  .bars div { flex: 1; background: linear-gradient(180deg, #a78bfa, #6d28d9); border-radius: 4px 4px 0 0; min-height: 2px; opacity: .9; }
+  .bars-x { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--hint); margin-top: 4px; }
+  .kv { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-top: 1px solid var(--line); gap: 10px; }
+  .kv:first-of-type { border-top: none; }
+  .kv b { color: #b9a2ff; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dot-c { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: -1px; }
+  .pad-sum { text-align: center; font-size: 46px; font-weight: 800; padding: 22px 0 6px; font-variant-numeric: tabular-nums; }
+  .pad-sum small { font-size: 22px; color: var(--hint); }
+  .pad-parts { text-align: center; color: var(--hint); font-size: 13px; min-height: 18px; margin-bottom: 12px; }
+  .numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .numpad button { height: 68px; border-radius: 20px; background: rgba(255,255,255,.06); border: 1px solid var(--line);
+    font-size: 28px; font-weight: 700; }
+  .numpad button:active { background: rgba(139,92,246,.3); }
+  .numpad .fn { color: var(--hint); font-size: 24px; }
+  .row-btn { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 18px 16px !important; margin-bottom: 10px; }
+  .row-btn .ri { font-size: 22px; width: 28px; text-align: center; flex: none; }
+  .row-btn .rt { flex: 1; min-width: 0; }
+  .row-btn .rt b { display: block; font-size: 16.5px; }
+  .row-btn .rt span { color: #b9a2ff; font-size: 14px; font-weight: 600; }
+  .row-btn .ra { color: #b9a2ff; font-weight: 700; font-size: 14px; white-space: nowrap; }
+  .bottom-bar { position: sticky; bottom: 88px; display: grid; grid-template-columns: 1fr 1.3fr; gap: 10px; z-index: 5;
+    margin: 6px -14px 0; padding: 18px 14px 10px; background: linear-gradient(to top, #06050c 78%, rgba(6,5,12,0)); }
+  .bottom-bar .btn-soft { background: #1d1833 !important; }
+  .bottom-bar .btn { padding: 17px 10px; border-radius: 20px; font-size: 16px; }
+  .pay-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pay-tile { border-radius: 20px; padding: 20px 10px 16px !important; text-align: center; background: rgba(255,255,255,.05) !important;
+    border: 1.5px solid var(--line) !important; }
+  .pay-tile .pi { font-size: 26px; display: block; margin-bottom: 8px; }
+  .pay-tile b { font-size: 15.5px; }
+  .pay-tile.on { border-color: #a78bfa !important; background: rgba(139,92,246,.24) !important; box-shadow: 0 0 0 3px rgba(139,92,246,.18); }
+  .pay-tile input { margin: 10px 0 0; padding: 9px; text-align: center; }
+  .to-pay { text-align: center; font-weight: 700; margin: 4px 0 2px; }
+  .tx-date { display: flex; justify-content: space-between; font-weight: 800; font-size: 17px; margin: 14px 4px 8px; }
+  .tx { padding: 14px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .tx:first-child { border-top: none; }
+  .tx-a { color: #b9a2ff; font-weight: 800; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 99px; background: rgba(255,255,255,.07); font-size: 13px; font-weight: 600; }
+  .menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .menu-grid button { padding: 22px 10px !important; text-align: center; font-weight: 700; font-size: 15px; }
+  .menu-grid button span { display: block; font-size: 26px; margin-bottom: 6px; }
   /* ERP: продажи */
   .sw { position: relative; width: 50px; height: 30px; flex: none; display: inline-block; }
   .sw input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -1222,9 +1289,8 @@ PAGE = r"""<!doctype html>
 
   <!-- ERP: ПРОДАЖИ -->
   <div id="view-shop" class="hidden">
-    <div class="page-title">🧾 Продажи</div>
-    <div class="page-sub" id="shop-sub">Учёт продаж, баллов и бонусов</div>
-    <div class="seg" id="shop-tabs" style="flex-wrap:wrap"></div>
+    <div class="sh-head"><div><div class="sh-title" id="sh-title">Главная</div><div class="hint" style="font-size:12.5px" id="shop-sub"></div></div>
+      <button class="sh-icon" id="sh-head-btn" style="visibility:hidden"></button></div>
     <div id="shop-body"></div>
   </div>
 
@@ -1464,6 +1530,12 @@ PAGE = r"""<!doctype html>
   <button data-tab="staff"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="8" r="3.5"/><circle cx="17" cy="9" r="2.8"/><path d="M2.5 19c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6zM15.5 19c0-1.9-.6-3.6-1.7-4.8 3.6-.6 7.7 1.2 7.7 4.8z"/></svg>Команда</button>
   <button data-tab="clients"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 3h10l4 6-9 12L3 9zm-1.2 6h12.4L15.7 5H8.3z"/></svg>Клиенты</button>
 </nav>
+<nav class="tabbar hidden" id="shop-nav" style="grid-template-columns:repeat(4,1fr)">
+  <button data-snav="home"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 2.5 11h2.7v9h5.3v-6h3v6h5.3v-9h2.7z"/></svg>Главная</button>
+  <button data-snav="sell"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><rect x="6" y="9" width="12" height="7" rx="2" fill="currentColor" stroke="none"/></svg>Продажа</button>
+  <button data-snav="list"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 9h8M8 13h8M8 17h5" stroke="#15112a" stroke-width="2"/></svg>Транзакции</button>
+  <button data-snav="menu"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="2.5"/><rect x="13" y="3" width="8" height="8" rx="2.5" opacity=".55"/><rect x="3" y="13" width="8" height="8" rx="2.5"/><rect x="13" y="13" width="8" height="8" rx="2.5"/></svg>Меню</button>
+</nav>
 <div class="sheet-bg hidden" id="sheet-bg">
   <div class="sheet">
     <h3 id="sheet-title">График</h3>
@@ -1598,7 +1670,8 @@ function show(v) {
   $("brand").classList.toggle("hidden", v === "client" || !data);
   const tabs = !!(data && data.is_admin) && ["team", "projects", "staff", "clients"].includes(v);
   $("tabbar").classList.toggle("hidden", !tabs);
-  document.body.classList.toggle("has-tabs", tabs);
+  $("shop-nav").classList.toggle("hidden", v !== "shop");
+  document.body.classList.toggle("has-tabs", tabs || v === "shop");
   document.querySelectorAll("#tabbar [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === v));
   window.scrollTo(0, 0);
 }
@@ -2651,137 +2724,302 @@ function langSwitch(id, langs, cur, onPick) {
   box.querySelectorAll("[data-lng]").forEach(b => b.onclick = () => { if (b.dataset.lng !== cur) onPick(b.dataset.lng); });
 }
 /* ================= ERP: продажи ================= */
-let shopS = null, shopTab = "sell", shopDay = null, shopClient = null, shopPays = [];
+let shopS = null, shopTab = "home", shopSub = null, shopDay = null, shopQ = "", shopPoint = null, shopOpenTx = null;
 const sm = v => Math.round(v || 0).toLocaleString("ru-RU");
 const snum = v => +String(v || "").replace(/[^\d.,]/g, "").replace(",", ".") || 0;
+const todayISO = () => { const t = new Date(); return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+const POINT_COLORS = ["#60a5fa", "#a855f7", "#f59e0b", "#f97316", "#34d399", "#f472b6", "#22d3ee"];
+const newCart = () => ({amount: "", parts: [], step: "amount", client: null, name: "", seller_id: "", discount_mode: "sum", discount_value: 0,
+  loyalty_on: true, loyalty_mode: "pct", loyalty_value: null, spend: 0, bonus_mode: "sum", bonus_value: 0, exchange: false, note: "",
+  mixed: false, single: null, pays: {}, draft_id: null, point_id: null});
+let cart = newCart();
+const cartTotal = () => cart.parts.reduce((a, x) => a + x, 0) + snum(cart.amount);
+const cartDiscount = () => cart.discount_mode === "pct" ? cartTotal() * snum(cart.discount_value) / 100 : snum(cart.discount_value);
+const cartToPay = () => Math.max(0, cartTotal() - cartDiscount());
 async function loadShop() {
-  try { shopS = await api("/api/shop/state", shopDay ? {from: shopDay.from, to: shopDay.to} : {}); }
+  try { shopS = await api("/api/shop/state", Object.assign(shopDay ? {from: shopDay.from, to: shopDay.to} : {}, {q: shopQ, point_id: shopPoint})); }
   catch (e) { $("shop-body").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
-  const p = shopS.me.perms, tabs = [];
-  if (p.includes("sell")) tabs.push(["sell", "➕ Продажа"]);
-  tabs.push(["list", "📋 Продажи"]);
-  if (p.includes("unfreeze")) tabs.push(["bonus", "🧊 Бонусы"]);
-  if (p.includes("settings")) tabs.push(["set", "⚙️ Настройки"]);
-  if (!tabs.find(t => t[0] === shopTab)) shopTab = tabs[0][0];
-  $("shop-tabs").innerHTML = tabs.map(([k, t]) => `<button data-stab="${k}" class="${k === shopTab ? "on" : ""}">${t}</button>`).join("");
-  document.querySelectorAll("[data-stab]").forEach(b => b.onclick = () => { shopTab = b.dataset.stab; loadShop(); });
+  const p = shopS.me.perms;
+  if (shopTab === "sell" && !p.includes("sell")) shopTab = "home";
+  document.querySelectorAll("#shop-nav [data-snav]").forEach(b => {
+    b.classList.toggle("on", b.dataset.snav === shopTab);
+    b.style.display = b.dataset.snav === "sell" && !p.includes("sell") ? "none" : "";
+  });
+  $("shop-nav").style.gridTemplateColumns = `repeat(${p.includes("sell") ? 4 : 3},1fr)`;
+  if (cart.loyalty_value === null) cart.loyalty_value = shopS.settings.loyalty_pct;
+  if (!cart.seller_id && shopS.me.role !== "owner" && shopS.sellers.find(x => x.id === shopS.me.id)) cart.seller_id = shopS.me.id;
+  renderShop();
+}
+function renderShop() {
+  const head = $("sh-head-btn"); head.style.visibility = "hidden"; head.onclick = null;
   $("shop-sub").textContent = `${shopS.me.role_title} · ${((shopS.points.find(x => x.id === shopS.me.point_id) || {}).title) || "все точки"}`;
-  ({sell: shopSell, list: shopList, bonus: shopBonus, set: shopSettings})[shopTab]();
+  if (shopTab === "home") return shopHome();
+  if (shopTab === "sell") return shopSell();
+  if (shopTab === "list") return shopList();
+  return shopMenu();
 }
-/* --- новая продажа --- */
+document.querySelectorAll("#shop-nav [data-snav]").forEach(b => b.onclick = () => {
+  shopTab = b.dataset.snav; shopSub = null; window.scrollTo(0, 0); loadShop();
+});
+function pointChips(id) {
+  const pts = shopS.points.filter(p => p.active);
+  return `<div class="chips" id="${id}"><button data-pt="" class="${!shopPoint ? "on" : ""}">Все точки</button>${pts.map(p =>
+    `<button data-pt="${p.id}" class="${+shopPoint === p.id ? "on" : ""}">${esc(p.title)}</button>`).join("")}</div>`;
+}
+function bindPointChips(id) {
+  document.querySelectorAll(`#${id} [data-pt]`).forEach(b => b.onclick = () => { shopPoint = b.dataset.pt ? +b.dataset.pt : null; loadShop(); });
+}
+function dateBar() {
+  const d = shopDay || {from: todayISO(), to: todayISO()};
+  return `<div class="card" style="display:flex;gap:8px;align-items:center;padding:12px">📅
+    <input type="date" id="sd-from" value="${d.from}" style="margin:0;flex:1;min-width:0;padding:10px 8px"><span class="hint">—</span><input type="date" id="sd-to" value="${d.to}" style="margin:0;flex:1;min-width:0;padding:10px 8px"></div>`;
+}
+function bindDateBar() {
+  const upd = () => { const f = $("sd-from").value || todayISO(); shopDay = {from: f, to: $("sd-to").value && $("sd-to").value >= f ? $("sd-to").value : f}; loadShop(); };
+  $("sd-from").onchange = upd; $("sd-to").onchange = upd;
+}
+/* --- главная --- */
+function shopHome() {
+  $("sh-title").textContent = "Главная";
+  const S = shopS.summary, max = Math.max(1, ...S.by_hour.slice(8, 24));
+  const pts = shopS.points.filter(p => p.active);
+  const byPt = Object.fromEntries(S.by_point);
+  $("shop-body").innerHTML = pointChips("hp") + `
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div><b style="font-size:19px">Продажи</b><div class="big-sum">${sm(S.total)} <small>UZS</small></div>
+      <div class="hint" style="font-size:12.5px">${S.count} продаж · средний чек ${sm(S.avg)}${S.discount ? " · скидки " + sm(S.discount) : ""}</div></div>
+      <div class="f-ic" style="width:52px;height:52px;display:flex;align-items:center;justify-content:center;font-size:22px">📊</div></div>
+      <div class="bars">${S.by_hour.slice(8, 24).map(v => `<div style="height:${Math.round(v / max * 100)}%"></div>`).join("")}</div>
+      <div class="bars-x"><span>8:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>23:00</span></div>
+      <div style="margin-top:10px">${pts.map((p, i) => `<div class="kv"><span><span class="dot-c" style="background:${POINT_COLORS[i % POINT_COLORS.length]}"></span>${esc(p.title)}</span><b>${sm(byPt[p.title] || 0)} UZS</b></div>`).join("")}</div></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div><b style="font-size:19px">Платежи</b>
+      <div class="big-sum" style="font-size:28px">${sm(Object.values(S.by_pay).reduce((a, v) => a + v, 0) + S.points_spent)} <small>UZS</small></div></div>
+      <div class="f-ic" style="width:52px;height:52px;display:flex;align-items:center;justify-content:center;font-size:22px">💵</div></div>
+      ${Object.entries(S.by_pay).map(([k, v]) => `<div class="kv"><span>${esc(k)}</span><b>${sm(v)}</b></div>`).join("")}
+      ${S.points_spent ? `<div class="kv"><span>🎁 Баллами</span><b>${sm(S.points_spent)}</b></div>` : ""}</div>
+    <div class="card"><b style="font-size:19px">Топ продавцов</b><div class="hint" style="font-size:12.5px;margin-bottom:4px">по сумме продаж</div>
+      ${S.by_seller.length ? S.by_seller.slice(0, 10).map(([n, v], i) => `<div class="kv"><span><span class="pill" style="padding:3px 9px;margin-right:6px">${i + 1}</span>${esc(n)}</span><b>${sm(v)}</b></div>`).join("") : `<div class="empty">Продаж пока нет</div>`}</div>
+    <div class="card"><b style="font-size:19px">Баллы и бонусы</b>
+      <div class="kv"><span>➕ Начислено баллов</span><b>${sm(S.loyalty)}</b></div>
+      <div class="kv"><span>➖ Оплачено баллами</span><b>${sm(S.points_spent)}</b></div>
+      <div class="kv"><span>🎁 Бонусы</span><b>${sm(S.bonus)}</b></div></div>` + dateBar();
+  bindPointChips("hp"); bindDateBar();
+}
+/* --- продажа: 1) сумма --- */
 function shopSell() {
-  const S = shopS, st = S.settings, myPoint = S.me.point_id;
-  const types = S.pay_types.filter(t => t.active);
-  if (!shopPays.length) shopPays = [{type_id: (types[0] || {}).id, amount: ""}];
-  const sellers = S.sellers.filter(x => !myPoint || !x.point_id || x.point_id === myPoint);
+  if (cart.step === "details") return sellDetails();
+  if (cart.step === "pay") return sellPay();
+  $("sh-title").textContent = "Корзина";
+  const head = $("sh-head-btn"); head.style.visibility = shopS.drafts.length ? "visible" : "hidden";
+  head.textContent = "⏸"; head.title = "Отложенные"; head.onclick = () => { shopTab = "menu"; shopSub = "drafts"; loadShop(); };
+  const total = cartTotal();
   $("shop-body").innerHTML = `<div class="card">
-    <div class="f-lbl" style="margin-top:0">Клиент</div>
-    <div class="add-row"><input id="sh-phone" inputmode="tel" placeholder="Телефон: 90 123 45 67" style="margin:0">
-      <button class="btn btn-soft" id="sh-find">🔍</button></div>
-    <div id="sh-client"></div>
-    ${S.me.role === "owner" ? `<div class="f-lbl">Точка</div><select id="sh-point">${S.points.filter(p => p.active).map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join("")}</select>` : ""}
-    <div class="two"><div><div class="f-lbl">Сумма покупки</div><input id="sh-amount" inputmode="numeric" placeholder="0"></div>
-      <div><div class="f-lbl">Продавец</div><select id="sh-seller"><option value="">— выберите —</option>${sellers.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></div></div>
-    <div class="f-lbl">Оплата (можно несколько способов)</div>
-    <div id="sh-pays"></div>
-    <button class="link" id="sh-addpay" style="font-size:13px">＋ ещё способ оплаты</button>
-    <div class="f-lbl">Оплатить баллами <span id="sh-spend-hint"></span></div>
-    <input id="sh-spend" inputmode="numeric" placeholder="0">
-    <div class="sw-row" style="border-top:1px solid var(--line);margin-top:6px"><div><b>Баллы лояльности</b><div class="hint" style="font-size:12px">начислить клиенту с этой покупки</div></div>
-      <label class="sw"><input type="checkbox" id="sh-loy-on" checked><span></span></label></div>
-    <div class="two" id="sh-loy-box"><select id="sh-loy-mode"><option value="pct">% от покупки</option><option value="sum">сумма</option></select>
-      <input id="sh-loy-val" inputmode="decimal" value="${st.loyalty_pct}"></div>
-    <div class="f-lbl">Бонус (необязательно)</div>
-    <div class="two"><select id="sh-bon-mode"><option value="sum">сумма</option><option value="pct">% от покупки</option></select>
-      <input id="sh-bon-val" inputmode="decimal" placeholder="0"></div>
-    <div class="hint" style="font-size:12px" id="sh-freeze-hint"></div>
-    <div class="sw-row" style="border-top:1px solid var(--line);margin-top:6px"><div><b>Обмен разрешён</b><div class="hint" style="font-size:12px">1 раз в течение месяца</div></div>
-      <label class="sw"><input type="checkbox" id="sh-exch"><span></span></label></div>
-    <input id="sh-note" maxlength="300" placeholder="Комментарий (необязательно)" style="margin-top:8px">
-    <div class="tot" id="sh-tot"></div>
-    <button class="btn btn-main" style="width:100%;margin-top:12px" id="sh-save">🧾 Сохранить продажу</button></div>`;
-  const drawPays = () => {
-    $("sh-pays").innerHTML = shopPays.map((p, i) => `<div class="pay-row">
-      <select data-ptype="${i}">${types.map(t => `<option value="${t.id}" ${t.id === +p.type_id ? "selected" : ""}>${t.icon} ${esc(t.title)}</option>`).join("")}</select>
-      <input data-pamt="${i}" inputmode="numeric" value="${p.amount}" placeholder="сумма">
-      ${shopPays.length > 1 ? `<button class="btn btn-soft btn-sm" data-pdel="${i}">✕</button>` : "<span></span>"}</div>`).join("");
-    document.querySelectorAll("[data-ptype]").forEach(s => s.onchange = () => { shopPays[+s.dataset.ptype].type_id = +s.value; calc(); });
-    document.querySelectorAll("[data-pamt]").forEach(s => s.oninput = () => { shopPays[+s.dataset.pamt].amount = s.value; calc(false); });
-    document.querySelectorAll("[data-pdel]").forEach(b => b.onclick = () => { shopPays.splice(+b.dataset.pdel, 1); drawPays(); calc(); });
+      <div class="pad-sum">${sm(snum(cart.amount))} <small>UZS</small></div>
+      <div class="pad-parts">${cart.parts.length ? cart.parts.map(sm).join(" + ") + " + … = " + sm(total) : (shopS.drafts.length ? `⏸ отложенных: ${shopS.drafts.length}` : "&nbsp;")}</div>
+      <div class="numpad">${["1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "0", "⌫"].map(k =>
+        `<button data-k="${k}" class="${k === "+" || k === "⌫" ? "fn" : ""}">${k}</button>`).join("")}</div></div>
+    <button class="btn btn-main" style="width:100%;padding:18px;border-radius:20px;font-size:17px" id="pad-next" ${total ? "" : "disabled"}>
+      ${total ? "Далее · " + sm(total) + " UZS" : "Введите сумму"}</button>`;
+  document.querySelectorAll("[data-k]").forEach(b => b.onclick = () => {
+    const k = b.dataset.k;
+    if (k === "⌫") { if (cart.amount) cart.amount = cart.amount.slice(0, -1); else if (cart.parts.length) cart.amount = String(cart.parts.pop()); }
+    else if (k === "+") { if (snum(cart.amount)) { cart.parts.push(snum(cart.amount)); cart.amount = ""; } }
+    else if (cart.amount.length < 11) cart.amount = (cart.amount === "0" ? "" : cart.amount) + k;
+    if (tg.HapticFeedback && tg.HapticFeedback.selectionChanged) tg.HapticFeedback.selectionChanged();
+    shopSell();
+  });
+  $("pad-next").onclick = () => { cart.step = "details"; shopSell(); window.scrollTo(0, 0); };
+}
+/* --- продажа: 2) детали --- */
+function sellDetails() {
+  $("sh-title").textContent = "Продажа";
+  const head = $("sh-head-btn"); head.style.visibility = "visible"; head.textContent = "‹"; head.onclick = () => { cart.step = "amount"; shopSell(); };
+  const S = shopS, c = cart.client, seller = S.sellers.find(x => x.id === +cart.seller_id);
+  const disc = cartDiscount(), toPay = cartToPay();
+  const loy = !cart.loyalty_on ? 0 : cart.loyalty_mode === "pct" ? (toPay - snum(cart.spend)) * snum(cart.loyalty_value) / 100 : snum(cart.loyalty_value);
+  const bon = cart.bonus_mode === "pct" ? toPay * snum(cart.bonus_value) / 100 : snum(cart.bonus_value);
+  const row = (id, icon, title, val, act) => `<button class="card row-btn" id="${id}"><span class="ri">${icon}</span>
+    <span class="rt"><b>${title}</b>${val ? `<span>${val}</span>` : ""}</span><span class="ra">${act || "Добавить ›"}</span></button>`;
+  $("shop-body").innerHTML = `
+    <div class="card" style="text-align:center;padding:14px"><div class="hint" style="font-size:13px">Сумма покупки</div>
+      <div style="font-size:30px;font-weight:800">${sm(cartTotal())} <small class="hint" style="font-size:16px">UZS</small></div>
+      ${disc ? `<div style="color:var(--green);font-weight:700">скидка −${sm(disc)} → к оплате ${sm(toPay)}</div>` : ""}</div>
+    ${row("sd-client", "👤", "Клиент", c ? `${esc(c.name || "Новый клиент")} · ${esc(c.phone)}${c.points ? " · 🎁 " + sm(c.points) : ""}` : "", c ? "Изменить ›" : "")}
+    ${S.me.role === "owner" ? row("sd-point", "📍", "Точка", esc(((S.points.find(p => p.id === +cart.point_id) || {}).title) || ""), cart.point_id ? "Изменить ›" : "Выбрать ›") : ""}
+    ${row("sd-seller", "🧑‍💼", "Продавец", seller ? esc(seller.name) : "", seller ? "Изменить ›" : "Выбрать ›")}
+    ${row("sd-disc", "％", "Скидка", disc ? `−${sm(disc)}${cart.discount_mode === "pct" ? ` (${cart.discount_value}%)` : ""}` : "")}
+    ${c && c.points ? row("sd-spend", "🎁", "Оплатить баллами", snum(cart.spend) ? `−${sm(cart.spend)} из ${sm(c.points)}` : `доступно ${sm(c.points)}`, snum(cart.spend) ? "Изменить ›" : "Списать ›") : ""}
+    <div class="card row-btn" style="cursor:default"><span class="ri">⭐</span><span class="rt"><b>Баллы лояльности</b>
+      <span id="sd-loy-v">${cart.loyalty_on ? `+${sm(loy)}${cart.loyalty_mode === "pct" ? ` (${cart.loyalty_value}%)` : ""} — изменить` : "не начислять"}</span></span>
+      <label class="sw"><input type="checkbox" id="sd-loy" ${cart.loyalty_on ? "checked" : ""}><span></span></label></div>
+    ${row("sd-bonus", "🎀", "Бонус", bon ? `+${sm(bon)}` : "")}
+    <div class="card row-btn" style="cursor:default"><span class="ri">🔁</span><span class="rt"><b>Обмен разрешён</b><span style="color:var(--hint);font-weight:500">1 раз в течение месяца</span></span>
+      <label class="sw"><input type="checkbox" id="sd-exch" ${cart.exchange ? "checked" : ""}><span></span></label></div>
+    ${row("sd-note", "📝", "Заметка", cart.note ? esc(cart.note.slice(0, 40)) : "")}
+    <div class="bottom-bar"><button class="btn btn-soft" id="sd-later">Отложить</button><button class="btn btn-main" id="sd-pay">Перейти к оплате</button></div>`;
+  $("sd-client").onclick = clientSheet;
+  if ($("sd-point")) $("sd-point").onclick = () => pickSheet("📍 Точка", S.points.filter(p => p.active).map(p => [p.id, p.title]), v => { cart.point_id = +v; });
+  $("sd-seller").onclick = () => pickSheet("🧑‍💼 Продавец", S.sellers.filter(x => !cart.point_id && !S.me.point_id || !x.point_id || x.point_id === (+cart.point_id || S.me.point_id)).map(x => [x.id, x.name]), v => { cart.seller_id = +v; });
+  $("sd-disc").onclick = () => valueSheet("％ Скидка", "discount_mode", "discount_value", true);
+  if ($("sd-spend")) $("sd-spend").onclick = () => {
+    const max = Math.min(c.points, Math.floor(toPay * S.settings.spend_limit_pct / 100));
+    invSheet(`<h3>🎁 Оплатить баллами</h3><div class="hint" style="font-size:13px;margin:-6px 0 10px">Доступно ${sm(c.points)} · максимум ${sm(max)} (${S.settings.spend_limit_pct}% покупки)</div>
+      <input id="sv-v" inputmode="numeric" value="${snum(cart.spend) || ""}" placeholder="0"><div class="quick" style="margin:0 0 10px"><button id="sv-max">Максимум ${sm(max)}</button><button id="sv-0">Не списывать</button></div>${sheetBtns("Готово")}`);
+    $("sv-max").onclick = () => { $("sv-v").value = max; }; $("sv-0").onclick = () => { $("sv-v").value = ""; };
+    $("is-cancel").onclick = invSheetClose;
+    $("is-ok").onclick = () => { const v = snum($("sv-v").value); if (v > max) return toast("Не больше " + sm(max)); cart.spend = v; invSheetClose(); sellDetails(); };
   };
-  const calc = (fill = true) => {
-    const amount = snum($("sh-amount").value), spend = snum($("sh-spend").value);
-    if (fill && shopPays.length === 1) { shopPays[0].amount = amount ? String(Math.max(0, amount - spend)) : ""; const f = document.querySelector("[data-pamt='0']"); if (f) f.value = shopPays[0].amount; }
-    const paid = shopPays.reduce((a, p) => a + snum(p.amount), 0);
-    const kinds = shopPays.map(p => (types.find(t => t.id === +p.type_id) || {}).kind);
-    const rev = amount - spend, loyOn = $("sh-loy-on").checked;
-    const loy = !loyOn ? 0 : $("sh-loy-mode").value === "pct" ? rev * snum($("sh-loy-val").value) / 100 : snum($("sh-loy-val").value);
-    const bon = $("sh-bon-mode").value === "pct" ? amount * snum($("sh-bon-val").value) / 100 : snum($("sh-bon-val").value);
-    const freeze = kinds.includes("nasiya");
-    $("sh-loy-box").style.display = loyOn ? "" : "none";
-    $("sh-freeze-hint").textContent = freeze ? "🧊 Рассрочка: бонус будет заморожен на 6 месяцев" : bon ? "Бонус сразу станет баллами клиента" : "";
-    const diff = paid + spend - amount;
-    $("sh-tot").innerHTML = `Покупка: <b>${sm(amount)}</b> · баллами: <b>${sm(spend)}</b><br>
-      Оплачено: <b style="color:${Math.abs(diff) > 0.5 && amount ? "var(--red)" : "var(--green)"}">${sm(paid)}</b>${Math.abs(diff) > 0.5 && amount ? ` (${diff > 0 ? "лишние" : "не хватает"} ${sm(Math.abs(diff))})` : ""}
-      ${kinds.includes("debt") ? "<br>📝 В долг: " + sm(shopPays.filter(p => (types.find(t => t.id === +p.type_id) || {}).kind === "debt").reduce((a, p) => a + snum(p.amount), 0)) : ""}
-      <br>➕ Начислится баллов: <b>${sm(loy)}</b>${bon ? ` · 🎁 бонус: <b>${sm(bon)}</b>${freeze ? " 🧊" : ""}` : ""}`;
-  };
-  drawPays(); calc();
-  $("sh-addpay").onclick = () => { shopPays.push({type_id: (types[1] || types[0]).id, amount: ""}); drawPays(); calc(false); };
-  ["sh-amount", "sh-spend"].forEach(id => $(id).oninput = () => calc());
-  ["sh-loy-on", "sh-loy-mode", "sh-loy-val", "sh-bon-mode", "sh-bon-val"].forEach(id => { $(id).oninput = () => calc(false); $(id).onchange = () => calc(false); });
-  const find = async () => {
-    const phone = $("sh-phone").value.trim(); if (!phone) return toast("Введите телефон клиента");
-    try { shopClient = await api("/api/shop/client", {phone}); } catch (e) { return toast(e.message); }
-    if (shopClient.error) { shopClient = null; return toast(shopClient && shopClient.error || "Введите номер полностью"); }
-    const c = shopClient, lim = st.spend_limit_pct;
-    $("sh-client").innerHTML = `<div class="cl-card"><b>${esc(c.name || "Новый клиент")}</b> ${c.in_bot ? '<span class="badge">в боте</span>' : ""}${c.tier ? `<span class="badge">${esc(c.tier)}</span>` : ""}
-      <div class="hint" style="font-size:12.5px">${esc(c.phone)} · 🎁 баллы: <b style="color:var(--green)">${sm(c.points)}</b>${c.frozen ? ` · 🧊 ${sm(c.frozen)} до ${c.frozen_until.split("-").reverse().join(".")}` : ""}</div>
-      ${!c.found ? `<input id="sh-name" maxlength="80" placeholder="Имя и фамилия нового клиента" value="${esc(c.name || "")}" style="margin:8px 0 0">` : ""}
-      ${c.note ? `<div class="hint" style="font-size:12px;margin-top:4px">📝 ${esc(c.note)}</div>` : ""}</div>`;
-    $("sh-spend-hint").textContent = `(есть ${sm(c.points)}, максимум ${lim}% покупки)`;
-  };
-  $("sh-find").onclick = find;
-  $("sh-phone").onkeydown = e => { if (e.key === "Enter") find(); };
-  $("sh-phone").onchange = find;
-  $("sh-save").onclick = () => {
-    if (!shopClient) return toast("Сначала найдите клиента по телефону");
-    const amount = snum($("sh-amount").value), seller = $("sh-seller").value;
-    if (!amount) return toast("Введите сумму покупки");
-    if (!seller) return toast("Выберите продавца");
-    const body = {phone: shopClient.phone, name: $("sh-name") ? $("sh-name").value.trim() : "", amount, seller_id: +seller,
-      point_id: $("sh-point") ? +$("sh-point").value : null, points_spent: snum($("sh-spend").value),
-      payments: shopPays.map(p => ({type_id: +p.type_id, amount: snum(p.amount)})),
-      loyalty_on: $("sh-loy-on").checked, loyalty_mode: $("sh-loy-mode").value, loyalty_value: snum($("sh-loy-val").value),
-      bonus_mode: $("sh-bon-mode").value, bonus_value: snum($("sh-bon-val").value), exchange: $("sh-exch").checked,
-      note: $("sh-note").value};
-    tg.showConfirm(`Сохранить продажу ${sm(amount)} сум — ${shopClient.name || shopClient.phone}?`, async ok => {
-      if (!ok) return;
-      try { const r = await api("/api/shop/sale", body); toast(r.msg);
-        if (r.ok) { shopClient = null; shopPays = []; if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); shopSell(); }
-      } catch (e) { toast(e.message); }
-    });
+  $("sd-loy").onchange = e => { cart.loyalty_on = e.target.checked; sellDetails(); };
+  $("sd-loy-v").onclick = () => cart.loyalty_on && valueSheet("⭐ Баллы лояльности", "loyalty_mode", "loyalty_value", true);
+  $("sd-bonus").onclick = () => valueSheet("🎀 Бонус", "bonus_mode", "bonus_value", true,
+    "При оплате Uzum Nasiya / рассрочкой бонус замораживается на 6 месяцев, иначе сразу становится баллами.");
+  $("sd-exch").onchange = e => { cart.exchange = e.target.checked; };
+  $("sd-note").onclick = () => { invSheet(`<h3>📝 Заметка</h3><textarea id="sv-note" rows="4" maxlength="300">${esc(cart.note)}</textarea>${sheetBtns("Готово")}`);
+    $("is-cancel").onclick = invSheetClose; $("is-ok").onclick = () => { cart.note = $("sv-note").value.trim(); invSheetClose(); sellDetails(); }; };
+  $("sd-later").onclick = postpone;
+  $("sd-pay").onclick = () => {
+    if (!cart.client) return clientSheet();
+    if (!cart.seller_id) return toast("Выберите продавца");
+    if (S.me.role === "owner" && !cart.point_id) return toast("Выберите точку");
+    cart.step = "pay"; shopSell(); window.scrollTo(0, 0);
   };
 }
-/* --- список продаж --- */
+function pickSheet(title, list, onPick) {
+  invSheet(`<h3>${title}</h3>${list.map(([v, t]) => `<button class="card row-btn" data-pk="${v}" style="padding:14px 16px !important"><span class="rt"><b style="font-size:15px">${esc(t)}</b></span><span class="ra">›</span></button>`).join("") || '<div class="empty">Пусто</div>'}
+    <button class="btn btn-soft" style="width:100%" id="is-cancel">Отмена</button>`);
+  $("is-cancel").onclick = invSheetClose;
+  document.querySelectorAll("[data-pk]").forEach(b => b.onclick = () => { onPick(b.dataset.pk); invSheetClose(); sellDetails(); });
+}
+function valueSheet(title, modeKey, valKey, allowPct, hint) {
+  invSheet(`<h3>${title}</h3>${hint ? `<div class="hint" style="font-size:12.5px;margin:-6px 0 10px">${hint}</div>` : ""}
+    <div class="seg" style="margin-bottom:10px"><button data-vm="sum" class="${cart[modeKey] !== "pct" ? "on" : ""}">Сумма</button>${allowPct ? `<button data-vm="pct" class="${cart[modeKey] === "pct" ? "on" : ""}">% от покупки</button>` : ""}</div>
+    <input id="sv-v" inputmode="decimal" value="${snum(cart[valKey]) || ""}" placeholder="0">${sheetBtns("Готово")}`);
+  let mode = cart[modeKey] === "pct" ? "pct" : "sum";
+  document.querySelectorAll("[data-vm]").forEach(b => b.onclick = () => { mode = b.dataset.vm; document.querySelectorAll("[data-vm]").forEach(x => x.classList.toggle("on", x === b)); });
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => { const v = snum($("sv-v").value); if (mode === "pct" && v > 100) return toast("Не больше 100%");
+    cart[modeKey] = mode; cart[valKey] = v; invSheetClose(); sellDetails(); };
+}
+function clientSheet() {
+  invSheet(`<h3>👤 Клиент</h3><div class="add-row"><input id="cs-phone" inputmode="tel" placeholder="Телефон: 90 123 45 67" value="${esc(cart.client ? cart.client.phone : "")}" style="margin:0">
+    <button class="btn btn-main" id="cs-find">🔍</button></div><div id="cs-res" style="margin-top:10px"></div>
+    <button class="btn btn-soft" style="width:100%;margin-top:6px" id="is-cancel">Отмена</button>`);
+  $("is-cancel").onclick = invSheetClose;
+  const find = async () => {
+    let c; try { c = await api("/api/shop/client", {phone: $("cs-phone").value}); } catch (e) { return toast(e.message); }
+    if (c.error) return toast(c.error);
+    $("cs-res").innerHTML = `<div class="cl-card"><b>${esc(c.name || "Новый клиент")}</b> ${c.in_bot ? '<span class="badge">в боте</span>' : ""}${c.tier ? `<span class="badge">${esc(c.tier)}</span>` : ""}
+      <div class="hint" style="font-size:12.5px">${esc(c.phone)} · 🎁 баллы: <b style="color:var(--green)">${sm(c.points)}</b>${c.frozen ? ` · 🧊 ${sm(c.frozen)}` : ""}</div>
+      ${!c.found ? `<input id="cs-name" maxlength="80" placeholder="Имя и фамилия" value="${esc(c.name || "")}" style="margin:8px 0 0">` : ""}</div>
+      <button class="btn btn-main" style="width:100%" id="cs-ok">Выбрать клиента</button>`;
+    $("cs-ok").onclick = () => { if (!c.found) c.name = ($("cs-name").value || "").trim() || c.name;
+      cart.client = c; if (snum(cart.spend) > c.points) cart.spend = 0; invSheetClose(); sellDetails(); };
+  };
+  $("cs-find").onclick = find; $("cs-phone").onkeydown = e => { if (e.key === "Enter") find(); };
+  if (cart.client) find(); else setTimeout(() => $("cs-phone").focus(), 100);
+}
+/* --- продажа: 3) оплата --- */
+function sellPay() {
+  $("sh-title").textContent = "Оплата";
+  const head = $("sh-head-btn"); head.style.visibility = "visible"; head.textContent = "‹"; head.onclick = () => { cart.step = "details"; shopSell(); };
+  const types = shopS.pay_types.filter(t => t.active), need = Math.max(0, cartToPay() - snum(cart.spend));
+  if (!cart.mixed) { cart.pays = cart.single ? {[cart.single]: need} : {}; }
+  const paid = Object.values(cart.pays).reduce((a, v) => a + snum(v), 0), left = need - paid;
+  $("shop-body").innerHTML = `<div class="card" style="text-align:center;padding:18px 14px">
+      <div style="font-size:40px;font-weight:800">${sm(need)} <small class="hint" style="font-size:18px">UZS</small></div>
+      ${snum(cart.spend) ? `<div class="hint" style="font-size:13px">ещё ${sm(cart.spend)} баллами</div>` : ""}</div>
+    <div class="card row-btn" style="cursor:default"><span class="rt"><b>Смешанная оплата</b></span>
+      <label class="sw"><input type="checkbox" id="sp-mixed" ${cart.mixed ? "checked" : ""}><span></span></label></div>
+    <div class="pay-tiles">${types.map(t => { const on = t.id in cart.pays; return `<button class="card pay-tile ${on ? "on" : ""}" data-tile="${t.id}">
+      <span class="pi">${esc(t.icon)}</span><b>${esc(t.title)}</b>${t.kind === "nasiya" ? '<div class="hint" style="font-size:11px">🧊 бонус заморозится</div>' : t.kind === "debt" ? '<div class="hint" style="font-size:11px">📝 в долг</div>' : ""}
+      ${cart.mixed && on ? `<input data-tamt="${t.id}" inputmode="numeric" value="${cart.pays[t.id] || ""}" placeholder="сумма">` : ""}</button>`; }).join("")}</div>
+    <div class="to-pay" style="color:${Math.abs(left) < 0.5 && need ? "var(--green)" : "var(--red)"}">${Math.abs(left) < 0.5 ? (need ? "✅ Всё оплачено" : "Оплата баллами") : left > 0 ? "К оплате: " + sm(left) + " UZS" : "Лишние: " + sm(-left) + " UZS"}</div>
+    <div class="bottom-bar"><button class="btn btn-soft" id="sp-later">Отложить</button><button class="btn btn-main" id="sp-pay" ${Math.abs(left) < 0.5 ? "" : "disabled"}>Оплатить</button></div>`;
+  $("sp-mixed").onchange = e => { cart.mixed = e.target.checked; if (cart.mixed && cart.single) cart.pays = {[cart.single]: need}; if (!cart.mixed) cart.pays = {}; sellPay(); };
+  document.querySelectorAll("[data-tile]").forEach(b => b.onclick = e => {
+    if (e.target.tagName === "INPUT") return;
+    const id = +b.dataset.tile;
+    if (!cart.mixed) { cart.single = cart.single === id ? null : id; }
+    else if (id in cart.pays) delete cart.pays[id];
+    else { const rest = need - Object.values(cart.pays).reduce((a, v) => a + snum(v), 0); cart.pays[id] = rest > 0 ? rest : ""; }
+    sellPay();
+  });
+  document.querySelectorAll("[data-tamt]").forEach(i => { i.onclick = e => e.stopPropagation(); i.onchange = () => { cart.pays[+i.dataset.tamt] = snum(i.value); sellPay(); }; });
+  $("sp-later").onclick = postpone;
+  $("sp-pay").onclick = () => tg.showConfirm(`Провести продажу ${sm(cartToPay())} UZS — ${cart.client.name || cart.client.phone}?`, ok => ok && submitSale());
+}
+function cartBody() {
+  return {phone: cart.client ? cart.client.phone : "", name: cart.client ? cart.client.name || "" : "", amount: cartTotal(),
+    discount_mode: cart.discount_mode, discount_value: snum(cart.discount_value), seller_id: +cart.seller_id || null,
+    point_id: +cart.point_id || null, points_spent: snum(cart.spend),
+    payments: Object.entries(cart.pays).filter(([, v]) => snum(v)).map(([k, v]) => ({type_id: +k, amount: snum(v)})),
+    loyalty_on: cart.loyalty_on, loyalty_mode: cart.loyalty_mode, loyalty_value: snum(cart.loyalty_value),
+    bonus_mode: cart.bonus_mode, bonus_value: snum(cart.bonus_value), exchange: cart.exchange, note: cart.note, draft_id: cart.draft_id};
+}
+async function submitSale() {
+  try { const r = await api("/api/shop/sale", cartBody()); toast(r.msg);
+    if (r.ok) { if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); cart = newCart(); loadShop(); }
+  } catch (e) { toast(e.message); }
+}
+async function postpone() {
+  if (!cartTotal()) return toast("Введите сумму");
+  try { const r = await api("/api/shop/draft", {id: cart.draft_id, data: Object.assign(cartBody(), {_cart: cart})}); toast(r.msg);
+    if (r.ok) { cart = newCart(); loadShop(); } } catch (e) { toast(e.message); }
+}
+/* --- транзакции --- */
 function shopList() {
-  const S = shopS, sum = S.summary, today = new Date().toISOString().slice(0, 10);
-  const d = shopDay || {from: today, to: today};
-  $("shop-body").innerHTML = `<div class="card">
-    <div class="two"><input type="date" id="sl-from" value="${d.from}" style="margin:0"><input type="date" id="sl-to" value="${d.to}" style="margin:0"></div>
-    <div class="inv-tiles" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
-      <div><b>${sum.count}</b><span>продаж</span></div><div><b>${sm(sum.amount)}</b><span>сумма</span></div>
-      <div><b style="color:var(--green)">${sm(sum.revenue)}</b><span>выручка (без баллов)</span></div></div>
-    <div class="hint" style="font-size:12.5px;line-height:1.7">${Object.entries(sum.by_pay).map(([k, v]) => `${esc(k)}: <b>${sm(v)}</b>`).join(" · ") || ""}
-      ${sum.count ? `<br>➖ баллами: ${sm(sum.points_spent)} · ➕ начислено: ${sm(sum.loyalty)} · 🎁 бонусы: ${sm(sum.bonus)}` : ""}</div></div>
-    <div class="card">${S.sales.length ? S.sales.map(x => `<div class="sale">
-      <div class="inv-top"><b>№${x.id} · ${esc(x.client_name || x.client_phone || "—")}</b><b style="white-space:nowrap">${sm(x.amount)}</b></div>
-      <div class="pmeta"><span>${x.date} ${x.time}</span><span>👤 ${esc(x.seller)}</span>${x.point ? `<span>📍 ${esc(x.point)}</span>` : ""}</div>
-      <div class="pmeta">${x.pays.map(p => `<span>${p.icon} ${esc(p.title)} ${sm(p.amount)}</span>`).join("")}${x.points_spent ? `<span>➖ баллами ${sm(x.points_spent)}</span>` : ""}</div>
-      <div style="margin-top:4px">${x.loyalty_amount ? `<span class="badge">➕ ${sm(x.loyalty_amount)} баллов</span>` : ""}${x.bonus_amount ? `<span class="badge">${x.bonus_frozen ? "🧊" : "🎁"} бонус ${sm(x.bonus_amount)}</span>` : ""}${x.exchange ? '<span class="badge">🔁 обмен</span>' : ""}${x.debt_amount ? `<span class="badge" style="color:var(--orange)">📝 долг ${sm(x.debt_amount)}</span>` : ""}</div>
-      ${x.note ? `<div class="hint" style="font-size:12px;margin-top:3px">${esc(x.note)}</div>` : ""}</div>`).join("") : `<div class="empty">Продаж за этот период нет</div>`}</div>`;
-  const upd = () => { shopDay = {from: $("sl-from").value || today, to: $("sl-to").value || $("sl-from").value || today}; loadShop(); };
-  $("sl-from").onchange = upd; $("sl-to").onchange = upd;
+  $("sh-title").textContent = "Транзакции";
+  const head = $("sh-head-btn"); head.style.visibility = "visible"; head.textContent = shopS.summary.count; head.onclick = null;
+  const groups = {};
+  shopS.sales.forEach(x => { (groups[x.date] = groups[x.date] || []).push(x); });
+  $("shop-body").innerHTML = `<div class="card" style="padding:10px 12px"><input id="tx-q" placeholder="🔍 ID, клиент, продавец" value="${esc(shopQ)}" style="margin:0"></div>`
+    + pointChips("tp") + (Object.keys(groups).length ? Object.entries(groups).map(([d, list]) => `<div class="tx-date"><span>${d}</span><span class="hint" style="font-size:13px">${list.length} · ${sm(list.reduce((a, x) => a + x.amount - (x.discount || 0), 0))}</span></div>
+    <div class="card" style="padding:4px 16px">${list.map(x => `<div class="tx" data-tx="${x.id}">
+      <div class="inv-top"><span class="tx-a">Продажа #${x.id}</span><span class="tx-a">${sm(x.amount - (x.discount || 0))} UZS</span></div>
+      <div class="inv-top" style="margin-top:6px"><b>${x.time}</b><span class="hint" style="font-size:13px"><span class="dot-c" style="background:${POINT_COLORS[(shopS.points.findIndex(p => p.id === x.point_id) + POINT_COLORS.length) % POINT_COLORS.length]}"></span>${esc(x.point || "—")}</span></div>
+      <div class="inv-top" style="margin-top:8px"><span class="pill">👤 ${esc(x.client_name || x.client_phone || "—")}</span>
+        ${x.loyalty_amount ? `<span class="pill">+${sm(x.loyalty_amount)}</span>` : ""}</div>
+      ${shopOpenTx === x.id ? `<div class="tot">${x.pays.map(p => `${p.icon} ${esc(p.title)}: <b>${sm(p.amount)}</b>`).join("<br>")}
+        ${x.points_spent ? `<br>🎁 Баллами: <b>${sm(x.points_spent)}</b>` : ""}${x.discount ? `<br>％ Скидка: <b>${sm(x.discount)}</b> (сумма ${sm(x.amount)})` : ""}
+        <br>🧑‍💼 Продавец: <b>${esc(x.seller)}</b> · касса: ${esc(x.cashier)}
+        ${x.bonus_amount ? `<br>${x.bonus_frozen ? "🧊" : "🎀"} Бонус: <b>${sm(x.bonus_amount)}</b>` : ""}${x.exchange ? "<br>🔁 Обмен разрешён" : ""}${x.debt_amount ? `<br>📝 В долг: <b>${sm(x.debt_amount)}</b>` : ""}
+        ${x.note ? `<br>📝 ${esc(x.note)}` : ""}</div>` : ""}</div>`).join("")}</div>`).join("")
+    : `<div class="card empty">Продаж за этот период нет</div>`) + dateBar();
+  bindPointChips("tp"); bindDateBar();
+  let t = null; $("tx-q").oninput = e => { clearTimeout(t); t = setTimeout(() => { shopQ = e.target.value; loadShop().then(() => { const q = $("tx-q"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }); }, 350); };
+  document.querySelectorAll("[data-tx]").forEach(r => r.onclick = () => { shopOpenTx = shopOpenTx === +r.dataset.tx ? null : +r.dataset.tx; shopList(); });
+}
+/* --- меню --- */
+function shopMenu() {
+  const p = shopS.me.perms;
+  if (shopSub === "bonus") { $("sh-title").textContent = "Бонусы"; backToMenu(); return shopBonus(); }
+  if (shopSub === "set") { $("sh-title").textContent = "Настройки"; backToMenu(); return shopSettings(); }
+  if (shopSub === "drafts") { $("sh-title").textContent = "Отложенные"; backToMenu(); return shopDrafts(); }
+  $("sh-title").textContent = "Меню";
+  const items = [];
+  if (p.includes("sell")) items.push(["drafts", "⏸", `Отложенные${shopS.drafts.length ? " (" + shopS.drafts.length + ")" : ""}`]);
+  if (p.includes("unfreeze")) items.push(["bonus", "🧊", `Бонусы${(shopS.bonuses || []).length ? " (" + shopS.bonuses.length + ")" : ""}`]);
+  if (p.includes("settings")) items.push(["set", "⚙️", "Настройки"]);
+  $("shop-body").innerHTML = `<div class="card"><b style="font-size:19px">🧾 Продажи</b><div class="menu-grid" style="margin-top:12px">
+      ${items.map(([k, i, t]) => `<button class="card" data-mi="${k}"><span>${i}</span>${t}</button>`).join("")}</div></div>
+    ${p.includes("settings") && shopS.billz_on ? `<div class="card"><b>🔄 Из BILLZ</b><div class="hint" style="font-size:12.5px;margin:4px 0 10px">Загрузить точки (магазины) и типы оплаты из BILLZ — чтобы всё совпадало.</div>
+      <button class="btn btn-soft" style="width:100%" id="mi-import">Загрузить точки и типы оплаты</button></div>` : ""}
+    <div class="card"><b>Скоро</b><div class="hint" style="font-size:13px;line-height:1.7;margin-top:4px">📝 Долги и «Ожидаемая прибыль» · 📈 KPI продавцов и старших · ↩️ Возвраты · 🎯 Акции</div></div>`;
+  document.querySelectorAll("[data-mi]").forEach(b => b.onclick = () => { shopSub = b.dataset.mi; renderShop(); window.scrollTo(0, 0); });
+  if ($("mi-import")) $("mi-import").onclick = () => { toast("Загружаю из BILLZ…");
+    api("/api/shop/settings", {action: "import_billz"}).then(r => { toast(r.msg); loadShop(); }).catch(e => toast(e.message)); };
+}
+function backToMenu() { const h = $("sh-head-btn"); h.style.visibility = "visible"; h.textContent = "‹"; h.onclick = () => { shopSub = null; renderShop(); }; }
+function shopDrafts() {
+  const list = shopS.drafts;
+  $("shop-body").innerHTML = `<div class="card">${list.length ? list.map(d => `<div class="sale"><div class="inv-top"><b>${esc(d.title)}</b><span class="hint" style="font-size:12.5px">${d.when}</span></div>
+      <div class="pmeta"><span>касса: ${esc(d.cashier)}</span></div>
+      <div class="inv-act"><button class="btn btn-main btn-sm" data-dopen="${d.id}">Открыть</button><button class="btn btn-soft btn-sm" data-ddel="${d.id}">Удалить</button></div></div>`).join("")
+    : `<div class="empty">Отложенных продаж нет</div>`}</div>`;
+  document.querySelectorAll("[data-dopen]").forEach(b => b.onclick = () => { const d = list.find(x => x.id === +b.dataset.dopen);
+    cart = Object.assign(newCart(), d.data._cart || {}, {draft_id: d.id, step: "details"}); shopTab = "sell"; shopSub = null; loadShop(); });
+  document.querySelectorAll("[data-ddel]").forEach(b => b.onclick = () => tg.showConfirm("Удалить отложенную продажу?", ok => ok &&
+    api("/api/shop/draft", {action: "delete", id: +b.dataset.ddel}).then(r => { toast(r.msg); loadShop(); })));
 }
 /* --- замороженные бонусы --- */
 function shopBonus() {
@@ -2845,7 +3083,7 @@ function shopSettings() {
 }
 const SOON = "💰 Раздел «Инвестиции» скоро появится ⏳";
 $("go-shop").onclick = () => { show("shop"); loadShop(); };
-$("go-shop-me").onclick = () => { show("shop"); loadShop(); };
+$("go-shop-me").onclick = () => { shopTab = "sell"; show("shop"); loadShop(); };
 /* Своя задача сотрудника: на сегодня или завтра */
 let mtDay = "today";
 document.querySelectorAll("#mt-day [data-day]").forEach(b => b.onclick = () => {

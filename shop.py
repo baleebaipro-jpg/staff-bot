@@ -58,6 +58,12 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS shop_bonus(id INTEGER PRIMARY KEY, client_id INTEGER, sale_id INTEGER, amount REAL,
                 unfreeze_at TEXT, status TEXT DEFAULT 'frozen', released_at TEXT, released_by INTEGER, reminded INTEGER DEFAULT 0);
         """)
+        for tbl, col, ddl in (("shop_sales", "discount", "REAL DEFAULT 0"), ("shop_points", "billz_id", "TEXT"),
+                              ("shop_pay_types", "billz_id", "TEXT")):
+            if col not in {r[1] for r in c.execute(f"PRAGMA table_info({tbl})")}:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+        c.execute("CREATE TABLE IF NOT EXISTS shop_drafts(id INTEGER PRIMARY KEY, cashier_id INTEGER, data TEXT, title TEXT, "
+                  "created_at TEXT)")
         if not c.execute("SELECT 1 FROM shop_pay_types").fetchone():
             for i, (t, ic, k) in enumerate(DEFAULT_PAY_TYPES):
                 c.execute("INSERT INTO shop_pay_types(title, icon, kind, sort) VALUES(?, ?, ?, ?)", (t, ic, k, i))
@@ -296,6 +302,14 @@ def create_sale(uid: int, d: dict):
         bonus_val = _num(d.get("bonus_value"))
     except (TypeError, ValueError, KeyError):
         return False, "Проверьте суммы.", None
+    try:
+        disc_val = _num(d.get("discount_value"))
+    except (TypeError, ValueError):
+        return False, "Проверьте скидку.", None
+    discount = round(amount * disc_val / 100, 2) if d.get("discount_mode") == "pct" else disc_val
+    if discount < 0 or discount > amount:
+        return False, "Скидка не может быть больше суммы.", None
+    total = round(amount - discount, 2)  # к оплате
     phone, seller = _phone(d.get("phone")), d.get("seller_id")
     if len(_tail(phone)) < 9:
         return False, "Введите номер клиента.", None
@@ -313,14 +327,14 @@ def create_sale(uid: int, d: dict):
         return False, "Неизвестный тип оплаты.", None
     if spent < 0 or any(a < 0 for _, a in pays) or loyalty_val < 0 or bonus_val < 0:
         return False, "Суммы не могут быть отрицательными.", None
-    if spent > amount * st["spend_limit_pct"] / 100 + 0.5:
+    if spent > total * st["spend_limit_pct"] / 100 + 0.5:
         return False, f"Баллами можно оплатить не больше {st['spend_limit_pct']:g}% покупки.", None
-    if abs(sum(a for _, a in pays) + spent - amount) > 0.5:
+    if abs(sum(a for _, a in pays) + spent - total) > 0.5:
         fmt = lambda v: f"{v:,.0f}".replace(",", " ")
-        return False, f"Оплата не сходится: покупка {fmt(amount)}, оплачено {fmt(sum(a for _, a in pays) + spent)} (вместе с баллами).", None
+        return False, f"Оплата не сходится: к оплате {fmt(total)}, оплачено {fmt(sum(a for _, a in pays) + spent)} (вместе с баллами).", None
     loyalty_on = bool(d.get("loyalty_on"))
     loyalty_mode = d.get("loyalty_mode") or "pct"  # pct / sum
-    revenue = amount - spent  # выручка для KPI — без оплаченного баллами
+    revenue = total - spent  # выручка для KPI — без скидки и без оплаченного баллами
     if loyalty_on:
         pct = loyalty_val if loyalty_mode == "pct" else None
         loyalty_amount = round(revenue * (pct if pct is not None else 0) / 100, 2) if loyalty_mode == "pct" else loyalty_val
@@ -329,7 +343,7 @@ def create_sale(uid: int, d: dict):
     else:
         pct, loyalty_amount = None, 0.0
     bonus_mode = d.get("bonus_mode") or "sum"
-    bonus_amount = round(amount * bonus_val / 100, 2) if bonus_mode == "pct" else bonus_val
+    bonus_amount = round(total * bonus_val / 100, 2) if bonus_mode == "pct" else bonus_val
     freeze = any(types[t]["kind"] == "nasiya" for t, _ in pays) or bool(d.get("bonus_freeze"))
     debt = sum(a for t, a in pays if types[t]["kind"] == "debt")
     now = core.now()
@@ -341,11 +355,11 @@ def create_sale(uid: int, d: dict):
             return False, raise_msg, None
         sid = c.execute(
             "INSERT INTO shop_sales(point_id, cashier_id, seller_id, client_id, amount, points_spent, revenue, loyalty_on, "
-            "loyalty_pct, loyalty_amount, bonus_amount, bonus_frozen, exchange, debt_amount, kpi_mode, note, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "loyalty_pct, loyalty_amount, bonus_amount, bonus_frozen, exchange, debt_amount, kpi_mode, note, created_at, discount) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (point_id, uid, seller, cid, amount, spent, revenue, int(loyalty_on), pct, loyalty_amount, bonus_amount,
              int(freeze and bonus_amount > 0), int(bool(d.get("exchange"))), debt, "pending" if debt else "now",
-             str(d.get("note") or "")[:300], now.strftime(core.FMT))).lastrowid
+             str(d.get("note") or "")[:300], now.strftime(core.FMT), discount)).lastrowid
         for t, a in pays:
             c.execute("INSERT INTO shop_sale_pay(sale_id, pay_type_id, amount) VALUES(?, ?, ?)", (sid, t, a))
         if spent:
@@ -363,6 +377,8 @@ def create_sale(uid: int, d: dict):
                 c.execute("INSERT INTO shop_loyalty(client_id, amount, kind, sale_id, created_at) VALUES(?, ?, 'bonus', ?, ?)",
                           (cid, bonus_amount, sid, now.strftime(core.FMT)))
         bot_uid = c.execute("SELECT bot_uid FROM shop_clients WHERE id=?", (cid,)).fetchone()["bot_uid"]
+        if d.get("draft_id"):  # провели отложенную — черновик больше не нужен
+            c.execute("DELETE FROM shop_drafts WHERE id=?", (int(d["draft_id"]),))
     if settings()["client_live"] and bot_uid:
         _notify_sale(bot_uid, sid)
     return True, f"🧾 Продажа №{sid} сохранена", sid
@@ -421,7 +437,7 @@ def visible_sellers(uid: int):
     return ids
 
 
-def sales_list(uid: int, day_from: str = None, day_to: str = None, limit: int = 200) -> list:
+def sales_list(uid: int, day_from: str = None, day_to: str = None, limit: int = 300, q: str = "", point_id=None) -> list:
     t = core.now()
     day_from = day_from or t.strftime("%Y-%m-%d")
     day_to = day_to or day_from
@@ -436,14 +452,19 @@ def sales_list(uid: int, day_from: str = None, day_to: str = None, limit: int = 
                            "WHERE sale_id IN (%s)" % ",".join(str(r["id"]) for r in rows) if rows else "SELECT 1 WHERE 0"):
             pays.setdefault(r["sale_id"], []).append({"title": r["title"], "icon": r["icon"], "amount": r["amount"]})
     out = []
+    q = str(q or "").strip().lower()
     for r in rows:
         if who is not None and r["seller_id"] not in who and r["cashier_id"] != uid:
+            continue
+        if point_id and r["point_id"] != int(point_id):
             continue
         r["seller"] = core.name(r["seller_id"]) if r["seller_id"] else "—"
         r["cashier"] = core.name(r["cashier_id"]) if r["cashier_id"] else "—"
         r["pays"] = pays.get(r["id"], [])
         r["time"] = r["created_at"][11:16]
-        r["date"] = r["created_at"][8:10] + "." + r["created_at"][5:7]
+        r["date"] = r["created_at"][8:10] + "." + r["created_at"][5:7] + "." + r["created_at"][:4]
+        if q and q not in f"{r['id']} {r['client_name'] or ''} {r['client_phone'] or ''} {r['seller']} {r['cashier']}".lower():
+            continue
         out.append(r)
     return out
 
@@ -454,9 +475,109 @@ def summary(rows: list) -> dict:
     for r in ok:
         for p in r["pays"]:
             by_pay[p["icon"] + " " + p["title"]] = by_pay.get(p["icon"] + " " + p["title"], 0) + p["amount"]
-    return {"count": len(ok), "amount": sum(r["amount"] for r in ok), "revenue": sum(r["revenue"] for r in ok),
+    by_point, by_seller, by_hour = {}, {}, [0] * 24
+    for r in ok:
+        by_point[r["point"] or "—"] = by_point.get(r["point"] or "—", 0) + r["amount"] - (r["discount"] or 0)
+        by_seller[r["seller"]] = by_seller.get(r["seller"], 0) + r["amount"] - (r["discount"] or 0)
+        by_hour[int(r["time"][:2])] += r["amount"] - (r["discount"] or 0)
+    tot = sum(r["amount"] - (r["discount"] or 0) for r in ok)
+    return {"count": len(ok), "total": tot, "avg": tot / len(ok) if ok else 0, "discount": sum(r["discount"] or 0 for r in ok),
+            "by_point": sorted(by_point.items(), key=lambda x: -x[1]), "by_seller": sorted(by_seller.items(), key=lambda x: -x[1]),
+            "by_hour": by_hour, "amount": sum(r["amount"] for r in ok), "revenue": sum(r["revenue"] for r in ok),
             "points_spent": sum(r["points_spent"] for r in ok), "loyalty": sum(r["loyalty_amount"] for r in ok),
             "bonus": sum(r["bonus_amount"] for r in ok), "by_pay": by_pay}
+
+
+# ---------- отложенные продажи ----------
+
+def save_draft(uid: int, data: dict, draft_id=None):
+    if not can(uid, "sell"):
+        return False, "Нет права вводить продажи.", None
+    data = {k: v for k, v in (data or {}).items() if k != "draft_id"}
+    title = (str(data.get("name") or data.get("phone") or "Без клиента")[:40] + " · " +
+             f"{_num(data.get('amount')):,.0f}".replace(",", " "))
+    with core.db() as c:
+        if draft_id:
+            c.execute("UPDATE shop_drafts SET data=?, title=? WHERE id=? AND cashier_id=?",
+                      (json.dumps(data, ensure_ascii=False), title, int(draft_id), uid))
+            did = int(draft_id)
+        else:
+            did = c.execute("INSERT INTO shop_drafts(cashier_id, data, title, created_at) VALUES(?, ?, ?, ?)",
+                            (uid, json.dumps(data, ensure_ascii=False), title, core.now().strftime(core.FMT))).lastrowid
+    return True, "⏸ Продажа отложена", did
+
+
+def drafts(uid: int) -> list:
+    me = staff_row(uid)
+    with core.db() as c:
+        rows = c.execute("SELECT * FROM shop_drafts" + ("" if me.get("role") == "owner" else " WHERE cashier_id=?") +
+                         " ORDER BY id DESC", () if me.get("role") == "owner" else (uid,)).fetchall()
+    return [{"id": r["id"], "title": r["title"], "data": json.loads(r["data"]), "cashier": core.name(r["cashier_id"]),
+             "when": r["created_at"][8:10] + "." + r["created_at"][5:7] + " " + r["created_at"][11:16]} for r in rows]
+
+
+def delete_draft(uid: int, did: int):
+    me = staff_row(uid)
+    with core.db() as c:
+        cur = c.execute("DELETE FROM shop_drafts WHERE id=?" + ("" if me.get("role") == "owner" else " AND cashier_id=?"),
+                        (did,) if me.get("role") == "owner" else (did, uid))
+    return (True, "Отложенная продажа удалена") if cur.rowcount else (False, "Не найдено")
+
+
+# ---------- точки и типы оплаты из BILLZ ----------
+
+def import_from_billz():
+    """Загрузить магазины и типы оплаты из BILLZ (новые добавляются, существующие — по id/названию — обновляются)."""
+    import erp
+    if not erp.enabled():
+        return False, "BILLZ не подключён."
+    try:
+        shops = (erp._api("GET", "/v1/shop", params={"page": 1, "limit": 100}) or {}).get("shops") or []
+        ptypes = (erp._api("GET", "/v1/company/payment_type", params={"page": 1, "limit": 1000}) or {}).get("company_payment_types") or []
+    except erp.BillzError as e:
+        return False, f"Не удалось загрузить из BILLZ: {e}"
+    np = nt = 0
+    with core.db() as c:
+        for s in shops:
+            if s.get("deleted_at") or not s.get("name"):
+                continue
+            r = c.execute("SELECT id FROM shop_points WHERE billz_id=?", (s["id"],)).fetchone() or next(
+                (x for x in c.execute("SELECT id, title FROM shop_points WHERE billz_id IS NULL").fetchall()
+                 if (x["title"] or "").strip().lower() == s["name"].strip().lower()), None)
+            if r:
+                c.execute("UPDATE shop_points SET title=?, billz_id=?, address=COALESCE(NULLIF(?, ''), address) WHERE id=?",
+                          (s["name"], s["id"], s.get("address") or "", r["id"]))
+            else:
+                c.execute("INSERT INTO shop_points(title, address, billz_id) VALUES(?, ?, ?)", (s["name"], s.get("address") or "", s["id"]))
+                np += 1
+        # «Основной магазин» по умолчанию больше не нужен, если пришли настоящие и по нему нет продаж
+        if shops:
+            c.execute("UPDATE shop_points SET active=0 WHERE billz_id IS NULL AND title='Основной магазин' AND "
+                      "id NOT IN (SELECT DISTINCT point_id FROM shop_sales WHERE point_id IS NOT NULL)")
+        for t in sorted(ptypes, key=lambda x: x.get("sequence_number") or 0):
+            if t.get("dont_show_in_make_payment") or not t.get("name"):
+                continue
+            name, low = t["name"], t["name"].lower()
+            kind = "nasiya" if re.search(r"nasiya|насия|рассроч|imanum|muddatli|installment", low) else \
+                "debt" if re.search(r"долг|qarz|debt", low) else "normal"
+            icon = "💵" if t.get("is_cash_payment_type") or "налич" in low or "naqd" in low else "🟣" if kind == "nasiya" else \
+                "📝" if kind == "debt" else "💳"
+            # сравнение названий — в Python: LOWER() в SQLite не понимает кириллицу
+            r = c.execute("SELECT id FROM shop_pay_types WHERE billz_id=?", (t["id"],)).fetchone() or next(
+                (x for x in c.execute("SELECT id, title FROM shop_pay_types WHERE billz_id IS NULL").fetchall()
+                 if (x["title"] or "").strip().lower() == low.strip()), None)
+            seq = int(t.get("sequence_number") or 0)
+            if r:
+                c.execute("UPDATE shop_pay_types SET title=?, billz_id=?, sort=?, active=1 WHERE id=?", (name, t["id"], seq, r["id"]))
+            else:
+                c.execute("INSERT INTO shop_pay_types(title, icon, kind, sort, billz_id) VALUES(?, ?, ?, ?, ?)",
+                          (name, icon, kind, seq, t["id"]))
+                nt += 1
+        if ptypes:  # свои типы «по умолчанию», которых нет в BILLZ и по которым не было оплат, — выключаем и ставим в конец
+            c.execute("UPDATE shop_pay_types SET active=0 WHERE billz_id IS NULL AND "
+                      "id NOT IN (SELECT DISTINCT pay_type_id FROM shop_sale_pay)")
+            c.execute("UPDATE shop_pay_types SET sort=1000+id WHERE billz_id IS NULL")
+    return True, f"Из BILLZ: точек {len(shops)} (новых {np}), типов оплаты {len(ptypes)} (новых {nt})"
 
 
 # ---------- бонусы: разморозка ----------
