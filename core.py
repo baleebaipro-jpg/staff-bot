@@ -313,6 +313,9 @@ def init_db():
                 post_id INTEGER, user_id INTEGER, billz_id TEXT, amount REAL, before REAL, after REAL,
                 status TEXT, at TEXT, PRIMARY KEY(post_id, user_id));
             CREATE TABLE IF NOT EXISTS store_tiers(billz_id TEXT PRIMARY KEY, tier TEXT, set_at TEXT);
+            CREATE TABLE IF NOT EXISTS billz_sales(order_id TEXT PRIMARY KEY, external_id TEXT, date TEXT, shop_id TEXT,
+                shop_name TEXT, customer_name TEXT, customer_id TEXT, sellers TEXT, cashier TEXT, order_type TEXT, total REAL,
+                gross REAL, discount_pct REAL, units REAL, payments TEXT, comment TEXT, synced TEXT);
             CREATE TABLE IF NOT EXISTS purchase_seen(order_id TEXT PRIMARY KEY, seen_at TEXT);
             CREATE TABLE IF NOT EXISTS channel_links(
                 link TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, created_at TEXT, expires TEXT, used_at TEXT);

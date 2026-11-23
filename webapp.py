@@ -287,8 +287,11 @@ def api_shop_state(uid, data):
     if bad:
         return bad
     me = shop.staff_row(uid)
-    rows = shop.sales_list(uid, data.get("from") or None, data.get("to") or None, q=data.get("q") or "",
-                           point_id=data.get("point_id") or None)
+    owner_view = me["role"] == "owner" or "settings" in me["perms"]
+    source = "billz" if data.get("source") == "billz" and owner_view else "erp"
+    args = (data.get("from") or None, data.get("to") or None)
+    erp_rows = shop.sales_list(uid, *args, q=data.get("q") or "", point_id=data.get("point_id") or None)
+    rows = shop.billz_sales_list(*args, q=data.get("q") or "", point_id=data.get("point_id") or None) if source == "billz" else erp_rows
     res = {"me": {"id": uid, "role": me["role"], "role_title": shop.ROLES[me["role"]], "perms": me["perms"],
                   "point_id": me.get("point_id")},
            "settings": shop.settings(), "points": shop.points(), "pay_types": shop.pay_types(),
@@ -297,7 +300,12 @@ def api_shop_state(uid, data):
                        if s["role"] != "none"] + [{"id": a, "name": core.name(a) + " (руководитель)", "point_id": None}
                                                   for a in config.ADMINS],
            "sales": rows, "summary": shop.summary(rows), "drafts": shop.drafts(uid) if "sell" in me["perms"] else [],
-           "billz_on": erp.enabled()}
+           "billz_on": erp.enabled(), "source": source, "owner_view": owner_view}
+    if owner_view and erp.enabled():  # сверка: BILLZ и наш учёт за тот же период и точку
+        b = shop.summary(shop.billz_sales_list(*args, point_id=data.get("point_id") or None)) if source != "billz" else res["summary"]
+        e = shop.summary(erp_rows)
+        res["recon"] = {"billz_count": b["count"], "billz_total": b["total"], "erp_count": e["count"], "erp_total": e["total"],
+                        "mirror": core.flag_json("billz_mirror") or {}}
     if me["role"] == "owner" or "settings" in me["perms"]:
         res["staff"] = shop.staff_list()
     if "unfreeze" in me["perms"]:
@@ -357,6 +365,13 @@ def api_shop_settings(uid, data):
         ok, msg = shop.save_pay_type(data.get("id"), data.get("title"), data.get("icon"), data.get("kind"), data.get("active", True))
     elif act == "import_billz":
         ok, msg = shop.import_from_billz()
+    elif act == "mirror_billz":
+        try:
+            n = erp.mirror_sales(str(data.get("from") or core.now().strftime("%Y-%m-%d"))[:10],
+                                 str(data.get("to") or data.get("from") or core.now().strftime("%Y-%m-%d"))[:10])
+            ok, msg = True, f"🅱️ Из BILLZ загружено транзакций: {n}"
+        except erp.BillzError as e:
+            ok, msg = False, f"Не удалось загрузить продажи из BILLZ: {e}"
     elif act == "staff":
         ok, msg = shop.set_staff(uid, int(data.get("user_id") or 0), data.get("role"), data.get("point_id"), data.get("kpi_pct"),
                                  data.get("senior_id"), data.get("senior_pct"), data.get("perms"))
@@ -2731,7 +2746,7 @@ function langSwitch(id, langs, cur, onPick) {
   box.querySelectorAll("[data-lng]").forEach(b => b.onclick = () => { if (b.dataset.lng !== cur) onPick(b.dataset.lng); });
 }
 /* ================= ERP: продажи ================= */
-let shopS = null, shopTab = "home", shopSub = null, shopDay = null, shopQ = "", shopPoint = null, shopOpenTx = null;
+let shopS = null, shopTab = "home", shopSub = null, shopDay = null, shopQ = "", shopPoint = null, shopOpenTx = null, shopSource = "erp";
 const sm = v => Math.round(v || 0).toLocaleString("ru-RU");
 const snum = v => +String(v || "").replace(/[^\d.,]/g, "").replace(",", ".") || 0;
 const todayISO = () => { const t = new Date(); return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
@@ -2744,7 +2759,7 @@ const cartTotal = () => cart.parts.reduce((a, x) => a + x, 0) + snum(cart.amount
 const cartDiscount = () => cart.discount_mode === "pct" ? cartTotal() * snum(cart.discount_value) / 100 : snum(cart.discount_value);
 const cartToPay = () => Math.max(0, cartTotal() - cartDiscount());
 async function loadShop() {
-  try { shopS = await api("/api/shop/state", Object.assign(shopDay ? {from: shopDay.from, to: shopDay.to} : {}, {q: shopQ, point_id: shopPoint})); }
+  try { shopS = await api("/api/shop/state", Object.assign(shopDay ? {from: shopDay.from, to: shopDay.to} : {}, {q: shopQ, point_id: shopPoint, source: shopSource})); }
   catch (e) { $("shop-body").innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
   const p = shopS.me.perms;
   if (shopTab === "sell" && !p.includes("sell")) shopTab = "home";
@@ -2768,6 +2783,30 @@ function renderShop() {
 document.querySelectorAll("#shop-nav [data-snav]").forEach(b => b.onclick = () => {
   shopTab = b.dataset.snav; shopSub = null; window.scrollTo(0, 0); loadShop();
 });
+function sourceSwitch(id) {
+  if (!shopS.owner_view || !shopS.billz_on) return "";
+  return `<div class="seg" id="${id}" style="margin-bottom:10px"><button data-src="erp" class="${shopS.source === "erp" ? "on" : ""}">🧾 Наш учёт</button>
+    <button data-src="billz" class="${shopS.source === "billz" ? "on" : ""}">🅱️ BILLZ</button></div>`;
+}
+function bindSourceSwitch(id) {
+  document.querySelectorAll(`#${id} [data-src]`).forEach(b => b.onclick = () => { shopSource = b.dataset.src; loadShop(); });
+}
+function reconCard() {
+  const r = shopS.recon; if (!r) return "";
+  const diff = r.billz_total - r.erp_total, dc = r.billz_count - r.erp_count;
+  const d = shopDay || {from: todayISO(), to: todayISO()};
+  return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:19px">⚖️ Сверка с BILLZ</b>
+      <button class="btn btn-soft btn-sm" id="rc-sync">🔄 Обновить</button></div>
+    <div class="kv"><span>🅱️ BILLZ</span><b>${r.billz_count} · ${sm(r.billz_total)}</b></div>
+    <div class="kv"><span>🧾 Наш учёт</span><b>${r.erp_count} · ${sm(r.erp_total)}</b></div>
+    <div class="kv"><span>Разница</span><b style="color:${Math.abs(diff) < 1 && !dc ? "var(--green)" : "var(--red)"}">${Math.abs(diff) < 1 && !dc ? "✅ совпадает" : `${dc > 0 ? "+" : ""}${dc} продаж · ${diff > 0 ? "+" : ""}${sm(diff)}`}</b></div>
+    <div class="hint" style="font-size:11.5px">BILLZ копируется каждые ~2 минуты за сегодня${r.mirror.at ? ` · последний раз ${r.mirror.at}` : ""}. За прошлые дни — кнопкой «Обновить» (период: ${d.from.split("-").reverse().join(".")} — ${d.to.split("-").reverse().join(".")}).</div></div>`;
+}
+function bindRecon() {
+  if (!$("rc-sync")) return;
+  $("rc-sync").onclick = () => { const d = shopDay || {from: todayISO(), to: todayISO()}; toast("Загружаю продажи из BILLZ…");
+    api("/api/shop/settings", {action: "mirror_billz", from: d.from, to: d.to}).then(r => { toast(r.msg); loadShop(); }).catch(e => toast(e.message)); };
+}
 function pointChips(id) {
   const pts = shopS.points.filter(p => p.active);
   return `<div class="chips" id="${id}"><button data-pt="" class="${!shopPoint ? "on" : ""}">Все точки</button>${pts.map(p =>
@@ -2791,7 +2830,7 @@ function shopHome() {
   const S = shopS.summary, max = Math.max(1, ...S.by_hour.slice(8, 24));
   const pts = shopS.points.filter(p => p.active);
   const byPt = Object.fromEntries(S.by_point);
-  $("shop-body").innerHTML = pointChips("hp") + `
+  $("shop-body").innerHTML = sourceSwitch("hs") + pointChips("hp") + `
     <div class="card"><div style="display:flex;justify-content:space-between;align-items:flex-start">
       <div><b style="font-size:19px">Продажи</b><div class="big-sum">${sm(S.total)} <small>UZS</small></div>
       <div class="hint" style="font-size:12.5px">${S.count} продаж · средний чек ${sm(S.avg)}${S.discount ? " · скидки " + sm(S.discount) : ""}</div></div>
@@ -2809,8 +2848,8 @@ function shopHome() {
     <div class="card"><b style="font-size:19px">Баллы и бонусы</b>
       <div class="kv"><span>➕ Начислено баллов</span><b>${sm(S.loyalty)}</b></div>
       <div class="kv"><span>➖ Оплачено баллами</span><b>${sm(S.points_spent)}</b></div>
-      <div class="kv"><span>🎁 Бонусы</span><b>${sm(S.bonus)}</b></div></div>` + dateBar();
-  bindPointChips("hp"); bindDateBar();
+      <div class="kv"><span>🎁 Бонусы</span><b>${sm(S.bonus)}</b></div></div>` + reconCard() + dateBar();
+  bindPointChips("hp"); bindDateBar(); bindSourceSwitch("hs"); bindRecon();
 }
 /* --- продажа: 1) сумма --- */
 function shopSell() {
@@ -3001,22 +3040,22 @@ function shopList() {
   const head = $("sh-head-btn"); head.style.visibility = "visible"; head.textContent = shopS.summary.count; head.onclick = null;
   const groups = {};
   shopS.sales.forEach(x => { (groups[x.date] = groups[x.date] || []).push(x); });
-  $("shop-body").innerHTML = `<div class="card" style="padding:10px 12px"><input id="tx-q" placeholder="🔍 ID, клиент, продавец" value="${esc(shopQ)}" style="margin:0"></div>`
-    + pointChips("tp") + (Object.keys(groups).length ? Object.entries(groups).map(([d, list]) => `<div class="tx-date"><span>${d}</span><span class="hint" style="font-size:13px">${list.length} · ${sm(list.reduce((a, x) => a + x.amount - (x.discount || 0), 0))}</span></div>
-    <div class="card" style="padding:4px 16px">${list.map(x => `<div class="tx" data-tx="${x.id}">
-      <div class="inv-top"><span class="tx-a">Продажа #${x.id}</span><span class="tx-a">${sm(x.amount - (x.discount || 0))} UZS</span></div>
+  $("shop-body").innerHTML = sourceSwitch("ts") + `<div class="card" style="padding:10px 12px"><input id="tx-q" placeholder="🔍 ID, клиент, продавец" value="${esc(shopQ)}" style="margin:0"></div>`
+    + pointChips("tp") + (Object.keys(groups).length ? Object.entries(groups).map(([d, list]) => `<div class="tx-date"><span>${d}</span><span class="hint" style="font-size:13px">${list.length} · ${sm(list.reduce((a, x) => a + (x.status === "return" ? -1 : x.status === "exchange" ? 0 : 1) * (x.amount - (x.discount || 0)), 0))}</span></div>
+    <div class="card" style="padding:4px 16px">${list.map(x => `<div class="tx" data-tx="${esc(String(x.id))}">
+      <div class="inv-top"><span class="tx-a" style="${x.status === "return" ? "color:var(--red)" : ""}">${x.status === "return" ? "Возврат" : x.status === "exchange" ? "Обмен" : "Продажа"} #${esc(String(x.id))}</span><span class="tx-a" style="${x.status === "return" ? "color:var(--red)" : ""}">${sm(x.amount - (x.discount || 0))} UZS</span></div>
       <div class="inv-top" style="margin-top:6px"><b>${x.time}</b><span class="hint" style="font-size:13px"><span class="dot-c" style="background:${POINT_COLORS[(shopS.points.findIndex(p => p.id === x.point_id) + POINT_COLORS.length) % POINT_COLORS.length]}"></span>${esc(x.point || "—")}</span></div>
-      <div class="inv-top" style="margin-top:8px"><span class="pill">👤 ${esc(x.client_name || x.client_phone || "—")}</span>
+      <div class="inv-top" style="margin-top:8px"><span class="pill">👤 ${esc(x.client_name || x.client_phone || "—")}</span>${x.source === "billz" && x.units ? `<span class="pill">${x.units} ед.</span>` : ""}
         ${x.loyalty_amount ? `<span class="pill">+${sm(x.loyalty_amount)}</span>` : ""}</div>
-      ${shopOpenTx === x.id ? `<div class="tot">${x.pays.map(p => `${p.icon} ${esc(p.title)}: <b>${sm(p.amount)}</b>`).join("<br>")}
+      ${String(shopOpenTx) === String(x.id) ? `<div class="tot">${x.pays.map(p => `${p.icon} ${esc(p.title)}: <b>${sm(p.amount)}</b>`).join("<br>")}
         ${x.points_spent ? `<br>🎁 Баллами: <b>${sm(x.points_spent)}</b>` : ""}${x.discount ? `<br>％ Скидка: <b>${sm(x.discount)}</b> (сумма ${sm(x.amount)})` : ""}
         <br>🧑‍💼 Продавец: <b>${esc(x.seller)}</b> · касса: ${esc(x.cashier)}
         ${x.bonus_amount ? `<br>${x.bonus_frozen ? "🧊" : "🎀"} Бонус: <b>${sm(x.bonus_amount)}</b>` : ""}${x.exchange ? "<br>🔁 Обмен разрешён" : ""}${x.debt_amount ? `<br>📝 В долг: <b>${sm(x.debt_amount)}</b>` : ""}
         ${x.note ? `<br>📝 ${esc(x.note)}` : ""}</div>` : ""}</div>`).join("")}</div>`).join("")
-    : `<div class="card empty">Продаж за этот период нет</div>`) + dateBar();
-  bindPointChips("tp"); bindDateBar();
+    : `<div class="card empty">${shopS.source === "billz" ? "В копии BILLZ за этот период продаж нет — нажмите «🔄 Обновить» в сверке на Главной" : "Продаж за этот период нет"}</div>`) + dateBar();
+  bindPointChips("tp"); bindDateBar(); bindSourceSwitch("ts");
   let t = null; $("tx-q").oninput = e => { clearTimeout(t); t = setTimeout(() => { shopQ = e.target.value; loadShop().then(() => { const q = $("tx-q"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }); }, 350); };
-  document.querySelectorAll("[data-tx]").forEach(r => r.onclick = () => { shopOpenTx = shopOpenTx === +r.dataset.tx ? null : +r.dataset.tx; shopList(); });
+  document.querySelectorAll("[data-tx]").forEach(r => r.onclick = () => { shopOpenTx = String(shopOpenTx) === r.dataset.tx ? null : r.dataset.tx; shopList(); });
 }
 /* --- меню --- */
 function shopMenu() {
