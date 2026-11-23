@@ -271,6 +271,8 @@ def api_me(uid, data):
         res["posting"] = {"audience": aud, "history": posts.history()}
     if res["is_admin"]:
         res["projects"] = projects.overview(uid)
+        if not res["is_employee"]:
+            res["boss_day"] = core.boss_day(uid)  # «Пришёл / Ушёл» руководителя
         res["earnings_team"] = core.earnings_team()
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
@@ -291,7 +293,7 @@ def api_me(uid, data):
 @app.post("/api/checkin")
 @need_user(staff=True)
 def api_checkin(uid, data):
-    if core.PROOF_REQUIRED:
+    if core.PROOF_REQUIRED and core.employee(uid):  # руководителю кружок не нужен
         ok, msg = core.start_proof(uid)
         if not ok:
             return jsonify(ok=False, msg=msg)
@@ -1090,6 +1092,21 @@ PAGE = r"""<!doctype html>
     background: radial-gradient(420px 320px at 85% 0%, rgba(124,58,237,.35), transparent 70%),
                 radial-gradient(380px 320px at 0% 100%, rgba(91,33,182,.28), transparent 70%), #06050c;
     transition: opacity .6s ease, visibility .6s; }
+  .bday .bd-top { display: flex; align-items: center; gap: 12px; }
+  .bday .bd-top span { display: block; font-size: 13px; color: var(--muted); }
+  .bday .bd-top b { display: block; font-size: 22px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .bday #bd-btn { flex: none; padding: 12px 18px; }
+  .bd-goal { height: 8px; border-radius: 8px; background: rgba(255,255,255,.07); margin: 14px 0 6px; overflow: hidden; }
+  .bd-goal i { display: block; height: 100%; width: 0; border-radius: 8px; background: linear-gradient(90deg, #7c3aed, #c4b5fd); transition: width .6s; }
+  .bd-goal-t { font-size: 12.5px; color: var(--muted); }
+  .bd-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .bd-stats div { background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 14px; padding: 10px; text-align: center; }
+  .bd-stats b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .bd-stats span { font-size: 11.5px; color: var(--muted); }
+  .bd-hist { margin-top: 12px; }
+  .bd-hist summary { cursor: pointer; font-size: 14px; color: var(--muted); list-style: none; }
+  .bd-row { display: flex; justify-content: space-between; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .bd-row:last-child { border-bottom: 0; }
   #splash.out { opacity: 0; visibility: hidden; }
   #splash img { width: 70%; max-width: 360px; animation: spIn 1.1s cubic-bezier(.2,.8,.2,1) both, spGlow 2.4s ease-in-out 1.1s infinite; }
   .sp-line { width: 120px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
@@ -1583,6 +1600,14 @@ PAGE = r"""<!doctype html>
       <button class="card dtile" data-dgo="clients"><div class="f-ic">💎</div><div><b id="d-cl">—</b><span>Клиенты</span></div><i>›</i></button>
       <button class="card dtile" id="d-shop-tile"><div class="f-ic">🧾</div><div><b style="font-size:16px">Продажи</b><span>ERP · касса</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="posting"><div class="f-ic">📣</div><div><b style="font-size:16px">Постинг</b><span id="d-post">посты</span></div><i>›</i></button>
+    </div>
+    <div class="card bday hidden" id="bday">
+      <div class="bd-top"><div class="f-ic">🕘</div><div style="flex:1;min-width:0"><span id="bd-lbl">Мой рабочий день</span>
+        <b id="bd-state">—</b></div><button class="btn btn-main" id="bd-btn">Пришёл</button></div>
+      <div class="bd-goal"><i id="bd-bar"></i></div><div class="bd-goal-t" id="bd-goal-t"></div>
+      <div class="bd-stats"><div><b id="bd-week">0</b><span>неделя</span></div><div><b id="bd-month">0</b><span>месяц</span></div>
+        <div><b id="bd-avg">0</b><span>в среднем</span></div></div>
+      <details class="bd-hist"><summary>История смен</summary><div id="bd-list"></div></details>
     </div>
     <div class="card dayc" style="cursor:default">
       <div class="top"><div class="f-ic">📅</div><div><span>Мои задачи на сегодня</span><b id="d-date"></b></div>
@@ -3502,7 +3527,34 @@ $("go-inv-own").onclick = () => data.invest_enabled ? show("invest") : toast(SOO
 $("go-clients").onclick = () => show("clients");
 document.querySelectorAll("[data-dgo], #tabbar [data-tab]").forEach(b => b.onclick = () => show(b.dataset.dgo || b.dataset.tab));
 /* Главная руководителя: плитки с цифрами и «Мой день» */
+/* Рабочий день руководителя: Пришёл / Ушёл и часы (цель — 8–10 часов в день) */
+const BD_GOAL = 8, BD_MAX = 10, WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const hm = h => { const m = Math.round(h * 60); return `${Math.floor(m / 60)} ч ${String(m % 60).padStart(2, "0")} м`; };
+let bdTimer = null;
+function renderBossDay() {
+  const b = data.boss_day; $("bday").classList.toggle("hidden", !b); if (!b) return;
+  $("bd-btn").textContent = b.on_site ? "🚪 Ушёл" : "✅ Пришёл";
+  $("bd-btn").className = "btn " + (b.on_site ? "btn-soft" : "btn-main");
+  const t0 = Date.now();
+  const tick = () => {
+    const today = b.today + (b.on_site ? (Date.now() - t0) / 3600000 : 0);
+    $("bd-lbl").textContent = b.on_site ? `🟢 На работе с ${b.since}` : (b.came_today ? "Сегодня отработано" : "Мой рабочий день");
+    $("bd-state").textContent = b.on_site || b.came_today ? hm(today) : "Ещё не пришёл";
+    $("bd-bar").style.width = Math.min(100, today / BD_MAX * 100) + "%";
+    $("bd-goal-t").textContent = (today >= BD_GOAL
+      ? (today >= BD_MAX ? "🔥 10+ часов — отличный день" : "✅ 8 часов есть, цель 8–10 ч") : `до 8 часов: ${hm(BD_GOAL - today)}`);
+  };
+  tick(); clearInterval(bdTimer); if (b.on_site) bdTimer = setInterval(tick, 30000);
+  $("bd-week").textContent = hm(b.week).replace(" м", "м").replace(" ч", "ч");
+  $("bd-month").textContent = hm(b.month).replace(" м", "м").replace(" ч", "ч");
+  $("bd-avg").textContent = hm(b.avg).replace(" м", "м").replace(" ч", "ч");
+  $("bd-list").innerHTML = b.history.length ? b.history.map(r => `<div class="bd-row"><span>${WD[r.wd]} ${r.day}</span>
+    <span style="color:var(--muted)">${r.in} – ${r.out || "сейчас"}${r.auto ? " (авто)" : ""}</span><b>${hm(r.h)}</b></div>`).join("")
+    : `<div class="empty">Смен пока нет</div>`;
+}
+$("bd-btn").onclick = () => action(data.boss_day.on_site ? "/api/checkout" : "/api/checkin");
 function renderDash() {
+  renderBossDay();
   const o = data.projects, cl = data.clients || {}, et = data.earnings_team || [];
   $("d-proj").textContent = o ? o.projects.length : "—";
   $("d-team").textContent = (data.team || []).length;
