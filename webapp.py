@@ -1081,6 +1081,24 @@ PAGE = r"""<!doctype html>
   .inv-tiles > div { background: var(--glass); border: 1px solid var(--line); border-radius: 18px; }
   .link { color: #b9a2ff; }
 
+  /* шапка: логотип RADI & CO. по центру */
+  .brand-c { flex-direction: column; justify-content: center; gap: 4px; margin: 6px 0 16px; text-align: center; }
+  .brand-logo { width: 62%; max-width: 280px; height: auto; display: block; filter: drop-shadow(0 2px 14px rgba(167,139,250,.35)); }
+  .brand-c #br-sub { color: var(--hint); font-size: 11.5px; letter-spacing: .28em; text-transform: uppercase; }
+  .load-logo { width: 55%; max-width: 240px; opacity: .9; animation: spPulse 1.6s ease-in-out infinite; margin: 18px auto; display: block; }
+  #splash { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
+    background: radial-gradient(420px 320px at 85% 0%, rgba(124,58,237,.35), transparent 70%),
+                radial-gradient(380px 320px at 0% 100%, rgba(91,33,182,.28), transparent 70%), #06050c;
+    transition: opacity .6s ease, visibility .6s; }
+  #splash.out { opacity: 0; visibility: hidden; }
+  #splash img { width: 70%; max-width: 360px; animation: spIn 1.1s cubic-bezier(.2,.8,.2,1) both, spGlow 2.4s ease-in-out 1.1s infinite; }
+  .sp-line { width: 120px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .sp-line i { display: block; width: 40%; height: 100%; background: linear-gradient(90deg, transparent, #c4b5fd, transparent);
+    animation: spBar 1.2s ease-in-out infinite; }
+  @keyframes spIn { from { opacity: 0; transform: scale(.94); filter: blur(8px); } to { opacity: 1; transform: none; filter: blur(0); } }
+  @keyframes spGlow { 0%, 100% { filter: drop-shadow(0 0 0 rgba(167,139,250,0)); } 50% { filter: drop-shadow(0 0 18px rgba(167,139,250,.55)); } }
+  @keyframes spPulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+  @keyframes spBar { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
   /* шапка */
   .brand { display: flex; align-items: center; gap: 14px; margin: 2px 0 16px; }
   .logo-mark { width: 58px; height: 58px; border-radius: 18px; flex: none; display: flex; align-items: center; justify-content: center;
@@ -1238,10 +1256,13 @@ PAGE = r"""<!doctype html>
 </style>
 </head>
 <body>
+<div id="splash"><img src="/static/radi-logo.png" alt="RADI &amp; CO."><div class="sp-line"><i></i></div></div>
 <div class="wrap">
-  <div class="brand hidden" id="brand"><div class="logo-mark"><svg viewBox="0 0 64 40"><defs><linearGradient id="lgR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#c9cbe0"/><stop offset="1" stop-color="#7d8199"/></linearGradient></defs><text x="31" y="31" text-anchor="middle" font-family="Didot,Georgia,serif" font-style="italic" font-weight="700" font-size="31" letter-spacing="-4" fill="url(#lgR)">RD</text></svg></div><div class="brand-sep"></div>
-    <div><b id="br-title">RADI TEAM</b><span id="br-sub">мини-приложение</span></div></div>
-  <div id="loading" class="card empty">Загрузка…</div>
+  <div class="brand brand-c hidden" id="brand">
+    <img class="brand-logo" src="/static/radi-logo.png" alt="RADI &amp; CO.">
+    <span id="br-sub">мини-приложение</span><b id="br-title" class="hidden"></b>
+    <div class="logo-mark hidden"><svg viewBox="0 0 64 40"><defs><linearGradient id="lgR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#c9cbe0"/><stop offset="1" stop-color="#7d8199"/></linearGradient></defs><text x="31" y="31" text-anchor="middle" font-family="Didot,Georgia,serif" font-style="italic" font-weight="700" font-size="31" letter-spacing="-4" fill="url(#lgR)">RD</text></svg></div></div>
+  <div id="loading" class="card empty"><img class="load-logo" src="/static/radi-logo.png" alt=""></div>
   <div id="error" class="card empty hidden"></div>
 
   <div id="seg" class="seg hidden">
@@ -2715,6 +2736,12 @@ function earnSheet(uid, keep) {
 }
 
 let openedShop = false;
+const splashT0 = Date.now();
+function hideSplash() {
+  const s = document.getElementById("splash"); if (!s || s.classList.contains("out")) return;
+  setTimeout(() => s.classList.add("out"), Math.max(0, 1100 - (Date.now() - splashT0)));  // заставка — минимум ~1 секунда
+}
+setTimeout(hideSplash, 8000);  // на всякий случай: не держать заставку дольше 8 секунд
 /* Надписи кабинета (руководитель меняет кнопкой ✏️ на главной) */
 const BRAND_DEF = {title: "RADI TEAM", sub: () => IS_APP ? "приложение" : "мини-приложение", welcome: "Добро пожаловать!",
                    welcome_sub: "Ваш личный кабинет команды RADI"};
@@ -2729,8 +2756,8 @@ function applyBranding() {
 function brandSheet() {
   const b = data.branding || {};
   invSheet(`<h3>✏️ Надписи кабинета</h3><div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Пустое поле — вернуть как было. Видят все сотрудники.</div>
-    <div class="f-lbl" style="margin-top:0">Название вверху</div><input id="bs-title" maxlength="40" value="${esc(b.title || "")}" placeholder="${BRAND_DEF.title}">
-    <div class="f-lbl">Подпись под названием</div><input id="bs-sub" maxlength="60" value="${esc(b.sub || "")}" placeholder="${BRAND_DEF.sub()}">
+    <input id="bs-title" type="hidden" value="${esc(b.title || "")}">
+    <div class="f-lbl" style="margin-top:0">Подпись под логотипом</div><input id="bs-sub" maxlength="60" value="${esc(b.sub || "")}" placeholder="${BRAND_DEF.sub()}">
     <div class="f-lbl">Приветствие на главной</div><input id="bs-wl" maxlength="60" value="${esc(b.welcome || "")}" placeholder="${BRAND_DEF.welcome}">
     <div class="f-lbl">Текст под приветствием</div><input id="bs-wls" maxlength="120" value="${esc(b.welcome_sub || "")}" placeholder="${BRAND_DEF.welcome_sub}">
     ${sheetBtns("Сохранить")}`);
@@ -2744,7 +2771,7 @@ async function load(fresh = false) {
     $("loading").classList.add("hidden");
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); return; }
-    applyBranding();
+    applyBranding(); hideSplash();
     if (data.is_employee) { renderMe(); renderEarn(); }
     $("go-shop-me").classList.toggle("hidden", !(data.shop_access && data.is_employee));
     $("go-shop").classList.toggle("hidden", !data.is_admin);
@@ -2767,6 +2794,7 @@ async function load(fresh = false) {
     openedShop = true;
     show(view);
   } catch (e) {
+    hideSplash();
     if (IS_APP && /Telegram|сотрудник|Только/.test(e.message)) { appToken.set(""); return appLogin(); }  // сессия кончилась
     $("loading").classList.add("hidden");
     $("error").classList.remove("hidden");
@@ -2776,10 +2804,10 @@ async function load(fresh = false) {
 
 /* Вход в приложение через бот сотрудников */
 async function appLogin() {
+  hideSplash();
   $("loading").classList.remove("hidden");
   $("loading").innerHTML = `<div style="text-align:center;padding:30px 10px">
-    <div class="logo-mark" style="width:90px;height:90px;margin:0 auto 14px">${$("brand").querySelector(".logo-mark").innerHTML}</div>
-    <div style="font-size:24px;font-weight:800;letter-spacing:.05em">RADI TEAM</div>
+    <img src="/static/radi-logo.png" alt="RADI &amp; CO." style="width:78%;max-width:320px;margin:10px auto 18px;display:block;animation:spIn 1s ease both">
     <div class="hint" style="margin:6px 0 22px">Kirish / Вход</div>
     <button class="btn btn-main" style="width:100%;padding:16px;font-size:16px" id="al-go">✈️ Telegram orqali kirish / Войти через Telegram</button>
     <div class="hint" id="al-st" style="font-size:13px;margin-top:14px;line-height:1.5">Bot ochiladi — «Start»ni bosing va ilovaga qayting.<br>Откроется бот — нажмите «Start» и вернитесь в приложение.</div></div>`;
@@ -3511,7 +3539,7 @@ document.querySelectorAll(".page-title").forEach(t => {
   if (!sub || !sub.classList.contains("page-sub")) return;
   const hero = document.createElement("div");
   hero.className = "hero";
-  hero.innerHTML = `<div class="logo-mark">${$("brand").querySelector(".logo-mark").innerHTML}</div><div class="brand-sep"></div><div style="min-width:0"></div>`;
+  hero.innerHTML = `<div style="min-width:0"></div>`;
   if (!t.dataset.sx) t.textContent = t.textContent.replace(/^[^\p{L}\p{N}]+/u, "");
   t.before(hero);
   hero.lastElementChild.append(t, sub);
@@ -3607,7 +3635,7 @@ $("f-add").onclick = () => {
 };
 
 if (IS_APP) { if (appToken.get()) { load(true); setInterval(() => load(), 30000); } else appLogin(); }
-else if (!tg.initData) $("loading").innerHTML = "Kabinetni bot ichidagi tugma orqali oching: pastdagi «🏠» tugmasini bosing va " +
+else if (!tg.initData) hideSplash(), $("loading").innerHTML = "Kabinetni bot ichidagi tugma orqali oching: pastdagi «🏠» tugmasini bosing va " +
   "kelgan xabardagi «🏠 Kabinetni ochish» tugmasini bosing yoki maydon chap tomonidagi «Kabinet» tugmasini bosing.<br><br>" +
   "Откройте кабинет через бота: нажмите «🏠» внизу, затем «🏠 Открыть кабинет» в сообщении бота — или кнопку «Kabinet» слева от поля ввода.<br><br>" +
   "Open your account from the bot: tap «🏠» below, then «🏠 Open account» in the bot's message — or the «Kabinet» button left of the input field.";
