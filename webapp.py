@@ -1631,29 +1631,37 @@ PAGE = r"""<!doctype html>
 <div class="toast" id="toast"></div>
 
 <script>
-const tg = window.Telegram.WebApp;
-/* ---------- мобильное приложение RADI Team (Android / iPhone) ---------- */
+/* ---------- мобильное приложение RADI Team (Android / iPhone) ----------
+   В приложении библиотека Telegram не работает (и её свойства нельзя подменить) — используем свою замену. */
 const APP = new URLSearchParams(location.search).get("app") || (window.RadiApp ? "android" : "");
-const IS_APP = !!APP && !tg.initData;
+const realTg = window.Telegram && window.Telegram.WebApp;
+const IS_APP = !!APP && !(realTg && realTg.initData);
 const appToken = { get: () => { try { return localStorage.getItem("radi_app_token") || ""; } catch (e) { return ""; } },
   set: v => { try { v ? localStorage.setItem("radi_app_token", v) : localStorage.removeItem("radi_app_token"); } catch (e) {} } };
-if (IS_APP) {  // вне Telegram — свои замены функций Telegram
+const appBackState = {on: false, cb: null};
+const vib = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+const tg = IS_APP ? {
+  initData: "", ready() {}, expand() {}, close() {}, setHeaderColor() {}, setBackgroundColor() {},
+  showConfirm: (t, cb) => cb(window.confirm(t)),
+  showAlert: (t, cb) => { window.alert(t); cb && cb(); },
+  HapticFeedback: {notificationOccurred: () => vib(30), selectionChanged: () => vib(8), impactOccurred: () => vib(15)},
+  BackButton: {show() { appBackState.on = true; }, hide() { appBackState.on = false; }, onClick(cb) { appBackState.cb = cb; }},
+} : realTg;
+if (IS_APP) {
   document.documentElement.classList.add("app");
-  let backCb = null, backOn = false;
-  tg.showConfirm = (t, cb) => cb(window.confirm(t));
-  tg.showAlert = (t, cb) => { window.alert(t); cb && cb(); };
-  tg.close = () => {};
-  tg.HapticFeedback = {notificationOccurred: () => { try { navigator.vibrate && navigator.vibrate(30); } catch (e) {} },
-                       selectionChanged: () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) {} },
-                       impactOccurred: () => {}};
-  tg.BackButton = {show: () => { backOn = true; }, hide: () => { backOn = false; }, onClick: cb => { backCb = cb; }};
-  tg.setHeaderColor = () => {}; tg.setBackgroundColor = () => {};
   window.appBack = () => {  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
-    const bg = document.getElementById("inv-sheet-bg");
-    if (bg && !bg.classList.contains("hidden")) { invSheetClose(); return true; }
-    if (typeof view !== "undefined" && view === "shop" && typeof cart !== "undefined" && cart.step !== "amount" && shopTab === "sell") {
-      cart.step = cart.step === "pay" ? "details" : "amount"; shopSell(); return true; }
-    if (backOn && backCb) { backCb(); return true; }
+    try {
+      const bg = document.getElementById("inv-sheet-bg");
+      if (bg && !bg.classList.contains("hidden")) { invSheetClose(); return true; }
+      const sb = document.getElementById("sheet-bg");
+      if (sb && !sb.classList.contains("hidden")) { sb.classList.add("hidden"); return true; }
+      if (view === "shop") {
+        if (shopTab === "sell" && cart.step !== "amount") { cart.step = cart.step === "pay" ? "details" : "amount"; shopSell(); return true; }
+        if (shopTab === "menu" && shopSub) { shopSub = null; renderShop(); return true; }
+        if (shopTab !== "home" && data && data.is_admin) { shopTab = "home"; shopSub = null; loadShop(); return true; }
+      }
+      if (view in SUBPAGES) { show(SUBPAGES[view] || "me"); return true; }
+    } catch (e) {}
     return false;
   };
   document.addEventListener("contextmenu", e => { if (!/INPUT|TEXTAREA/.test(e.target.tagName)) e.preventDefault(); });
