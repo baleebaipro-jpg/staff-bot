@@ -3,6 +3,10 @@ package uz.radi.team;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.Manifest;
+import android.provider.MediaStore;
+import android.webkit.PermissionRequest;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -29,6 +33,8 @@ import android.webkit.WebViewClient;
  */
 public class MainActivity extends Activity {
     private static final int FILE_REQ = 7;
+    private static final int MEDIA_PERM_REQ = 8;
+    private PermissionRequest pendingMedia;
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private String host;
@@ -76,10 +82,36 @@ public class MainActivity extends Activity {
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
+            /** Камера и микрофон для видео-подтверждения прихода — только своему серверу. */
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(() -> {
+                    Uri o = request.getOrigin();
+                    if (o == null || host == null || !host.equals(o.getHost())) { request.deny(); return; }
+                    if (Build.VERSION.SDK_INT >= 23 && (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+                            || checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)) {
+                        pendingMedia = request;
+                        requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO}, MEDIA_PERM_REQ);
+                        return;
+                    }
+                    request.grant(request.getResources());
+                });
+            }
+
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
+                boolean video = false;
+                for (String t : params.getAcceptTypes()) if (t != null && t.startsWith("video")) video = true;
+                if (video) {  // запасной путь: системная камера записывает видео
+                    Intent v = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
+                    v.putExtra("android.intent.extras.CAMERA_FACING", 1);
+                    v.putExtra("android.intent.extra.USE_FRONT_CAMERA", true);
+                    v.putExtra(MediaStore.EXTRA_DURATION_LIMIT, 10);
+                    try { startActivityForResult(v, FILE_REQ); return true; }
+                    catch (ActivityNotFoundException e) { fileCallback = null; return false; }
+                }
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                 i.addCategory(Intent.CATEGORY_OPENABLE);
                 i.setType("image/*");
@@ -140,6 +172,16 @@ public class MainActivity extends Activity {
             fileCallback.onReceiveValue(res);
             fileCallback = null;
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != MEDIA_PERM_REQ || pendingMedia == null) return;
+        boolean all = results.length > 0;
+        for (int r : results) if (r != PackageManager.PERMISSION_GRANTED) all = false;
+        if (all) pendingMedia.grant(pendingMedia.getResources()); else pendingMedia.deny();
+        pendingMedia = null;
     }
 
     @Override

@@ -19,6 +19,7 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key><true/>
 	<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
 	<key>NSPhotoLibraryUsageDescription</key><string>Чтобы выбрать фото для аватара и постов.</string>
-	<key>NSCameraUsageDescription</key><string>Чтобы сделать фото для аватара и постов.</string>
+	<key>NSCameraUsageDescription</key><string>Чтобы сделать фото и записать видео-подтверждение прихода.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Чтобы в видео-подтверждении прихода был слышен код.</string>
 </dict>
 </plist>

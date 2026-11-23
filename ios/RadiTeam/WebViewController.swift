@@ -149,6 +149,14 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         webView.loadHTMLString(html, baseURL: Self.server)
     }
 
+    // MARK: камера и микрофон для видео-подтверждения прихода — только своему серверу, без лишнего вопроса
+
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(origin.host == Self.server.host ? .grant : .deny)
+    }
+
     // MARK: window.alert / window.confirm на странице (без этого confirm в WKWebView всегда «нет»)
 
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
