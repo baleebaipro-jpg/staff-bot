@@ -7,6 +7,7 @@
 """
 import asyncio
 import logging
+import random
 import re
 
 from telegram import InputMediaPhoto, InputMediaVideo, Update
@@ -323,6 +324,7 @@ async def daily_check(bot) -> None:
 # ================= Похвала после каждого альбома =================
 
 PRAISE = getattr(config, "RELAY_PRAISE", None)
+_praise_last = {"text": None}
 
 
 async def _praise(first) -> None:
@@ -331,7 +333,13 @@ async def _praise(first) -> None:
         return
     user = first.from_user
     mention = user.mention_html() if user and not user.is_bot else ""
-    text = PRAISE.format(mention=mention).strip()
+    if isinstance(PRAISE, (list, tuple)):  # случайная похвала, подряд не повторяется
+        options = [p for p in PRAISE if p != _praise_last["text"]] or list(PRAISE)
+        tpl = random.choice(options)
+        _praise_last["text"] = tpl
+    else:
+        tpl = PRAISE
+    text = tpl.format(mention=mention).strip()
     try:
         await _send_with_retry(lambda: first.reply_html(text))
     except Exception as e:
