@@ -996,6 +996,14 @@ PAGE = r"""<!doctype html>
       <div class="stat s3"><div class="ic">📊</div><b id="s-level"></b><span data-sx="cur_rank"></span></div>
     </div>
 
+    <button class="card folder" id="go-done" style="cursor:pointer">
+      <div class="f-ic">✅</div>
+      <div style="min-width:0;flex:1"><b data-sx="done_title"></b><div class="f-sub" data-sx="done_sub"></div></div>
+      <div style="display:flex;gap:14px;text-align:center;flex:none">
+        <div><b id="done-month" style="font-size:22px;color:var(--green)">0</b><div class="hint" style="font-size:11px" data-sx="done_month"></div></div>
+        <div><b id="done-total" style="font-size:22px">0</b><div class="hint" style="font-size:11px" data-sx="done_total"></div></div>
+      </div>
+    </button>
     <button class="card folder" id="go-earn">
       <div class="f-ic" style="background:rgba(52,211,153,.16)">💵</div>
       <div style="min-width:0"><b data-sx="earn_title"></b><div class="f-sub" id="earn-folder-sub"></div></div>
@@ -1024,7 +1032,7 @@ PAGE = r"""<!doctype html>
       <div class="levels" id="levels"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="my-tasks-card">
       <div class="head"><h3 data-sx="my_tasks"></h3></div>
       <div class="add-row" style="margin-bottom:6px"><input id="mt-title" maxlength="300" data-sxp="mt_ph">
         <button class="btn btn-main" id="mt-add">＋</button></div>
@@ -1477,7 +1485,8 @@ tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 /* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
 const SX = {
   ru: {h: "ч", per_month: "за месяц", in_row: "подряд", cur_rank: "текущее звание", invest: "Инвестиции",
-       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_pick: "📅 Дата…", mt_mine: "моя", last_visits: "Последние посещения",
+       my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", done_title: "Выполненные задачи", done_sub: "Так держать! 💪",
+       done_month: "в этом месяце", done_total: "за всё время", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_pick: "📅 Дата…", mt_mine: "моя", last_visits: "Последние посещения",
        all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
        close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
@@ -1493,7 +1502,8 @@ const SX = {
        earn_by_month: "По месяцам", earn_total: "за всё время", earn_year: "в этом году", earn_empty: "Пока нет записей",
        earn_folder: "За всё время: {s}", cur: "сум"},
   uz: {h: "soat", per_month: "shu oyda", in_row: "ketma-ket", cur_rank: "joriy unvon", invest: "Investitsiyalar",
-       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_pick: "📅 Sana…", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
+       my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", done_title: "Bajarilgan vazifalar", done_sub: "Shunday davom eting! 💪",
+       done_month: "shu oyda", done_total: "jami", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_pick: "📅 Sana…", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
        close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
@@ -1543,6 +1553,8 @@ function renderMe() {
   $("s-month").textContent = num(p.month_hours) + " " + sx("h");
   $("s-streak").textContent = daysSx(p.streak);
   $("s-level").textContent = lvl.name;
+  $("done-month").textContent = num(p.tasks_done_month || 0);
+  $("done-total").textContent = num(p.tasks_done_total || 0);
 
   $("my-week").innerHTML = weekCells(p.week, p.today_wd);
   $("st-text").innerHTML = p.on_site
@@ -2555,6 +2567,7 @@ $("go-staff").onclick = () => show("staff");
 $("go-projects").onclick = () => show("projects");
 $("go-posting").onclick = () => show("posting");
 $("go-earn").onclick = () => show("earn");
+$("go-done").onclick = () => $("my-tasks-card").scrollIntoView({behavior: "smooth", block: "start"});
 $("go-earn-admin").onclick = () => show("earn-admin");
 $("go-inv-admin").onclick = () => data.invest_enabled ? show("invest-admin") : toast(SOON);
 /* Раздел выключен: карточки «Инвестиции» — в виде «Скоро» */

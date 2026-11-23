@@ -582,6 +582,9 @@ def profile(uid: int) -> dict:
             "late_now": bool(workday(emp, t) and not s and not today and t > window(emp, "in", t)[1]
                              and in_window(emp, "in", t)),
             "unfinished": len(_unfinished(c, uid)),
+            "tasks_done_total": c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND status='done'", (uid,)).fetchone()[0],
+            "tasks_done_month": c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND status='done' AND done_at>=?",
+                                          (uid, month_start)).fetchone()[0],
             "can_out": bool(s) and in_window(emp, "out", t) and not _unfinished(c, uid),
         }
     return res
