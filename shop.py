@@ -276,6 +276,73 @@ def find_client(phone: str) -> dict:
     return res
 
 
+def search_clients(q: str, limit: int = 20) -> list:
+    """Гибкий поиск клиента: часть номера (от 3 цифр, в любом формате) или имя / фамилия.
+    Ищет в ERP, в боте и в копии базы магазина; один номер — одна строка."""
+    q = str(q or "").strip()
+    digits = re.sub(r"\D", "", q)
+    words = [w for w in re.split(r"\s+", re.sub(r"[\d+()\-]", " ", q).lower()) if len(w) >= 2]
+    if len(digits) < 3 and not words:
+        return []
+    if len(digits) >= 3 and not words:
+        part = digits[-9:] if len(digits) > 9 else digits
+        cond = lambda col: (f"REPLACE(REPLACE(REPLACE({col}, ' ', ''), '-', ''), '+', '') LIKE ?", ["%" + part + "%"])
+    else:
+        cond = None
+    out, seen = [], set()
+
+    def add(phone, name, src, extra=None):
+        tail = _tail(phone)
+        if not tail or len(tail) < 9:
+            return
+        if tail in seen:
+            for o in out:
+                if o["tail"] == tail:
+                    o["src"] = sorted(set(o["src"]) | {src})
+                    if not o["name"] and name:
+                        o["name"] = name
+            return
+        seen.add(tail)
+        out.append(dict({"phone": _phone(phone), "tail": tail, "name": name or "", "src": [src]}, **(extra or {})))
+
+    def name_ok(text):
+        t = (text or "").lower()
+        return all(w in t for w in words)
+    with core.db() as c:
+        if cond:
+            w, a = cond("phone")
+            rows = c.execute(f"SELECT * FROM shop_clients WHERE {w} LIMIT 50", a).fetchall()
+        else:
+            rows = [r for r in c.execute("SELECT * FROM shop_clients") if name_ok(r["name"])][:50]
+        for r in rows:
+            add(r["phone"], r["name"], "erp")
+        if cond:
+            w, a = cond("phone")
+            rows = c.execute(f"SELECT * FROM clients WHERE phone IS NOT NULL AND {w} LIMIT 50", a).fetchall()
+        else:
+            rows = [r for r in c.execute("SELECT * FROM clients WHERE phone IS NOT NULL")
+                    if name_ok(core.client_full_name(dict(r)) + " " + (r["username"] or ""))][:50]
+        for r in rows:
+            add(r["phone"], core.client_full_name(dict(r)), "bot")
+        if cond:
+            rows = c.execute("SELECT * FROM billz_clients WHERE phones LIKE ? LIMIT 50", ["%" + (digits[-9:] if len(digits) > 9 else digits) + "%"]).fetchall()
+        else:
+            like = "%" + words[0] + "%"
+            rows = [r for r in c.execute("SELECT * FROM billz_clients WHERE LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) "
+                                         "LIKE ? LIMIT 300", (like,)) if name_ok(f"{r['first_name'] or ''} {r['last_name'] or ''}")][:50]
+            if not rows and words:  # LOWER() в SQLite не понимает кириллицу — проверим в Python
+                rows = [r for r in c.execute("SELECT * FROM billz_clients") if name_ok(f"{r['first_name'] or ''} {r['last_name'] or ''}")][:50]
+        for r in rows:
+            add(r["phone"], " ".join(x for x in (r["first_name"], r["last_name"]) if x), "store")
+        pts = {r["client_id"]: r["bal"] for r in c.execute("SELECT client_id, SUM(amount) AS bal FROM shop_loyalty GROUP BY client_id")}
+        ids = {_tail(r["phone"]): r["id"] for r in c.execute("SELECT id, phone FROM shop_clients")}
+    for o in out:
+        o["points"] = round(pts.get(ids.get(o["tail"]), 0) or 0, 2)
+    # сначала точные совпадения номера, потом те, у кого есть имя
+    out.sort(key=lambda o: (not (digits and o["tail"].endswith(digits[-9:])), not o["name"], o["name"].lower()))
+    return out[:limit]
+
+
 def _client_id(c, phone: str, name: str) -> int:
     tail = _tail(phone)
     r = c.execute("SELECT id, name FROM shop_clients WHERE phone LIKE ?", ("%" + tail,)).fetchone()
