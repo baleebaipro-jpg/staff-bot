@@ -545,6 +545,38 @@ def sales_list(uid: int, day_from: str = None, day_to: str = None, limit: int = 
     return out
 
 
+def billz_sales_list(day_from: str = None, day_to: str = None, q: str = "", point_id=None) -> list:
+    """Продажи из BILLZ (копия) в том же виде, что и наши, — для транзакций, главной и сверки."""
+    t = core.now()
+    day_from = day_from or t.strftime("%Y-%m-%d")
+    day_to = day_to or day_from
+    with core.db() as c:
+        rows = c.execute("SELECT * FROM billz_sales WHERE substr(date, 1, 10) BETWEEN ? AND ? ORDER BY date DESC",
+                         (day_from, day_to)).fetchall()
+        pts = {r["billz_id"]: dict(r) for r in c.execute("SELECT * FROM shop_points WHERE billz_id IS NOT NULL")}
+        icons = {(r["title"] or "").lower(): r["icon"] for r in c.execute("SELECT title, icon FROM shop_pay_types")}
+    q = str(q or "").strip().lower()
+    out = []
+    for r in rows:
+        pt = pts.get(r["shop_id"]) or {}
+        if point_id and pt.get("id") != int(point_id):
+            continue
+        typ = r["order_type"] or "SALE"
+        total = r["total"] or 0
+        pays = [{"title": p["name"] or "—", "icon": icons.get((p["name"] or "").lower(), "💳"), "amount": p["sum"]}
+                for p in json.loads(r["payments"] or "[]")]
+        d = {"id": r["external_id"] or r["order_id"][:8], "source": "billz", "point_id": pt.get("id"), "point": pt.get("title") or r["shop_name"],
+             "client_name": r["customer_name"] or "", "client_phone": "", "seller": r["sellers"] or "—", "cashier": r["cashier"] or "—",
+             "amount": total, "discount": 0, "revenue": total, "points_spent": 0, "loyalty_amount": 0, "bonus_amount": 0,
+             "bonus_frozen": 0, "exchange": 0, "debt_amount": 0, "note": r["comment"] or "", "pays": pays, "units": r["units"],
+             "status": "ok" if typ == "SALE" else "return" if typ == "RETURN" else "exchange", "order_type": typ,
+             "time": (r["date"] or "")[11:16] or "00:00", "date": (r["date"] or "")[8:10] + "." + (r["date"] or "")[5:7] + "." + (r["date"] or "")[:4]}
+        if q and q not in f"{d['id']} {d['client_name']} {d['seller']} {d['cashier']}".lower():
+            continue
+        out.append(d)
+    return out
+
+
 def summary(rows: list) -> dict:
     ok = [r for r in rows if r["status"] == "ok"]
     by_pay = {}

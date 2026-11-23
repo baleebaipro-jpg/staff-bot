@@ -469,6 +469,41 @@ def _sales_rows() -> list:
     return [r for r in rows if (r.get("order_type") or "SALE").upper() == "SALE"]
 
 
+# ---------- копия продаж BILLZ (для ERP: транзакции и сверка) ----------
+
+def mirror_sales(day_from: str, day_to: str = None) -> int:
+    """Скопировать транзакции BILLZ (продажи, возвраты, обмены) за период в таблицу billz_sales."""
+    day_to = day_to or day_from
+    rows, page = [], 1
+    while page <= 50:
+        res = _api("GET", "/v1/transaction_report_table", params={
+            "start_date": day_from, "end_date": day_to, "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
+        batch = res.get("rows") or []
+        rows += batch
+        if len(batch) < 100:
+            break
+        page += 1
+    now = core.now().strftime(core.FMT)
+    with core.db() as c:
+        for r in rows:
+            oid = r.get("order_id") or r.get("row_id")
+            if not oid:
+                continue
+            c.execute("INSERT OR REPLACE INTO billz_sales(order_id, external_id, date, shop_id, shop_name, customer_name, customer_id, "
+                      "sellers, cashier, order_type, total, gross, discount_pct, units, payments, comment, synced) "
+                      "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (oid, str(r.get("external_id") or ""), str(r.get("date") or "")[:19].replace("T", " "), r.get("shop_id"),
+                       r.get("shop_name"), r.get("customer_name"), r.get("customer_id"),
+                       ", ".join(r.get("seller_names") or []), r.get("cashier_name"), (r.get("order_type") or "SALE").upper(),
+                       float(r.get("total_price") or 0), float(r.get("gross_sales") or 0), float(r.get("discount_percent") or 0),
+                       float(r.get("sold_measurement_value") or 0) - float(r.get("returned_measurement_value") or 0),
+                       json.dumps([{"name": p.get("payment_type_name"), "sum": float(p.get("sum") or 0)}
+                                   for p in (r.get("payments") or [])], ensure_ascii=False), r.get("comment") or "", now))
+    st = core.flag_json("billz_mirror") or {}
+    core.flag_json("billz_mirror", dict(st, at=core.now().strftime("%d.%m %H:%M"), last=f"{day_from}…{day_to}: {len(rows)}"))
+    return len(rows)
+
+
 def check_purchases() -> int:
     """Новые продажи из отчёта → обновить карточки этих клиентов бота (рост суммы даст «спасибо»)."""
     rows = _sales_rows()
@@ -527,6 +562,9 @@ def start_purchase_watch() -> None:
                 if _watch["report"]:
                     try:
                         check_purchases()
+                        _watch["n"] = _watch.get("n", 0) + 1
+                        if _watch["n"] % 4 == 1:  # примерно раз в 2 минуты — копия продаж за сегодня для ERP
+                            mirror_sales(core.now().strftime("%Y-%m-%d"))
                     except BillzError as e:
                         if e.code in (400, 403, 404):
                             logging.warning("BILLZ: отчёт продаж недоступен (%s) — только обход карточек", e)
