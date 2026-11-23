@@ -229,6 +229,7 @@ def api_staff_lang(uid, data):
 def api_me(uid, data):
     staff_view = g.via == "staff"  # из бота клиентов — всегда кабинет клиента, даже у сотрудника
     res = {"is_admin": staff_view and core.is_admin(uid), "is_employee": staff_view and bool(core.employee(uid)),
+           "branding": core.flag_json("branding") or {},
            "shop_access": staff_view and shop.has_access(uid),
            "goal": config.GOAL_HOURS,
            "ranks": _ranks(uid),
@@ -571,6 +572,16 @@ def api_client_card(uid, data):
     if erp.enabled() and not (core.flag_json("billz_history") or {}).get("from"):
         erp.history_backfill()  # первый раз — история продаж за год загрузится сама (в фоне)
     return jsonify(shop.client_card(data.get("bot_id") or None, data.get("store_id") or None))
+
+
+@app.post("/api/branding")
+@need_user(admin=True)
+def api_branding(uid, data):
+    """Надписи кабинета: название вверху, подпись, приветствие на главной (пусто — по умолчанию)."""
+    keys = {"title": 40, "sub": 60, "welcome": 60, "welcome_sub": 120}
+    b = {k: str(data.get(k) or "").strip()[:n] for k, n in keys.items()}
+    core.flag_json("branding", {k: v for k, v in b.items() if v})
+    return jsonify(ok=True, msg="✏️ Надписи сохранены")
 
 
 @app.post("/api/set_tier")
@@ -1229,7 +1240,7 @@ PAGE = r"""<!doctype html>
 <body>
 <div class="wrap">
   <div class="brand hidden" id="brand"><div class="logo-mark"><svg viewBox="0 0 64 40"><defs><linearGradient id="lgR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#c9cbe0"/><stop offset="1" stop-color="#7d8199"/></linearGradient></defs><text x="31" y="31" text-anchor="middle" font-family="Didot,Georgia,serif" font-style="italic" font-weight="700" font-size="31" letter-spacing="-4" fill="url(#lgR)">RD</text></svg></div><div class="brand-sep"></div>
-    <div><b>RADI TEAM</b><span>мини-приложение</span></div></div>
+    <div><b id="br-title">RADI TEAM</b><span id="br-sub">мини-приложение</span></div></div>
   <div id="loading" class="card empty">Загрузка…</div>
   <div id="error" class="card empty hidden"></div>
 
@@ -1542,7 +1553,8 @@ PAGE = r"""<!doctype html>
   <!-- КОМАНДА -->
   <div id="view-team" class="hidden">
     <div class="card welcome"><div class="f-ic" style="width:56px;height:56px;font-size:26px;display:flex;align-items:center;justify-content:center;flex:none">👥</div>
-      <div><b>Добро пожаловать!</b><div class="f-sub">Ваш личный кабинет команды RADI</div></div></div>
+      <div style="flex:1;min-width:0"><b id="wl-title">Добро пожаловать!</b><div class="f-sub" id="wl-sub">Ваш личный кабинет команды RADI</div></div>
+      <button class="sh-icon" id="wl-edit" title="Изменить надписи" style="width:40px;height:40px;font-size:16px;flex:none">✏️</button></div>
     <div class="dash">
       <button class="card dtile" data-dgo="projects"><div class="f-ic">📁</div><div><b id="d-proj">—</b><span>Мои проекты</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="staff"><div class="f-ic">👥</div><div><b id="d-team">—</b><span>Команда</span></div><i>›</i></button>
@@ -2703,12 +2715,36 @@ function earnSheet(uid, keep) {
 }
 
 let openedShop = false;
+/* Надписи кабинета (руководитель меняет кнопкой ✏️ на главной) */
+const BRAND_DEF = {title: "RADI TEAM", sub: () => IS_APP ? "приложение" : "мини-приложение", welcome: "Добро пожаловать!",
+                   welcome_sub: "Ваш личный кабинет команды RADI"};
+function applyBranding() {
+  const b = (data && data.branding) || {};
+  $("br-title").textContent = b.title || BRAND_DEF.title;
+  $("br-sub").textContent = b.sub || BRAND_DEF.sub();
+  $("wl-title").textContent = b.welcome || BRAND_DEF.welcome;
+  $("wl-sub").textContent = b.welcome_sub || BRAND_DEF.welcome_sub;
+  $("wl-edit").classList.toggle("hidden", !(data && data.is_admin));
+}
+function brandSheet() {
+  const b = data.branding || {};
+  invSheet(`<h3>✏️ Надписи кабинета</h3><div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Пустое поле — вернуть как было. Видят все сотрудники.</div>
+    <div class="f-lbl" style="margin-top:0">Название вверху</div><input id="bs-title" maxlength="40" value="${esc(b.title || "")}" placeholder="${BRAND_DEF.title}">
+    <div class="f-lbl">Подпись под названием</div><input id="bs-sub" maxlength="60" value="${esc(b.sub || "")}" placeholder="${BRAND_DEF.sub()}">
+    <div class="f-lbl">Приветствие на главной</div><input id="bs-wl" maxlength="60" value="${esc(b.welcome || "")}" placeholder="${BRAND_DEF.welcome}">
+    <div class="f-lbl">Текст под приветствием</div><input id="bs-wls" maxlength="120" value="${esc(b.welcome_sub || "")}" placeholder="${BRAND_DEF.welcome_sub}">
+    ${sheetBtns("Сохранить")}`);
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => { const body = {title: $("bs-title").value, sub: $("bs-sub").value, welcome: $("bs-wl").value, welcome_sub: $("bs-wls").value};
+    invSheetClose(); action("/api/branding", body); };
+}
 async function load(fresh = false) {
   try {
     data = await api("/api/me", fresh ? {fresh: true} : {});
     $("loading").classList.add("hidden");
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); return; }
+    applyBranding();
     if (data.is_employee) { renderMe(); renderEarn(); }
     $("go-shop-me").classList.toggle("hidden", !(data.shop_access && data.is_employee));
     $("go-shop").classList.toggle("hidden", !data.is_admin);
@@ -3463,6 +3499,7 @@ function renderDash() {
   if (keep && projs.some(p => String(p.id) === keep)) $("d-add-proj").value = keep;
 }
 $("d-shop-tile").onclick = () => $("go-shop").onclick();
+$("wl-edit").onclick = () => brandSheet();
 $("d-add-btn").onclick = () => {
   const title = $("d-add").value.trim(); if (!title) return toast("Введите задачу");
   projAct({action: "add_task", id: +$("d-add-proj").value, title, due: P().today_iso}).then(() => { $("d-add").value = ""; });
