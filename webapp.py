@@ -16,6 +16,7 @@ import core
 import i18n
 import erp
 import shop
+import appauth
 import invest
 import posts
 import projects
@@ -36,8 +37,15 @@ def _signed_by(token: str, check: str, received: str) -> bool:
 
 def telegram_user_id():
     """Проверить подпись Telegram и вернуть ID пользователя (или None).
-    Запоминает в g.via, из какого бота открыт кабинет: "staff" (BOT_TOKEN) или "client" (CLIENT_BOT_TOKEN)."""
-    init_data = (request.get_json(silent=True) or {}).get("initData", "")
+    Запоминает в g.via, из какого бота открыт кабинет: "staff" (BOT_TOKEN) или "client" (CLIENT_BOT_TOKEN).
+    В мобильном приложении вместо подписи — токен сессии (appToken)."""
+    body = request.get_json(silent=True) or {}
+    if body.get("appToken") and not body.get("initData"):
+        uid = appauth.session_user(body["appToken"])
+        if uid:
+            g.via = "staff"
+        return uid
+    init_data = body.get("initData", "")
     pairs = dict(parse_qsl(init_data, keep_blank_values=True))
     received = pairs.pop("hash", None)
     if not received:
@@ -88,6 +96,37 @@ def invest_closed():
 @app.route("/")
 def index():
     return PAGE
+
+
+# ---------- мобильное приложение ----------
+
+@app.post("/api/app/login_start")
+def api_app_login_start():
+    return jsonify(appauth.start_login())
+
+
+@app.post("/api/app/login_check")
+def api_app_login_check():
+    d = request.get_json(silent=True) or {}
+    return jsonify(appauth.check_login(d.get("code"), d.get("platform")))
+
+
+@app.post("/api/app/logout")
+def api_app_logout():
+    appauth.logout((request.get_json(silent=True) or {}).get("appToken"))
+    return jsonify(ok=True)
+
+
+APK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "radi-team.apk")
+
+
+@app.route("/app/radi-team.apk")
+def apk_download():
+    """Android-приложение RADI Team — скачать и установить."""
+    if not os.path.exists(APK_PATH):
+        return "APK ещё не собран", 404
+    return send_file(APK_PATH, mimetype="application/vnd.android.package-archive", as_attachment=True,
+                     download_name="RADI-Team.apk")
 
 
 @app.after_request
@@ -1144,6 +1183,11 @@ PAGE = r"""<!doctype html>
   .perm-chk { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12.5px; margin-top: 6px; }
   .perm-chk label { display: flex; align-items: center; gap: 5px; }
   .perm-chk input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+  /* мобильное приложение: без выделения и копирования текста */
+  html.app body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  html.app input, html.app textarea { -webkit-user-select: text; user-select: text; }
+  .app-only { display: none; }
+  html.app .app-only { display: block; }
   /* нижнее меню */
   .tabbar { position: fixed; left: 12px; right: 12px; bottom: 12px; max-width: 536px; margin: 0 auto; z-index: 8;
     display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px; border-radius: 26px;
@@ -1558,6 +1602,7 @@ PAGE = r"""<!doctype html>
     <div id="team"></div>
   </div>
 </div>
+<div class="app-only" style="text-align:center;padding:4px 0 130px"><button class="link" style="color:var(--hint);font-size:13px" onclick="appLogout()">🚪 Ilovadan chiqish / Выйти из приложения</button></div>
 <nav class="tabbar hidden" id="tabbar">
   <button data-tab="team"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 2.5 11h2.7v9h5.3v-6h3v6h5.3v-9h2.7z"/></svg>Главная</button>
   <button data-tab="projects"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v10a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>Проекты</button>
@@ -1587,6 +1632,33 @@ PAGE = r"""<!doctype html>
 
 <script>
 const tg = window.Telegram.WebApp;
+/* ---------- мобильное приложение RADI Team (Android / iPhone) ---------- */
+const APP = new URLSearchParams(location.search).get("app") || (window.RadiApp ? "android" : "");
+const IS_APP = !!APP && !tg.initData;
+const appToken = { get: () => { try { return localStorage.getItem("radi_app_token") || ""; } catch (e) { return ""; } },
+  set: v => { try { v ? localStorage.setItem("radi_app_token", v) : localStorage.removeItem("radi_app_token"); } catch (e) {} } };
+if (IS_APP) {  // вне Telegram — свои замены функций Telegram
+  document.documentElement.classList.add("app");
+  let backCb = null, backOn = false;
+  tg.showConfirm = (t, cb) => cb(window.confirm(t));
+  tg.showAlert = (t, cb) => { window.alert(t); cb && cb(); };
+  tg.close = () => {};
+  tg.HapticFeedback = {notificationOccurred: () => { try { navigator.vibrate && navigator.vibrate(30); } catch (e) {} },
+                       selectionChanged: () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) {} },
+                       impactOccurred: () => {}};
+  tg.BackButton = {show: () => { backOn = true; }, hide: () => { backOn = false; }, onClick: cb => { backCb = cb; }};
+  tg.setHeaderColor = () => {}; tg.setBackgroundColor = () => {};
+  window.appBack = () => {  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
+    const bg = document.getElementById("inv-sheet-bg");
+    if (bg && !bg.classList.contains("hidden")) { invSheetClose(); return true; }
+    if (typeof view !== "undefined" && view === "shop" && typeof cart !== "undefined" && cart.step !== "amount" && shopTab === "sell") {
+      cart.step = cart.step === "pay" ? "details" : "amount"; shopSell(); return true; }
+    if (backOn && backCb) { backCb(); return true; }
+    return false;
+  };
+  document.addEventListener("contextmenu", e => { if (!/INPUT|TEXTAREA/.test(e.target.tagName)) e.preventDefault(); });
+  document.addEventListener("copy", e => { if (!/INPUT|TEXTAREA/.test((e.target || {}).tagName || "")) e.preventDefault(); });
+}
 tg.ready(); tg.expand();
 try { tg.setHeaderColor("#0d0e1c"); tg.setBackgroundColor("#0d0e1c"); } catch (e) {}
 
@@ -1679,7 +1751,7 @@ function toast(t) { const el = $("toast"); el.textContent = t; el.style.display 
 
 async function api(path, body = {}) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({initData: tg.initData}, body))});
+    body: JSON.stringify(Object.assign({initData: tg.initData}, IS_APP ? {appToken: appToken.get()} : {}, body))});
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || "Ошибка");
   return j;
@@ -2577,10 +2649,43 @@ async function load(fresh = false) {
     openedShop = true;
     show(view);
   } catch (e) {
+    if (IS_APP && /Telegram|сотрудник|Только/.test(e.message)) { appToken.set(""); return appLogin(); }  // сессия кончилась
     $("loading").classList.add("hidden");
     $("error").classList.remove("hidden");
     $("error").textContent = e.message;
   }
+}
+
+/* Вход в приложение через бот сотрудников */
+async function appLogin() {
+  $("loading").classList.remove("hidden");
+  $("loading").innerHTML = `<div style="text-align:center;padding:30px 10px">
+    <div class="logo-mark" style="width:90px;height:90px;margin:0 auto 14px">${$("brand").querySelector(".logo-mark").innerHTML}</div>
+    <div style="font-size:24px;font-weight:800;letter-spacing:.05em">RADI TEAM</div>
+    <div class="hint" style="margin:6px 0 22px">Kirish / Вход</div>
+    <button class="btn btn-main" style="width:100%;padding:16px;font-size:16px" id="al-go">✈️ Telegram orqali kirish / Войти через Telegram</button>
+    <div class="hint" id="al-st" style="font-size:13px;margin-top:14px;line-height:1.5">Bot ochiladi — «Start»ni bosing va ilovaga qayting.<br>Откроется бот — нажмите «Start» и вернитесь в приложение.</div></div>`;
+  $("al-go").onclick = async () => {
+    let r; try { r = await (await fetch("/api/app/login_start", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"})).json(); }
+    catch (e) { return toast("Нет связи с сервером"); }
+    if (!r.link) return toast("Бот ещё не запущен — попробуйте через минуту");
+    if (window.RadiApp && window.RadiApp.openExternal) window.RadiApp.openExternal(r.link); else window.location.href = r.link;
+    $("al-st").innerHTML = "⏳ Telegramda tasdiqlashni kutyapman… / Жду подтверждения в Telegram…";
+    const started = Date.now();
+    const poll = async () => {
+      let s; try { s = await (await fetch("/api/app/login_check", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({code: r.code, platform: APP})})).json(); } catch (e) { s = {status: "wait"}; }
+      if (s.status === "ok") { appToken.set(s.token); $("loading").innerHTML = "Загрузка…"; load(true); setInterval(() => load(), 30000); return; }
+      if (s.status === "expired" || Date.now() - started > 9 * 60000) { $("al-st").textContent = "Kod eskirdi — qayta bosing / Код устарел — нажмите ещё раз"; return; }
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 2000);
+  };
+}
+function appLogout() {
+  tg.showConfirm("Ilovadan chiqish? / Выйти из приложения?", ok => { if (!ok) return;
+    fetch("/api/app/logout", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({appToken: appToken.get()})});
+    appToken.set(""); location.reload(); });
 }
 
 function newsHtml(items, admin) {
@@ -3306,7 +3411,8 @@ $("f-add").onclick = () => {
     .then(() => { $("f-reason").value = ""; $("f-amount").value = ""; }));
 };
 
-if (!tg.initData) $("loading").innerHTML = "Kabinetni bot ichidagi tugma orqali oching: pastdagi «🏠» tugmasini bosing va " +
+if (IS_APP) { if (appToken.get()) { load(true); setInterval(() => load(), 30000); } else appLogin(); }
+else if (!tg.initData) $("loading").innerHTML = "Kabinetni bot ichidagi tugma orqali oching: pastdagi «🏠» tugmasini bosing va " +
   "kelgan xabardagi «🏠 Kabinetni ochish» tugmasini bosing yoki maydon chap tomonidagi «Kabinet» tugmasini bosing.<br><br>" +
   "Откройте кабинет через бота: нажмите «🏠» внизу, затем «🏠 Открыть кабинет» в сообщении бота — или кнопку «Kabinet» слева от поля ввода.<br><br>" +
   "Open your account from the bot: tap «🏠» below, then «🏠 Open account» in the bot's message — or the «Kabinet» button left of the input field.";

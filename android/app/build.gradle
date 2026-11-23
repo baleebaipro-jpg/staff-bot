@@ -1,0 +1,38 @@
+plugins { id "com.android.application" }
+
+// Адрес сервера (Railway) — кабинет открывается внутри приложения
+def SERVER = "https://staff-bot-production-7a47ab13.up.railway.app/"
+
+android {
+    namespace "uz.radi.team"
+    compileSdk 34
+    defaultConfig {
+        applicationId "uz.radi.team"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+        buildConfigField "String", "SERVER", "\"${SERVER}\""
+    }
+    buildFeatures { buildConfig true }
+    // Ключ подписи НЕ хранится в репозитории: файл radi-team.keystore рядом с проектом
+    // и пароль в переменной окружения RADI_KEYSTORE_PASSWORD. Тем же ключом подписываются все обновления.
+    signingConfigs {
+        release {
+            storeFile file(System.getenv("RADI_KEYSTORE") ?: "../radi-team.keystore")
+            storePassword System.getenv("RADI_KEYSTORE_PASSWORD")
+            keyAlias "radi"
+            keyPassword System.getenv("RADI_KEYSTORE_PASSWORD")
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
