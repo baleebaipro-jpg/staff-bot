@@ -577,6 +577,74 @@ def billz_sales_list(day_from: str = None, day_to: str = None, q: str = "", poin
     return out
 
 
+def client_card(bot_id=None, store_id=None) -> dict:
+    """Полная карточка клиента для руководителя: профиль, статистика BILLZ, заметки, долги, история покупок."""
+    import erp
+    with core.db() as c:
+        bot = c.execute("SELECT * FROM clients WHERE user_id=?", (int(bot_id),)).fetchone() if bot_id else None
+        store = c.execute("SELECT * FROM billz_clients WHERE id=?", (str(store_id),)).fetchone() if store_id else None
+        phone = (bot["phone"] if bot else None) or (store["phone"] if store else None) or ""
+        tail = _tail(phone)
+        if not bot and tail:
+            bot = c.execute("SELECT * FROM clients WHERE phone LIKE ?", ("%" + tail,)).fetchone()
+        billz_id = (bot["billz_id"] if bot else None) or (store["id"] if store else None)
+        if not billz_id and tail:
+            r = c.execute("SELECT id FROM billz_clients WHERE phone_tail=?", (tail,)).fetchone()
+            billz_id = r["id"] if r else None
+        if not store and billz_id:
+            store = c.execute("SELECT * FROM billz_clients WHERE id=?", (billz_id,)).fetchone()
+        sc = c.execute("SELECT * FROM shop_clients WHERE phone LIKE ?", ("%" + tail,)).fetchone() if tail else None
+        stier = c.execute("SELECT tier FROM store_tiers WHERE billz_id=?", (billz_id,)).fetchone() if billz_id else None
+        sales = [dict(r) for r in c.execute("SELECT * FROM billz_sales WHERE customer_id=? ORDER BY date DESC LIMIT 200",
+                                            (billz_id,))] if billz_id else []
+        erp_sales = [dict(r) for r in c.execute("SELECT * FROM shop_sales WHERE client_id=? ORDER BY id DESC LIMIT 100",
+                                                (sc["id"],))] if sc else []
+    if not billz_id and tail and erp.enabled():  # нет связи — найдём клиента в BILLZ по номеру
+        try:
+            found = erp.find_client(phone)
+            billz_id = found and found.get("billz_id")
+            if billz_id and bot:
+                core.update_client(bot["user_id"], billz_id=billz_id)
+            if billz_id:
+                with core.db() as c:
+                    sales = [dict(r) for r in c.execute("SELECT * FROM billz_sales WHERE customer_id=? ORDER BY date DESC LIMIT 200",
+                                                        (billz_id,))]
+        except erp.BillzError:
+            pass
+    b = dict(bot) if bot else {}
+    name = core.client_full_name(b) if bot else " ".join(x for x in ((store or {})["first_name"] if store else None,
+                                                                         (store or {})["last_name"] if store else None) if x)
+    res = {"bot_id": b.get("user_id"), "store_id": billz_id, "name": name or "Без имени", "phone": phone,
+           "in_bot": bool(bot), "lang": b.get("lang") or "", "since": b.get("created_at", "")[:10] if bot else "",
+           "birth": b.get("birth_date") or (store["birth_date"] if store else None),
+           "tier": core.tier_of(b) if bot else ((stier["tier"] if stier else None) or "bronza"),
+           "note": (sc["note"] if sc else "") or "", "erp_points": loyalty_balance(sc["id"]) if sc else 0,
+           "card": None, "card_error": None, "debts": [], "history": core.flag_json("billz_history") or {}}
+    if billz_id and erp.enabled():
+        try:
+            res["card"] = erp.customer_card(billz_id)
+        except erp.BillzError as e:
+            res["card_error"] = str(e)[:150]
+        res["debts"] = erp._debt_items(billz_id) or []
+    icons = {(r["title"] or "").lower(): r["icon"] for r in pay_types()}
+    res["purchases"] = [{"date": (s["date"] or "")[:16], "shop": s["shop_name"] or "", "type": s["order_type"], "total": s["total"],
+                         "units": s["units"], "seller": s["sellers"] or "", "receipt": s["external_id"] or "",
+                         "pays": [{"name": p["name"], "icon": icons.get((p["name"] or "").lower(), "💳"), "sum": p["sum"]}
+                                  for p in json.loads(s["payments"] or "[]")]} for s in sales]
+    res["erp_sales"] = [{"id": s["id"], "date": s["created_at"][:16], "amount": s["amount"] - (s["discount"] or 0),
+                         "status": s["status"]} for s in erp_sales]
+    return res
+
+
+def save_note(phone: str, note: str, name: str = ""):
+    if len(_tail(phone)) < 9:
+        return False, "У клиента нет номера — заметку некуда сохранить."
+    with core.db() as c:
+        cid = _client_id(c, phone, name)
+        c.execute("UPDATE shop_clients SET note=? WHERE id=?", (str(note or "").strip()[:1000], cid))
+    return True, "📝 Заметка сохранена"
+
+
 def summary(rows: list) -> dict:
     ok = [r for r in rows if r["status"] == "ok"]
     by_pay = {}
