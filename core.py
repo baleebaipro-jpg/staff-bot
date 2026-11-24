@@ -470,6 +470,8 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
             if diff > config.GRACE_MINUTES:
                 late = diff
         c.execute("INSERT INTO sessions(user_id, check_in, late_min) VALUES(?, ?, ?)", (uid, t.strftime(FMT), late))
+        if late and not emp.get("boss") and LATE_FINE_PER_HOUR:
+            _late_fine(c, uid, late, t, shift_start(emp, t))
         if not notify_boss or emp.get("boss"):
             pass
         elif late:
@@ -673,6 +675,38 @@ def history(uid: int, limit: int = 30) -> list:
 
 PENALTY_CHAT_ID = getattr(config, "PENALTY_CHAT_ID", None)
 PENALTY_AMOUNT = getattr(config, "PENALTY_AMOUNT", "")
+LATE_FINE_PER_HOUR = int(getattr(config, "LATE_FINE_PER_HOUR", 0) or 0)
+
+
+def _money(n: int) -> str:
+    return f"{n:,}".replace(",", " ") + " сум"
+
+
+def late_fine_amount(late_min: int) -> str:
+    """50 000 сум за каждый начатый час опоздания (1–60 мин — 1 час, 61–120 — 2 часа…)."""
+    if not LATE_FINE_PER_HOUR:
+        return PENALTY_AMOUNT
+    return _money(max(1, -(-int(late_min) // 60)) * LATE_FINE_PER_HOUR)
+
+
+def _late_fine(c, uid: int, late: int, t, start: str) -> None:
+    """Пришёл с опозданием: штраф по часам. Если штраф за неотметку уже выписан — пересчитать сумму."""
+    amount = late_fine_amount(late)
+    today = t.strftime("%Y-%m-%d")
+    reason = st.s("ru", "late_hours_reason", m=fmt_min(late), t=f"{t:%H:%M}", start=start)
+    L = staff_lang(uid)
+    reason_emp = st.s(L, "late_hours_reason", m=fmt_min(late, L), t=f"{t:%H:%M}", start=start)
+    r = c.execute("SELECT id, amount, paid_at FROM penalties WHERE user_id=? AND day=? AND reason='late'",
+                  (uid, today)).fetchone()
+    if r:
+        if r["paid_at"] or (r["amount"] or "") == amount:
+            return
+        c.execute("UPDATE penalties SET amount=?, note=? WHERE id=?", (amount, reason, r["id"]))
+        return _announce(c, uid, "penalty_updated", reason, amount, reason_emp=reason_emp)
+    else:
+        c.execute("INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
+                  (uid, today, amount, reason))
+    _announce(c, uid, "penalty", reason, amount, reason_emp=reason_emp)
 
 
 # ---------- заработок сотрудников (пока вводит руководитель вручную) ----------
@@ -862,11 +896,11 @@ def check_penalties():
             reason = st.s("ru", "late_reason", t=until, start=start)
             cur = c.execute(
                 "INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
-                (uid, today, PENALTY_AMOUNT, reason),
+                (uid, today, late_fine_amount(60), reason),
             )
             if not cur.rowcount:
                 continue  # штраф за сегодня уже выписан
-            _announce(c, uid, "penalty", reason, PENALTY_AMOUNT,
+            _announce(c, uid, "penalty", reason, late_fine_amount(60),
                       reason_emp=st.s(staff_lang(uid), "late_reason", t=until, start=start))
 
 
@@ -875,7 +909,10 @@ def _announce(c, uid, title_key, reason, amount, reason_emp=None):
     text = f"{st.s('ru', title_key)}\n👤 {name(uid)}\n📅 {now():%d.%m.%Y}\nПричина: {reason}"
     if amount:
         text += f"\n💰 Сумма: {amount}"
-    if PENALTY_CHAT_ID:
+    own = getattr(config, "PENALTY_CHATS", {}).get(uid)
+    if own:  # у сотрудника своя группа/тема для штрафов
+        c.execute("INSERT INTO outbox(chat_id, text, thread_id) VALUES(?, ?, ?)", (own[0], text, own[1]))
+    elif PENALTY_CHAT_ID:
         c.execute("INSERT INTO outbox(chat_id, text) VALUES(?, ?)", (PENALTY_CHAT_ID, text))
     else:
         notify_admins(c, text)
@@ -940,6 +977,9 @@ def _penalty_reason(r, lang=None) -> str:
         m = re.search(r"до (\d\d:\d\d) \(график (\d\d:\d\d)\)", note)
         if m:
             return st.s(lang, "late_reason", t=m.group(1), start=m.group(2))
+        m = re.search(r"^опоздание (.+) \(приход (\d\d:\d\d), по графику (\d\d:\d\d)\)", note)
+        if m:
+            return st.s(lang, "late_hours_reason", m=m.group(1), t=m.group(2), start=m.group(3))
         return note or st.s(lang, "late_short")
     return note or st.s(lang, "late_short")
 
