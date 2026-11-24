@@ -155,6 +155,14 @@ def summary(uid: int) -> dict:
                        "paid_at": core.parse(r["paid_at"]).strftime("%d.%m") if r["paid_at"] else ""} for r in rows]}
 
 
+def summary_for_employee(uid: int) -> dict:
+    """Сотруднику — только его доход: без выручки (суммы продаж) и без процентов."""
+    s = summary(uid)
+    return {"types": [{"id": t["id"], "name": t["name"]} for t in s["types"]], "expected": s["expected"],
+            "paid_month": s["paid_month"],
+            "items": [{k: v for k, v in x.items() if k not in ("amount", "pct")} for x in s["items"]]}
+
+
 def team_summary() -> dict:
     import config
     return {uid: summary(uid) for uid in config.EMPLOYEES}
