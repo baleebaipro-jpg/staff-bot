@@ -149,6 +149,8 @@ S = {
     "late_reason": {"ru": "не отметил(а) приход до {t} (график {start})",
                     "uz": "kelishni soat {t} gacha belgilamagan (grafik {start})"},
     "late_short": {"ru": "опоздание", "uz": "kechikish"},
+    "late_hour_reason": {"ru": "опоздание, {n}-й час: приход не отмечен до {t} (график {start})",
+                         "uz": "kechikish, {n}-soat: {t} gacha kelish belgilanmagan (grafik {start})"},
     "late_hours_reason": {"ru": "опоздание {m} (приход {t}, по графику {start})",
                           "uz": "kechikish {m} (kelgan vaqt {t}, grafik {start})"},
 

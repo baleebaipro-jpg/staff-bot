@@ -384,6 +384,7 @@ def init_db():
     appauth.init()
     import bizwatch  # контроль рабочих Telegram-аккаунтов (Telegram Business)
     bizwatch.init()
+    split_late_penalties()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")
@@ -693,38 +694,74 @@ def late_fine_hours(diff_min: int) -> int:
     return 1 + int(diff_min) // 60
 
 
-def late_fine_amount(hours: int) -> str:
+def late_fine_amount(hours: int = 1) -> str:
     if not LATE_FINE_PER_HOUR:
         return PENALTY_AMOUNT
     return _money(hours * LATE_FINE_PER_HOUR)
 
 
+def _late_key(n: int) -> str:
+    return "late" if n == 1 else f"late{n}"
+
+
 def _late_fine(c, uid: int, diff: int, t, start: str, arrived: bool) -> None:
-    """Штраф за опоздание по часам. Пока не пришёл — растёт каждый час; пришёл — фиксируется по времени прихода."""
+    """Штраф за опоздание — ОТДЕЛЬНЫЙ штраф 50 000 за каждый час: с 9:16 — №1, с 10:00 — №2, с 11:00 — №3…
+    Каждый можно отдельно оплатить или отменить (отменённый заново не выписывается)."""
     hours = late_fine_hours(diff)
     if not hours:
         return
-    amount = late_fine_amount(hours)
     today = t.strftime("%Y-%m-%d")
     L = staff_lang(uid)
-    if arrived:
-        reason = st.s("ru", "late_hours_reason", m=fmt_min(diff), t=f"{t:%H:%M}", start=start)
-        reason_emp = st.s(L, "late_hours_reason", m=fmt_min(diff, L), t=f"{t:%H:%M}", start=start)
-    else:
-        reason = st.s("ru", "late_reason", t=f"{t:%H:%M}", start=start)
-        reason_emp = st.s(L, "late_reason", t=f"{t:%H:%M}", start=start)
-    r = c.execute("SELECT id, amount, note, paid_at FROM penalties WHERE user_id=? AND day=? AND reason='late'",
-                  (uid, today)).fetchone()
-    if r:
-        if r["paid_at"] or (r["amount"] or "") == amount:
-            if arrived and not r["paid_at"]:  # сумма та же — только причина «пришёл в …»
-                c.execute("UPDATE penalties SET note=? WHERE id=?", (reason, r["id"]))
-            return
-        c.execute("UPDATE penalties SET amount=?, note=? WHERE id=?", (amount, reason, r["id"]))
-        return _announce(c, uid, "penalty_updated" if arrived else "penalty_more", reason, amount, reason_emp=reason_emp)
-    c.execute("INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
-              (uid, today, amount, reason))
-    _announce(c, uid, "penalty", reason, amount, reason_emp=reason_emp)
+    base = at(t, start)
+    for n in range(1, hours + 1):
+        key = _late_key(n)
+        if c.execute("SELECT 1 FROM penalties WHERE user_id=? AND day=? AND reason=?", (uid, today, key)).fetchone():
+            continue
+        if c.execute("SELECT 1 FROM flags WHERE name=?", (f"pen_cancel:{uid}:{today}:{key}",)).fetchone():
+            continue  # руководитель отменил этот штраф — не выписываем снова
+        if n == 1:
+            if arrived:
+                reason = st.s("ru", "late_hours_reason", m=fmt_min(diff), t=f"{t:%H:%M}", start=start)
+                reason_emp = st.s(L, "late_hours_reason", m=fmt_min(diff, L), t=f"{t:%H:%M}", start=start)
+            else:
+                w = f"{base + timedelta(minutes=WINDOW):%H:%M}"
+                reason = st.s("ru", "late_reason", t=w, start=start)
+                reason_emp = st.s(L, "late_reason", t=w, start=start)
+        else:
+            th = f"{base + timedelta(hours=n - 1):%H:%M}"
+            reason = st.s("ru", "late_hour_reason", n=n, t=th, start=start)
+            reason_emp = st.s(L, "late_hour_reason", n=n, t=th, start=start)
+        amount = late_fine_amount(1)
+        c.execute("INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, ?, ?, ?)",
+                  (uid, today, key, amount, reason))
+        _announce(c, uid, "penalty", reason, amount, reason_emp=reason_emp)
+
+
+def split_late_penalties() -> None:
+    """Один раз: старые «накопленные» штраф за опоздание (напр. 150 000) — разбить на отдельные по 50 000."""
+    if not LATE_FINE_PER_HOUR or not flag_once("late_split_v1"):
+        return
+    import re
+    with db() as c:
+        for r in c.execute("SELECT * FROM penalties WHERE reason='late' AND paid_at IS NULL").fetchall():
+            n = int(re.sub(r"\D", "", r["amount"] or "") or 0)
+            k = n // LATE_FINE_PER_HOUR
+            if k <= 1 or n % LATE_FINE_PER_HOUR:
+                continue
+            start = "09:00"
+            mm = re.search(r"график (\d\d:\d\d)", r["note"] or "")
+            if mm:
+                start = mm.group(1)
+            first = r["note"]
+            if (first or "").startswith("не отметил"):
+                w = (datetime.strptime(start, "%H:%M") + timedelta(minutes=WINDOW)).strftime("%H:%M")
+                first = st.s("ru", "late_reason", t=w, start=start)
+            c.execute("UPDATE penalties SET amount=?, note=? WHERE id=?", (late_fine_amount(1), first, r["id"]))
+            for h in range(2, k + 1):
+                th = (datetime.strptime(start, "%H:%M") + timedelta(hours=h - 1)).strftime("%H:%M")
+                c.execute("INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, ?, ?, ?)",
+                          (r["user_id"], r["day"], _late_key(h), late_fine_amount(1),
+                           st.s("ru", "late_hour_reason", n=h, t=th, start=start)))
 
 
 # ---------- заработок сотрудников (пока вводит руководитель вручную) ----------
@@ -979,6 +1016,9 @@ def delete_penalty(pid: int):
         if not r:
             return False, "Штраф не найден."
         c.execute("DELETE FROM penalties WHERE id=?", (pid,))
+        if (r["reason"] or "").startswith("late"):  # автоштраф за опоздание — не выписывать его заново
+            c.execute("INSERT OR IGNORE INTO flags(name, value) VALUES(?, ?)",
+                      (f"pen_cancel:{r['user_id']}:{r['day']}:{r['reason']}", now().strftime(FMT)))
         _announce(c, r["user_id"], "penalty_cancelled", r["note"] or "—", r["amount"],
                   reason_emp=_penalty_reason(r, staff_lang(r["user_id"])))
     return True, "Штраф отменён."
@@ -1010,7 +1050,10 @@ def _penalty_reason(r, lang=None) -> str:
     """Причина штрафа на языке сотрудника (автоштраф за опоздание переводится, ручной — как написал руководитель)."""
     import re
     note = r["note"] or ""
-    if r["reason"] == "late":
+    if (r["reason"] or "").startswith("late"):
+        m = re.search(r"^опоздание, (\d+)-й час: приход не отмечен до (\d\d:\d\d) \(график (\d\d:\d\d)\)", note)
+        if m:
+            return st.s(lang, "late_hour_reason", n=m.group(1), t=m.group(2), start=m.group(3))
         m = re.search(r"до (\d\d:\d\d) \(график (\d\d:\d\d)\)", note)
         if m:
             return st.s(lang, "late_reason", t=m.group(1), start=m.group(2))
@@ -1034,7 +1077,7 @@ def penalties_list(c, uid, lang=None, history: bool = False) -> list:
     return [
         {"id": r["id"], "date": datetime.strptime(r["day"], "%Y-%m-%d").strftime("%d.%m.%y" if history else "%d.%m"),
          "reason": _penalty_reason(r, lang), "amount": r["amount"] or "",
-         "auto": r["reason"] == "late", "paid": bool(r["paid_at"]),
+         "auto": (r["reason"] or "").startswith("late"), "paid": bool(r["paid_at"]),
          "paid_at": parse(r["paid_at"]).strftime("%d.%m") if r["paid_at"] else ""}
         for r in rows
     ]
