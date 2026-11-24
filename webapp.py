@@ -241,7 +241,7 @@ def api_me(uid, data):
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
         res["earnings"] = core.earnings_of(uid, core.staff_lang(uid))
-        res["kpi_me"] = kpi.summary(uid)
+        res["kpi_me"] = kpi.summary_for_employee(uid)  # без выручки
     res["invest_enabled"] = invest.ENABLED
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
@@ -2103,7 +2103,7 @@ const SX = {
        free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
        rec_say: "Скажите вслух число", rec_cam: "Включаю камеру…", rec_btn: "● Записать", rec_again: "● Записать ещё раз", rec_done: "■ Готово", rec_open: "📹 Открыть камеру", rec_cancel: "Отмена", rec_send: "Отправляю…", rec_go: "Нажмите «Записать» и назовите число. {a}–{b} сек.", rec_sys: "Запишите видео {a}–{b} сек и назовите число. У вас {m} мин.", rec_rec: "Запись… {s}", rec_can: "Можно нажать «Готово»", rec_short: "Не короче {s} сек",
        shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", late_now: "⚠️ Вы опаздываете — отметьте приход", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
-       kpi_title: "Касса · KPI", kpi_exp: "ожидаемый доход", kpi_paidm: "выплачено за месяц", kpi_sales: "продажи за месяц", kpi_paid: "✅ выплачено", kpi_wait: "⏳ ожидается", kpi_empty: "Продаж в этом месяце пока нет",
+       kpi_soon: "⏳ Ожидаемый доход — скоро оплатим 🙌", kpi_title: "Мой доход · KPI", kpi_exp: "ожидаемый доход", kpi_paidm: "выплачено за месяц", kpi_sales: "продажи за месяц", kpi_paid: "✅ выплачено", kpi_wait: "⏳ ожидается", kpi_empty: "Продаж в этом месяце пока нет",
        fines: "🔴 Штрафы", fines_active: "активные", fine_paid: "✅ оплачен {d}", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
        no_fines: "Штрафов нет — так держать! 👍", due: "📅 на {d}", review: "⏳ на проверке", done: "Готово",
        no_tasks: "Задач нет 🎉", no_visits: "Посещений пока нет", to_rank: "до звания «{r}»",
@@ -2122,7 +2122,7 @@ const SX = {
        free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
        rec_say: "Raqamni ovoz chiqarib ayting", rec_cam: "Kamera yoqilmoqda…", rec_btn: "● Yozish", rec_again: "● Qayta yozish", rec_done: "■ Tayyor", rec_open: "📹 Kamerani ochish", rec_cancel: "Bekor qilish", rec_send: "Yuborilmoqda…", rec_go: "«Yozish»ni bosing va raqamni ayting. {a}–{b} soniya.", rec_sys: "{a}–{b} soniyalik video yozing va raqamni ayting. {m} daqiqa vaqtingiz bor.", rec_rec: "Yozilmoqda… {s}", rec_can: "«Tayyor»ni bosish mumkin", rec_short: "Kamida {s} soniya",
        shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", late_now: "⚠️ Kechikyapsiz — kelganingizni belgilang", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
-       kpi_title: "Kassa · KPI", kpi_exp: "kutilayotgan daromad", kpi_paidm: "shu oy to'langan", kpi_sales: "shu oy savdo", kpi_paid: "✅ to'langan", kpi_wait: "⏳ kutilmoqda", kpi_empty: "Bu oyda hali savdo yo'q",
+       kpi_soon: "⏳ Kutilayotgan daromad — tez orada to'laymiz 🙌", kpi_title: "Daromadim · KPI", kpi_exp: "kutilayotgan daromad", kpi_paidm: "shu oy to'langan", kpi_sales: "shu oy savdo", kpi_paid: "✅ to'langan", kpi_wait: "⏳ kutilmoqda", kpi_empty: "Bu oyda hali savdo yo'q",
        fines: "🔴 Jarimalar", fines_active: "faol", fine_paid: "✅ to'langan {d}", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
        no_fines: "Jarima yo'q — shunday davom eting! 👍", due: "📅 {d} ga", review: "⏳ tekshiruvda", done: "Bajarildi",
        no_tasks: "Vazifa yo'q 🎉", no_visits: "Hozircha tashriflar yo'q", to_rank: "«{r}» unvonigacha",
@@ -2300,7 +2300,7 @@ function renderTeam() {
 const pctT = p => String(p).replace(".", ",");
 function kpiRowsHtml(k, admin, T) {
   return k.items.length ? k.items.map(x => `<div class="kpi-row ${x.paid ? "paid" : ""}">
-    <div class="tt">${x.day} · ${esc(x.type)}<div class="hint" style="font-size:12.5px">${money0(x.amount, T.cur)} × ${pctT(x.pct)}%</div></div>
+    <div class="tt">${x.day} · ${esc(x.type)}${admin ? `<div class="hint" style="font-size:12.5px">${money0(x.amount, T.cur)} × ${pctT(x.pct)}%</div>` : ""}</div>
     <span class="k">+${money0(x.kpi, T.cur)}</span>
     ${x.paid ? `<span class="pen-tag">${T.paid} ${x.paid_at}</span>` : admin ? `<span style="display:flex;gap:6px;width:100%">
       <button class="btn btn-main btn-sm" style="flex:1" data-kpay="${x.id}">💸 Оплачено</button>
@@ -2308,10 +2308,11 @@ function kpiRowsHtml(k, admin, T) {
     </div>`).join("") : `<div class="empty">${T.empty}</div>`;
 }
 function kpiTiles(k, T) {
-  return `<div class="pen-stats three">
+  const sales = k.sales_month !== undefined;  // выручку видит только руководитель
+  return `<div class="pen-stats ${sales ? "three" : ""}">
     <div><b style="color:#fbbf24;font-size:18px">${money0(k.expected, "")}</b><span>${T.exp}</span></div>
     <div><b style="color:var(--green);font-size:18px">${money0(k.paid_month, "")}</b><span>${T.paidm}</span></div>
-    <div><b style="font-size:18px">${money0(k.sales_month, "")}</b><span>${T.sales}</span></div></div>`;
+    ${sales ? `<div><b style="font-size:18px">${money0(k.sales_month, "")}</b><span>${T.sales}</span></div>` : ""}</div>`;
 }
 const KPI_T_RU = {cur: "сум", paid: "✅ выплачено", wait: "⏳ ожидается", empty: "Продаж в этом месяце пока нет",
                   exp: "ожидаемый доход", paidm: "выплачено за месяц", sales: "продажи за месяц"};
@@ -2410,7 +2411,7 @@ function renderKpiMe() {
   const T = {cur: sx("cur"), paid: sx("kpi_paid"), wait: sx("kpi_wait"), empty: sx("kpi_empty"), exp: sx("kpi_exp"),
              paidm: sx("kpi_paidm"), sales: sx("kpi_sales")};
   box.innerHTML = `<div class="head"><h3>📈 ${sx("kpi_title")}</h3></div>${kpiTiles(k, T)}
-    <div class="kpi-types" style="margin-top:0">${k.types.map(t => `<button style="pointer-events:none">${esc(t.name)} <b>${pctT(t.pct)}%</b></button>`).join("")}</div>
+    ${k.expected ? `<div class="hint" style="font-size:13px;margin:-2px 0 8px">${sx("kpi_soon")}</div>` : ""}
     ${kpiRowsHtml(k, false, T)}`;
 }
 function renderEmp() {
