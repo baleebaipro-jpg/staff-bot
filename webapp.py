@@ -1346,12 +1346,12 @@ PAGE = r"""<!doctype html>
 </head>
 <body>
 <div id="rec" class="hidden">
-  <div class="rec-code">Скажите вслух число<b id="rec-code">—</b></div>
+  <div class="rec-code"><span id="rec-say">Скажите вслух число</span><b id="rec-code">—</b></div>
   <div class="rec-ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" id="rec-prog"/></svg>
     <video id="rec-v" playsinline muted autoplay></video><div class="rec-ph" id="rec-ph">📹</div></div>
   <div class="rec-hint" id="rec-hint">Включаю камеру…</div>
   <button class="btn btn-main rec-btn" id="rec-btn" disabled>● Записать</button>
-  <label class="btn btn-soft rec-btn hidden" id="rec-file">📹 Открыть камеру<input type="file" accept="video/*" capture="user" hidden id="rec-input"></label>
+  <label class="btn btn-soft rec-btn hidden" id="rec-file"><span id="rec-file-t">📹 Открыть камеру</span><input type="file" accept="video/*" capture="user" hidden id="rec-input"></label>
   <button class="rec-x" id="rec-x">Отмена</button>
 </div>
 <div id="splash"><img src="/static/radi-logo.png" alt="RADI &amp; CO."><div class="sp-line"><i></i></div></div>
@@ -1978,6 +1978,7 @@ const SX = {
        auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
        close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
        free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
+       rec_say: "Скажите вслух число", rec_cam: "Включаю камеру…", rec_btn: "● Записать", rec_again: "● Записать ещё раз", rec_done: "■ Готово", rec_open: "📹 Открыть камеру", rec_cancel: "Отмена", rec_send: "Отправляю…", rec_go: "Нажмите «Записать» и назовите число. {a}–{b} сек.", rec_sys: "Запишите видео {a}–{b} сек и назовите число. У вас {m} мин.", rec_rec: "Запись… {s}", rec_can: "Можно нажать «Готово»", rec_short: "Не короче {s} сек",
        shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", late_now: "⚠️ Вы опаздываете — отметьте приход", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
        fines: "🔴 Штрафы", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
        no_fines: "Штрафов нет — так держать! 👍", due: "📅 на {d}", review: "⏳ на проверке", done: "Готово",
@@ -1995,6 +1996,7 @@ const SX = {
        auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
        close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
        free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
+       rec_say: "Raqamni ovoz chiqarib ayting", rec_cam: "Kamera yoqilmoqda…", rec_btn: "● Yozish", rec_again: "● Qayta yozish", rec_done: "■ Tayyor", rec_open: "📹 Kamerani ochish", rec_cancel: "Bekor qilish", rec_send: "Yuborilmoqda…", rec_go: "«Yozish»ni bosing va raqamni ayting. {a}–{b} soniya.", rec_sys: "{a}–{b} soniyalik video yozing va raqamni ayting. {m} daqiqa vaqtingiz bor.", rec_rec: "Yozilmoqda… {s}", rec_can: "«Tayyor»ni bosish mumkin", rec_short: "Kamida {s} soniya",
        shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", late_now: "⚠️ Kechikyapsiz — kelganingizni belgilang", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
        fines: "🔴 Jarimalar", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
        no_fines: "Jarima yo'q — shunday davom eting! 👍", due: "📅 {d} ga", review: "⏳ tekshiruvda", done: "Bajarildi",
@@ -3648,12 +3650,12 @@ function recStop() {
 }
 function recClose() { recStop(); $("rec").classList.add("hidden"); $("rec-v").srcObject = null; }
 async function recSend(blob, dur) {
-  $("rec-hint").textContent = "Отправляю…"; $("rec-btn").disabled = true;
+  $("rec-hint").textContent = sx("rec_send"); $("rec-btn").disabled = true;
   const url = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
   try {
     const r = await api("/api/proof_video", {video: url, duration: dur});
     if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
-    if (!r.ok) { $("rec-hint").textContent = r.msg; $("rec-btn").disabled = false; $("rec-btn").textContent = "● Записать ещё раз";
+    if (!r.ok) { $("rec-hint").textContent = r.msg; $("rec-btn").disabled = false; $("rec-btn").textContent = sx("rec_again");
                  return recCamera(); }
     recClose(); toast(r.msg); load();
   } catch (e) { $("rec-hint").textContent = e.message; $("rec-btn").disabled = false; }
@@ -3671,12 +3673,14 @@ async function openRecorder(r) {
   const minSec = r.min_sec || 3;
   $("rec-code").textContent = r.code; $("rec").classList.remove("hidden");
   $("rec-prog").style.transition = "none"; $("rec-prog").style.strokeDashoffset = 301.6;
-  $("rec-ph").classList.remove("hidden"); $("rec-btn").textContent = "● Записать";
+  $("rec-ph").classList.remove("hidden"); $("rec-btn").textContent = sx("rec_btn");
+  $("rec-say").textContent = sx("rec_say"); $("rec-hint").textContent = sx("rec_cam");
+  $("rec-file-t").textContent = sx("rec_open"); $("rec-x").textContent = sx("rec_cancel");
   $("rec-x").onclick = recClose;
   const canRec = window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && await recCamera();
   $("rec-btn").classList.toggle("hidden", !canRec); $("rec-file").classList.toggle("hidden", !!canRec);
   if (!canRec) {  // камера в странице недоступна — системная камера телефона
-    $("rec-hint").textContent = `Запишите видео ${minSec}–${REC_MAX} сек и назовите число. У вас ${r.minutes} мин.`;
+    $("rec-hint").textContent = sx("rec_sys", {a: minSec, b: REC_MAX, m: r.minutes});
     $("rec-input").value = "";
     $("rec-input").onchange = () => {
       const f = $("rec-input").files[0]; if (!f) return;
@@ -3687,11 +3691,11 @@ async function openRecorder(r) {
     };
     return;
   }
-  $("rec-hint").textContent = `Нажмите «Записать» и назовите число. ${minSec}–${REC_MAX} сек.`;
+  $("rec-hint").textContent = sx("rec_go", {a: minSec, b: REC_MAX});
   $("rec-btn").disabled = false;
   $("rec-btn").onclick = () => {
     if (recRec && recRec.state === "recording") {
-      if ((Date.now() - recRec.t0) / 1000 < minSec) return toast(`Не короче ${minSec} сек`);
+      if ((Date.now() - recRec.t0) / 1000 < minSec) return toast(sx("rec_short", {s: minSec}));
       return recRec.stop();
     }
     const type = ["video/mp4", "video/webm;codecs=vp8,opus", "video/webm"].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
@@ -3706,10 +3710,10 @@ async function openRecorder(r) {
     };
     recRec.t0 = Date.now(); recRec.start(250);
     $("rec-prog").style.transition = `stroke-dashoffset ${REC_MAX}s linear`; $("rec-prog").style.strokeDashoffset = 0;
-    $("rec-btn").textContent = "■ Готово";
+    $("rec-btn").textContent = sx("rec_done");
     recTimer = setInterval(() => {
       const s = (Date.now() - recRec.t0) / 1000;
-      $("rec-hint").textContent = s < minSec ? `Запись… ${Math.ceil(minSec - s)}` : "Можно нажать «Готово»";
+      $("rec-hint").textContent = s < minSec ? sx("rec_rec", {s: Math.ceil(minSec - s)}) : sx("rec_can");
       if (s >= REC_MAX) recRec.stop();
     }, 200);
   };
@@ -3804,7 +3808,7 @@ $("cl-file").onchange = async (ev) => {
     await action("/api/avatar", {image: await squareJpeg(file)});
   } catch (e) { toast(e.message); }
 };
-$("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin", IS_APP ? {video: 1} : {});
+$("btn-mark").onclick = () => action(data.profile.on_site ? "/api/checkout" : "/api/checkin", {video: 1});  // кружок — прямо в кабинете
 let tRepeat = "once";
 const tUsers = new Set();  // кому ставим задачу (выбор сохраняется при автообновлении)
 function renderTaskUsers() {
