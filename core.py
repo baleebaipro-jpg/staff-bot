@@ -384,6 +384,9 @@ def init_db():
     appauth.init()
     import bizwatch  # контроль рабочих Telegram-аккаунтов (Telegram Business)
     bizwatch.init()
+    with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
+        c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
+                  "PRIMARY KEY(chat_id, thread_id))")
 
 
 def notify_admins(c, text: str, buttons=None):
@@ -913,14 +916,39 @@ def check_penalties():
             _late_fine(c, uid, int((tt - at(t, start)).total_seconds() // 60), tt, start, False)
 
 
+def save_topic(chat_id: int, thread_id: int, name: str) -> None:
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
+                  "PRIMARY KEY(chat_id, thread_id))")
+        c.execute("INSERT INTO forum_topics(chat_id, thread_id, name, at) VALUES(?, ?, ?, ?) ON CONFLICT(chat_id, thread_id) "
+                  "DO UPDATE SET name=excluded.name, at=excluded.at", (chat_id, thread_id, name, now().strftime(FMT)))
+
+
+def is_penalty_topic(name: str) -> bool:
+    n = (name or "").lower()
+    title = (getattr(config, "PENALTY_CHAT_TITLE", "") or "").lower()
+    return "штраф" in n or "shtraf" in n or "jarima" in n or (title and n == title)
+
+
+def penalty_topic(chat_id: int):
+    """ID темы «Штраф» / «Shtraf/Bonus» в группе (бот запоминает темы по сообщениям в них)."""
+    with db() as c:
+        rows = c.execute("SELECT thread_id, name FROM forum_topics WHERE chat_id=? ORDER BY at DESC", (chat_id,)).fetchall()
+    for r in rows:
+        if is_penalty_topic(r["name"]):
+            return r["thread_id"]
+    return None
+
+
 def _announce(c, uid, title_key, reason, amount, reason_emp=None):
     """Сообщение о штрафе: в группу (или руководителям) — по-русски, самому сотруднику — на его языке."""
     text = f"{st.s('ru', title_key)}\n👤 {name(uid)}\n📅 {now():%d.%m.%Y}\nПричина: {reason}"
     if amount:
         text += f"\n💰 Сумма: {amount}"
     own = getattr(config, "PENALTY_CHATS", {}).get(uid)
-    if own:  # у сотрудника своя группа/тема для штрафов
-        c.execute("INSERT INTO outbox(chat_id, text, thread_id) VALUES(?, ?, ?)", (own[0], text, own[1]))
+    if own:  # у сотрудника своя группа: штраф — в тему «Штраф» (Shtraf/Bonus), если бот её уже знает
+        c.execute("INSERT INTO outbox(chat_id, text, thread_id) VALUES(?, ?, ?)",
+                  (own[0], text, own[1] or penalty_topic(own[0])))
     elif PENALTY_CHAT_ID:
         c.execute("INSERT INTO outbox(chat_id, text) VALUES(?, ?)", (PENALTY_CHAT_ID, text))
     else:
