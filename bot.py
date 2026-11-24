@@ -1076,24 +1076,48 @@ BIZ_APP = {}
 
 
 async def rename_penalty_chats(bot) -> None:
-    """Группы штрафов сотрудников — одно название (PENALTY_CHAT_TITLE). Один раз на каждую группу и название;
-    если не вышло (нет прав) — попробуем при следующем запуске."""
+    """Темы штрафов сотрудников (заданные в PENALTY_CHATS явно) — название PENALTY_CHAT_TITLE.
+    Саму группу НЕ переименовываем: штрафы — это тема внутри группы сотрудника."""
+    for uid, (chat, thread) in getattr(config, "PENALTY_CHATS", {}).items():
+        if thread:
+            await _rename_topic(bot, chat, thread)
+
+
+async def _rename_topic(bot, chat: int, thread: int) -> None:
     title = getattr(config, "PENALTY_CHAT_TITLE", "")
     if not title:
         return
-    for uid, (chat_id, thread) in getattr(config, "PENALTY_CHATS", {}).items():
-        key = f"pen_title:{chat_id}:{thread}:{title}"
-        if not core.flag_once(key):
-            continue
-        try:
-            if thread:
-                await bot.edit_forum_topic(chat_id, thread, name=title)
-            else:
-                await bot.set_chat_title(chat_id, title)
-        except TelegramError as e:
-            logging.warning("Не удалось переименовать группу штрафов %s (%s): %s", chat_id, core.name(uid), e)
-            with core.db() as c:
-                c.execute("DELETE FROM flags WHERE name=?", (key,))
+    key = f"pen_topic:{chat}:{thread}:{title}"
+    if not core.flag_once(key):
+        return
+    try:
+        await bot.edit_forum_topic(chat, thread, name=title)
+        core.save_topic(chat, thread, title)
+    except TelegramError as e:
+        logging.warning("Не удалось переименовать тему штрафов %s/%s: %s", chat, thread, e)
+        with core.db() as c:
+            c.execute("DELETE FROM flags WHERE name=?", (key,))
+
+
+async def learn_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Запоминаем темы групп по названию (бот — админ, видит сообщения в темах). Тему «Штраф» в группе
+    сотрудника из PENALTY_CHATS — переименовываем в PENALTY_CHAT_TITLE, штрафы идут в неё."""
+    m = update.effective_message
+    if not m or not m.chat or not getattr(m.chat, "is_forum", False) or not m.message_thread_id:
+        return
+    name = None
+    if m.forum_topic_created:
+        name = m.forum_topic_created.name
+    elif m.forum_topic_edited and m.forum_topic_edited.name:
+        name = m.forum_topic_edited.name
+    elif m.reply_to_message and m.reply_to_message.forum_topic_created:
+        name = m.reply_to_message.forum_topic_created.name
+    if not name:
+        return
+    core.save_topic(m.chat.id, m.message_thread_id, name)
+    chats = {ch for ch, _ in getattr(config, "PENALTY_CHATS", {}).values()}
+    if m.chat.id in chats and core.is_penalty_topic(name):
+        await _rename_topic(context.bot, m.chat.id, m.message_thread_id)
 
 
 async def biz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1212,6 +1236,7 @@ def main() -> None:
     ))
     app.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)  # бизнес-чаты — только запись, бот молчит
     app.add_handler(TypeHandler(Update, gate), group=-1)
+    app.add_handler(TypeHandler(Update, learn_topics), group=-50)  # темы групп (штрафы — в тему «Штраф»)
     app.add_handler(ChatMemberHandler(bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
