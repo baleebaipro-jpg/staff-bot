@@ -384,6 +384,8 @@ def init_db():
     appauth.init()
     import bizwatch  # контроль рабочих Telegram-аккаунтов (Telegram Business)
     bizwatch.init()
+    import crm  # CRM-мессенджер (просмотр переписок рабочих аккаунтов)
+    crm.init()
     split_late_penalties()
     import kpi  # касса сотрудника и KPI
     kpi.init()

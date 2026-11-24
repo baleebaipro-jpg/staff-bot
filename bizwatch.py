@@ -225,6 +225,9 @@ async def _on_message(m, edited: bool, bot) -> None:
     if edited and old and (old["text"] or "") != text:
         who = "🧑‍💼 МЕНЕДЖЕР" if outgoing else "👤 КЛИЕНТ"  # изменить может только автор — здесь точно
         info = f"было: {old['text'] or '—'}\nстало: {text or '—'}"
+        with core.db() as c:  # история изменений — для CRM
+            c.execute("INSERT INTO biz_edits(conn_id, chat_id, msg_id, old, new, at) VALUES(?, ?, ?, ?, ?, ?)",
+                      (m.business_connection_id, chat.id, m.message_id, old["text"] or "", text, _now()))
         _event(m.business_connection_id, chat.id, chat_name, "edited", info)
         await _to_admins(bot, f"✏️ Изменено сообщение\n🧑‍💼 Менеджер (рабочий аккаунт): {_owner_name(row)}\n👤 Клиент: {chat_name}"
                               f"{' (@' + chat.username + ')' if chat.username else ''}\n✍️ Изменил: {who}\n\n"
