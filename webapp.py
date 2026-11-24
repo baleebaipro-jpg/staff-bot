@@ -257,7 +257,9 @@ def api_me(uid, data):
                          "registered": cl.get("step") == "done",
                          "birth": f"{birth[8:10]}.{birth[5:7]}" if birth else None,
                          "billz": dict(billz, enabled=bool(billz) or erp.enabled()),
-                         "erp": shop.client_wallet_for_bot(uid)}
+                         "erp": shop.client_wallet_for_bot(uid),
+                         # «📢 Канал» — личная ссылка-заявка (как кнопка в боте клиентов)
+                         "channel": i18n.t(i18n.lang_of(cl.get("lang")), "btn_channel") if _channel_on() else ""}
         res["news"] = core.news_list(10, i18n.lang_of(cl.get("lang")))  # каждый клиент — на своём языке
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
@@ -362,6 +364,55 @@ def api_proof_video(uid, data):
                 c.execute("INSERT INTO outbox(chat_id, text, photo, thread_id) VALUES(?, ?, ?, ?)",
                           (chat_id, note, "video:" + path, thread))
     return jsonify(ok=True, msg=msg)
+
+
+def _channel_on() -> bool:
+    return bool(getattr(config, "CLIENT_CHANNEL_ID", None) and (getattr(config, "CLIENT_BOT_TOKEN", "") or config.BOT_TOKEN))
+
+
+def _tg(method: str, **params):
+    """Вызов Telegram Bot API от бота клиентов (он админ канала и одобряет заявки)."""
+    import urllib.request
+    token = getattr(config, "CLIENT_BOT_TOKEN", "") or config.BOT_TOKEN
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", data=json.dumps(params).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        j = json.loads(r.read().decode())
+    if not j.get("ok"):
+        raise RuntimeError(j.get("description") or "telegram error")
+    return j["result"]
+
+
+@app.post("/api/client_channel")
+@need_user()
+def api_client_channel(uid, data):
+    """«📢 Канал» в мини-аппе клиента: покупателю — личная ссылка-заявка на 24 часа (одна на человека)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    lang = i18n.lang_of((core.get_client(uid) or {}).get("lang"))
+    chat = getattr(config, "CLIENT_CHANNEL_ID", None)
+    if not _channel_on():
+        return jsonify(ok=False, msg=i18n.t(lang, "channel_error"))
+    try:
+        m = _tg("getChatMember", chat_id=chat, user_id=uid)
+        if m.get("status") in ("member", "administrator", "creator"):
+            return jsonify(ok=True, status="already", msg=i18n.t(lang, "channel_already"))
+    except Exception:  # noqa: BLE001 — не смогли проверить, продолжаем
+        pass
+    stats = erp.sync_client(uid, True) if erp.enabled() else {}
+    if float((stats or {}).get("purchases") or 0) < getattr(config, "CLIENT_CHANNEL_MIN_PURCHASES", 1):
+        return jsonify(ok=False, status="no_purchase", msg=i18n.t(lang, "channel_no_purchase"))
+    link = core.channel_link_get(uid, chat)
+    if not link:
+        hours = getattr(config, "CLIENT_CHANNEL_LINK_HOURS", 24)
+        try:
+            inv = _tg("createChatInviteLink", chat_id=chat, name=f"client {uid}"[:32], creates_join_request=True,
+                      expire_date=int((_dt.now(_tz.utc) + _td(hours=hours)).timestamp()))
+        except Exception as e:  # noqa: BLE001
+            app.logger.warning("Канал (мини-апп): не удалось создать ссылку для %s: %s", uid, e)
+            return jsonify(ok=False, msg=i18n.t(lang, "channel_error"))
+        link = inv["invite_link"]
+        core.channel_link_add(link, uid, chat, core.now() + _td(hours=hours))
+    return jsonify(ok=True, status="link", link=link, msg=i18n.t(lang, "channel_link"), btn=i18n.t(lang, "channel_btn"))
 
 
 @app.post("/api/checkout")
@@ -1673,6 +1724,10 @@ PAGE = r"""<!doctype html>
         <div style="flex:1"><div class="hint" style="font-size:13px" data-t="debt"></div><b id="cl-debt-sum" style="font-size:20px;color:var(--red)"></b></div>
         <div class="f-arrow" id="cl-debt-arrow" style="font-size:26px;color:#c4b5fd;transition:transform .2s">›</div></div>
       <div id="cl-debt-list" class="hidden" style="margin-top:12px"></div></div>
+    <button class="card hidden" id="cl-channel" style="width:100%;text-align:left;display:flex;align-items:center;gap:14px">
+      <div class="f-ic" style="width:48px;height:48px;font-size:24px;display:flex;align-items:center;justify-content:center;flex:none">📢</div>
+      <div style="flex:1;min-width:0"><b id="cl-channel-t" style="font-size:17px"></b><div class="hint" style="font-size:13px" id="cl-channel-s"></div></div>
+      <div class="f-arrow" style="font-size:26px;color:#c4b5fd">›</div></button>
     <div class="hint hidden" style="font-size:12.5px;text-align:center;margin:-6px 0 12px" id="cl-billz-note"></div>
     <div style="text-align:center;margin:-6px 0 12px" class="hidden" id="cl-refresh-row">
       <button class="link" id="cl-refresh" style="font-size:13px"></button></div>
@@ -2991,7 +3046,9 @@ const CL_T = {
        finish_reg: "📱 Ro'yxatdan o'tishni bot bilan chatda yakunlang — shunda xaridlaringiz va bonuslaringizni topamiz.",
        birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…",
        billz_not_found: "Raqamingiz hali do'kon bazasida yo'q — birinchi xariddan keyin bu yerda xaridlar va bonuslar paydo bo'ladi",
-       billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi", refresh: "🔄 Yangilash", refreshing: "⏳ Yangilanmoqda…"},
+       billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi", refresh: "🔄 Yangilash", refreshing: "⏳ Yangilanmoqda…",
+       channel_open: "Kanal ochiladi — «Qo'shilish so'rovi»ni bosing, bot darhol tasdiqlaydi ✅",
+       channel_sub: "Xaridorlar uchun yopiq kanal — shaxsiy havola"},
   ru: {hello: "Здравствуйте, {n}! 👋", debt: "Ваш долг · подробнее", debt_order: "Заказ", debt_one: "Долг", debt_sum: "сумма", debt_paid_lbl: "оплачено",
        debt_due: "до", debt_no_list: "Подробности пока недоступны — общий долг указан выше", purchases: "сумма покупок", bonuses: "бонусы", soon: "скоро", invest: "Инвестиции",
        invest_soon: "Раздел скоро появится", soon_pill: "Скоро ⏳", news: "📰 Новости",
@@ -2999,7 +3056,9 @@ const CL_T = {
        finish_reg: "📱 Завершите регистрацию в чате с ботом — так мы найдём ваши покупки и бонусы.",
        birth: "🎂 День рождения", photo: "Загружаю фото…",
        billz_not_found: "Вашего номера пока нет в базе магазина — после первой покупки здесь появятся покупки и бонусы",
-       billz_error: "Сейчас не удалось получить данные, обновится позже", refresh: "🔄 Обновить", refreshing: "⏳ Обновляю…"},
+       billz_error: "Сейчас не удалось получить данные, обновится позже", refresh: "🔄 Обновить", refreshing: "⏳ Обновляю…",
+       channel_open: "Откроется канал — нажмите «Подать заявку», бот сразу одобрит ✅",
+       channel_sub: "Закрытый канал для покупателей — личная ссылка"},
   en: {hello: "Hello, {n}! 👋", debt: "Your debt · details", debt_order: "Order", debt_one: "Debt", debt_sum: "amount", debt_paid_lbl: "paid",
        debt_due: "due", debt_no_list: "Details are not available yet — the total debt is shown above", purchases: "total purchases", bonuses: "bonuses", soon: "soon", invest: "Investments",
        invest_soon: "This section is coming soon", soon_pill: "Soon ⏳", news: "📰 News",
@@ -3007,7 +3066,9 @@ const CL_T = {
        finish_reg: "📱 Please finish registration in the bot chat so we can find your purchases and bonuses.",
        birth: "🎂 Birthday", photo: "Uploading photo…",
        billz_not_found: "Your number isn't in the store database yet — purchases and bonuses will appear after your first purchase",
-       billz_error: "Couldn't get the data right now, it will update later", refresh: "🔄 Refresh", refreshing: "⏳ Refreshing…"},
+       billz_error: "Couldn't get the data right now, it will update later", refresh: "🔄 Refresh", refreshing: "⏳ Refreshing…",
+       channel_open: "The channel will open — tap «Request to join», the bot approves it right away ✅",
+       channel_sub: "Private channel for our customers — personal link"},
 };
 const ct = k => (CL_T[(data && data.client && data.client.lang) || "uz"] || CL_T.uz)[k];
 function renderClient() {
@@ -3051,7 +3112,22 @@ function renderClient() {
   $("cl-refresh-row").classList.toggle("hidden", !bz.enabled);
   $("cl-refresh").textContent = ct("refresh") + (bz.synced ? " · " + bz.synced.slice(11, 16) : "");
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
+  $("cl-channel").classList.toggle("hidden", !c.channel);
+  $("cl-channel-t").textContent = (c.channel || "").replace(/^[^\p{L}]+/u, "");
+  $("cl-channel-s").textContent = ct("channel_sub");
 }
+$("cl-channel").onclick = async () => {
+  const b = $("cl-channel"); if (b.disabled) return; b.disabled = true;
+  try {
+    const r = await api("/api/client_channel");
+    if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
+    if (r.status === "link" && r.link) {
+      toast(ct("channel_open"));
+      setTimeout(() => { if (tg.openTelegramLink) tg.openTelegramLink(r.link); else location.href = r.link; }, 600);
+    } else toast(r.msg);
+  } catch (e) { toast(e.message); }
+  b.disabled = false;
+};
 let debtOpen = false;
 function toggleDebts(money) {
   debtOpen = !debtOpen;
