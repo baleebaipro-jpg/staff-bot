@@ -222,6 +222,12 @@ async def _on_message(m, edited: bool, bot) -> None:
                   (m.business_connection_id, chat.id, m.message_id, chat_name, chat.username or "",
                    frm.id if frm else None, from_name, outgoing, kind, text,
                    file_id, (old["sent_at"] if old else _local(m.date)), int(edited)))
+    dur = next((getattr(getattr(m, k, None), "duration", None) for k in ("voice", "audio", "video", "video_note")
+                if getattr(m, k, None)), None)
+    if dur:
+        with core.db() as c:
+            c.execute("UPDATE biz_messages SET dur=? WHERE conn_id=? AND chat_id=? AND msg_id=?",
+                      (int(dur), m.business_connection_id, chat.id, m.message_id))
     if edited and old and (old["text"] or "") != text:
         who = "🧑‍💼 МЕНЕДЖЕР" if outgoing else "👤 КЛИЕНТ"  # изменить может только автор — здесь точно
         info = f"было: {old['text'] or '—'}\nстало: {text or '—'}"
