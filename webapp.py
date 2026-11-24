@@ -600,6 +600,34 @@ def api_crm_messages(uid, data):
     return jsonify(ok=True, **crm.messages(str(data.get("conn") or ""), int(data.get("chat") or 0), int(data.get("before") or 0)))
 
 
+@app.post("/api/crm/send")
+@need_user(admin=True)
+def api_crm_send(uid, data):
+    """Ответ клиенту из CRM: текст и/или фото (base64) — от имени рабочего аккаунта."""
+    photo = b""
+    raw = str(data.get("photo") or "")
+    if raw:
+        try:
+            photo = base64.b64decode(raw.split(",", 1)[-1], validate=True)
+        except Exception:  # noqa: BLE001
+            return jsonify(ok=False, msg="Фото не загрузилось, выберите ещё раз.")
+    ok, msg = crm.send(uid, str(data.get("conn") or ""), int(data.get("chat") or 0), str(data.get("text") or ""), photo)
+    return jsonify(ok=ok, msg=msg)
+
+
+@app.post("/api/crm/templates")
+@need_user(admin=True)
+def api_crm_templates(uid, data):
+    a = data.get("action")
+    if a == "save":
+        ok, msg = crm.save_template(int(data.get("id") or 0), str(data.get("title") or ""), str(data.get("text") or ""))
+    elif a == "delete":
+        ok, msg = crm.delete_template(int(data.get("id") or 0))
+    else:
+        ok, msg = True, ""
+    return jsonify(ok=ok, msg=msg, items=crm.templates())
+
+
 @app.get("/crm/media/<conn>/<int:chat>/<int:msg>")
 def crm_media(conn, chat, msg):
     """Фото / видео / голосовые из переписки (ссылка подписана сервером — открывается только из CRM)."""
@@ -1340,7 +1368,7 @@ PAGE = r"""<!doctype html>
   .crm-tag.del { background: rgba(248,113,113,.15); color: var(--red); }
   .crm-tag.win { background: rgba(52,211,153,.12); color: var(--green); }
   .crm-head { display: flex; align-items: center; gap: 12px; position: sticky; top: 8px; z-index: 5; }
-  #crm-feed { display: flex; flex-direction: column; gap: 6px; padding-bottom: 90px; }
+  #crm-feed { display: flex; flex-direction: column; gap: 6px; padding-bottom: 130px; }
   .crm-day { align-self: center; font-size: 12px; color: var(--muted); background: rgba(255,255,255,.06); padding: 3px 10px;
     border-radius: 999px; margin: 8px 0 2px; }
   .crm-msg { max-width: 82%; padding: 8px 12px 6px; border-radius: 16px; font-size: 15px; line-height: 1.35; word-wrap: break-word;
@@ -1355,8 +1383,29 @@ PAGE = r"""<!doctype html>
   .crm-msg .old { font-size: 12.5px; color: var(--muted); border-left: 2px solid #fbbf24; padding-left: 6px; margin-top: 4px; white-space: pre-wrap; }
   .crm-foot { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
     background: linear-gradient(180deg, transparent, var(--bg) 30%); z-index: 6; }
-  .crm-foot div { max-width: 600px; margin: 0 auto; text-align: center; font-size: 13px; color: var(--muted);
-    background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 14px; padding: 10px; }
+  .crm-foot > * { max-width: 600px; margin-left: auto; margin-right: auto; }
+  .crm-note { text-align: center; font-size: 13px; color: var(--muted); background: rgba(255,255,255,.06);
+    border: 1px solid var(--line); border-radius: 14px; padding: 10px; margin-bottom: 8px; }
+  .crm-comp { display: flex; align-items: flex-end; gap: 6px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 22px; padding: 6px; }
+  .crm-comp.off { opacity: .45; pointer-events: none; }
+  .crm-comp textarea { flex: 1; margin: 0; border: 0; background: none; resize: none; max-height: 140px; min-height: 22px;
+    padding: 8px 4px; font-size: 16px; line-height: 1.35; font-family: inherit; color: inherit; }
+  .crm-ib { width: 38px; height: 38px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 19px; background: rgba(255,255,255,.06); border: 0; color: inherit; cursor: pointer; }
+  .crm-send { width: 42px; height: 42px; flex: none; border-radius: 50%; border: 0; color: #fff; font-size: 18px;
+    background: linear-gradient(150deg, #a78bfa, #6d28d9); }
+  .crm-send:disabled { opacity: .5; }
+  .crm-sug { background: var(--card); border: 1px solid var(--line); border-radius: 16px; margin-bottom: 8px; max-height: 40vh; overflow: auto; }
+  .crm-sug div { padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 14px; }
+  .crm-sug div:last-child { border-bottom: 0; }
+  .crm-sug div b { display: block; font-size: 13px; color: #c4b5fd; }
+  .crm-sug div span { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crm-photo { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 6px; margin-bottom: 8px; font-size: 12.5px; color: var(--muted); }
+  .crm-photo img { width: 46px; height: 46px; object-fit: cover; border-radius: 10px; }
+  .crm-photo span { flex: 1; }
+  .crm-photo button { background: none; border: 0; color: inherit; font-size: 18px; }
   #splash.out { opacity: 0; visibility: hidden; }
   #splash img { width: 70%; max-width: 360px; animation: spIn 1.1s cubic-bezier(.2,.8,.2,1) both, spGlow 2.4s ease-in-out 1.1s infinite; }
   .sp-line { width: 120px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
@@ -1714,7 +1763,16 @@ PAGE = r"""<!doctype html>
   <div id="view-crmchat" class="hidden">
     <div class="card crm-head" id="crm-head"></div>
     <div id="crm-feed"></div>
-    <div class="crm-foot" id="crm-foot"></div>
+    <div class="crm-foot" id="crm-foot">
+      <div class="crm-sug hidden" id="crm-sug"></div>
+      <div class="crm-photo hidden" id="crm-photo"><img id="crm-photo-img"><span>Фото будет отправлено с текстом как подпись</span><button id="crm-photo-x">✕</button></div>
+      <div class="crm-note hidden" id="crm-note"></div>
+      <div class="crm-comp" id="crm-comp">
+        <button class="crm-ib" id="crm-tpl" title="Быстрые ответы">⚡</button>
+        <label class="crm-ib" title="Фото">📷<input type="file" accept="image/*" id="crm-file" hidden></label>
+        <textarea id="crm-input" rows="1" placeholder="Сообщение…  ( / — быстрые ответы)"></textarea>
+        <button class="crm-send" id="crm-send">➤</button></div>
+    </div>
   </div>
 
   <!-- КАРТОЧКА СОТРУДНИКА -->
@@ -4136,14 +4194,84 @@ async function loadCrmChat(silent) {
   $("crm-feed").innerHTML = r.items.map(m => {
     const d = m.at.slice(0, 10), sep = d !== day ? `<div class="crm-day">${d.split("-").reverse().join(".")}</div>` : ""; day = d;
     return sep + `<div class="crm-msg ${m.out ? "out" : ""} ${m.deleted ? "del" : ""}">
-      <div class="who">${m.out ? "🧑‍💼 " + esc(m.from || "Менеджер") : "👤 Клиент"}</div>${crmBody(m)}
+      <div class="who">${m.out ? "🧑‍💼 " + esc(m.from || "Менеджер") + (m.via ? ` <span style="color:var(--muted);font-weight:500">· из CRM: ${esc(m.via)}</span>` : "") : "👤 Клиент"}</div>${crmBody(m)}
       ${m.edits.map(e => `<div class="old">✏️ было: ${esc(e.old || "—")}</div>`).join("")}
       <div class="meta">${m.edited ? "✏️ изменено · " : ""}${m.at.slice(11, 16)}${m.deleted ? ` · <b style="color:var(--red)">🗑 удалено ${m.deleted.slice(8, 10)}.${m.deleted.slice(5, 7)} ${m.deleted.slice(11, 16)}</b>` : ""}</div></div>`;
   }).join("") || `<div class="empty">Сообщений нет</div>`;
-  $("crm-foot").innerHTML = `<div>${r.window !== null ? `🟢 Клиент на связи — ${crmWin(r.window)}. Ответы прямо из CRM — на следующем этапе.`
-    : "⏳ Окно 24 ч закрыто: клиент давно не писал. Написать первым можно из Telegram."}</div>`;
+  const open = r.window !== null;
+  $("crm-comp").classList.toggle("off", !open);
+  $("crm-note").classList.toggle("hidden", open);
+  $("crm-note").textContent = open ? "" : "⏳ Окно 24 ч закрыто: клиент давно не писал. Ответить можно, когда клиент напишет снова; написать первым — из Telegram.";
   if (!silent || atBottom) window.scrollTo(0, document.body.scrollHeight);
 }
+/* Ответ из CRM: текст, фото, быстрые ответы (⚡ и «/») */
+let crmTpls = null, crmPhoto = null, crmSending = false;
+async function crmLoadTpls(body = {}) {
+  try { const r = await api("/api/crm/templates", body); crmTpls = r.items; if (r.msg) toast(r.msg); } catch (e) { toast(e.message); }
+  return crmTpls || [];
+}
+function crmFit() { const t = $("crm-input"); t.style.height = "auto"; t.style.height = Math.min(140, t.scrollHeight) + "px"; }
+function crmPut(text) { $("crm-input").value = text; crmFit(); $("crm-sug").classList.add("hidden"); $("crm-input").focus(); }
+$("crm-input").oninput = async () => {
+  crmFit();
+  const v = $("crm-input").value, box = $("crm-sug");
+  if (!v.startsWith("/")) { box.classList.add("hidden"); return; }
+  const list = (crmTpls || await crmLoadTpls()).filter(t => (t.title + " " + t.text).toLowerCase().includes(v.slice(1).toLowerCase()));
+  box.innerHTML = list.length ? list.map(t => `<div data-tp="${t.id}"><b>${esc(t.title)}</b><span>${esc(t.text)}</span></div>`).join("")
+    : `<div style="color:var(--muted)">Нет быстрых ответов — добавьте кнопкой ⚡</div>`;
+  box.classList.remove("hidden");
+  box.querySelectorAll("[data-tp]").forEach(el => el.onclick = () => crmPut(crmTpls.find(t => t.id === +el.dataset.tp).text));
+};
+$("crm-input").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("crm-send").onclick(); };
+$("crm-file").onchange = async () => {
+  const f = $("crm-file").files[0]; $("crm-file").value = ""; if (!f) return;
+  try { crmPhoto = await reportJpeg(f); } catch (e) { return toast(e.message); }
+  $("crm-photo-img").src = crmPhoto; $("crm-photo").classList.remove("hidden");
+};
+$("crm-photo-x").onclick = () => { crmPhoto = null; $("crm-photo").classList.add("hidden"); };
+$("crm-send").onclick = async () => {
+  const text = $("crm-input").value.trim();
+  if (crmSending || !crmChat || (!text && !crmPhoto)) return;
+  crmSending = true; $("crm-send").disabled = true;
+  try {
+    const r = await api("/api/crm/send", Object.assign({}, crmChat, {text}, crmPhoto ? {photo: crmPhoto} : {}));
+    if (r.ok) { $("crm-input").value = ""; crmFit(); crmPhoto = null; $("crm-photo").classList.add("hidden");
+                if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success"); crmLastSig = ""; await loadCrmChat(); }
+    else toast(r.msg);
+  } catch (e) { toast(e.message); }
+  crmSending = false; $("crm-send").disabled = false;
+};
+async function crmTplSheet(manage) {
+  const list = await crmLoadTpls();
+  invSheet(`<h3>⚡ Быстрые ответы</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">${manage ? "Нажмите, чтобы изменить. {имя} — подставится имя клиента."
+      : "Нажмите — текст появится в поле ввода, можно поправить и отправить."}</div>
+    ${list.length ? list.map(t => `<div class="kpi-row" style="cursor:pointer" data-tq="${t.id}"><div class="tt"><b>${esc(t.title)}</b>
+      <div class="hint" style="font-size:12.5px;white-space:pre-wrap">${esc(t.text.slice(0, 160))}</div></div>${manage ? "<span>✏️</span>" : ""}</div>`).join("")
+      : `<div class="empty">Быстрых ответов пока нет</div>`}
+    ${manage ? `<button class="btn btn-main" style="width:100%;margin-top:12px" id="tq-new">＋ Быстрый ответ</button>`
+      : `<button class="btn btn-soft" style="width:100%;margin-top:12px" id="tq-manage">⚙️ Добавить / изменить</button>`}
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="tq-close">Закрыть</button>`);
+  $("tq-close").onclick = invSheetClose;
+  if (manage) $("tq-new").onclick = () => crmTplEdit(null); else $("tq-manage").onclick = () => crmTplSheet(true);
+  document.querySelectorAll("[data-tq]").forEach(el => el.onclick = () => {
+    const t = list.find(x => x.id === +el.dataset.tq);
+    if (manage) crmTplEdit(t); else { invSheetClose(); crmPut(t.text); }
+  });
+}
+function crmTplEdit(t) {
+  invSheet(`<h3>${t ? "✏️ Быстрый ответ" : "＋ Быстрый ответ"}</h3>
+    <input id="tq-title" maxlength="60" placeholder="Название, например «Прайс» или «Адрес»" value="${t ? esc(t.title) : ""}">
+    <textarea id="tq-text" rows="6" maxlength="4000" placeholder="Текст. {имя} — имя клиента">${t ? esc(t.text) : ""}</textarea>
+    ${sheetBtns("Сохранить")}
+    ${t ? `<button class="btn btn-soft" style="width:100%;margin-top:8px" id="tq-del">Удалить</button>` : ""}`);
+  $("is-cancel").onclick = () => crmTplSheet(true);
+  $("is-ok").onclick = async () => { await crmLoadTpls({action: "save", id: t ? t.id : 0, title: $("tq-title").value, text: $("tq-text").value});
+    crmTplSheet(true); };
+  if (t) $("tq-del").onclick = () => tg.showConfirm("Удалить быстрый ответ?", async ok => {
+    if (ok) { await crmLoadTpls({action: "delete", id: t.id}); crmTplSheet(true); } });
+}
+$("crm-tpl").onclick = () => crmTplSheet(false);
 function renderDash() {
   renderBossDay();
   const o = data.projects, cl = data.clients || {}, et = data.earnings_team || [];
