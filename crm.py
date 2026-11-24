@@ -416,3 +416,59 @@ def send_voice(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dura
                   (conn, chat, res["message_id"], head["chat_name"], head["chat_username"], owner["user_id"],
                    bizwatch._owner_name(owner), file_id, core.now().strftime(core.FMT), uid))
     return True, "🎤 Голосовое отправлено"
+
+
+# ---------- кружки из CRM ----------
+
+def to_video_note(blob: bytes, ext: str = "webm") -> bytes:
+    """Видео с телефона → кружок Telegram: квадрат 384×384 по центру, H.264 + AAC, MP4, до 60 сек."""
+    import subprocess
+    import tempfile
+    exe = _ffmpeg()
+    if not exe:
+        raise RuntimeError("на сервере нет ffmpeg")
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in." + ext), os.path.join(d, "out.mp4")
+        with open(src, "wb") as f:
+            f.write(blob)
+        vf = "crop='min(iw,ih)':'min(iw,ih)',scale=384:384,setsar=1"
+        r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-t", "60", "-vf", vf, "-c:v", "libx264",
+                            "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                            "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-movflags", "+faststart", dst],
+                           capture_output=True, timeout=180)
+        if r.returncode != 0 or not os.path.exists(dst):
+            raise RuntimeError((r.stderr or b"").decode(errors="ignore")[-300:] or "ошибка конвертации")
+        with open(dst, "rb") as f:
+            return f.read()
+
+
+def send_circle(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", duration: float = 0):
+    import bizwatch
+    if len(blob) < 2000:
+        return False, "Запись слишком короткая."
+    with core.db() as c:
+        head = c.execute("SELECT chat_name, chat_username FROM biz_messages WHERE conn_id=? AND chat_id=? LIMIT 1",
+                         (conn, chat)).fetchone()
+        owner = c.execute("SELECT * FROM biz_connections WHERE id=?", (conn,)).fetchone()
+    if not head or not owner:
+        return False, "Чат не найден."
+    ext = "mp4" if "mp4" in mime or "quicktime" in mime else "webm"
+    try:
+        mp4 = to_video_note(blob, ext)
+    except Exception as e:  # noqa: BLE001
+        return False, f"Не удалось подготовить кружок: {e}"
+    params = {"chat_id": chat, "business_connection_id": conn, "length": 384}
+    if duration:
+        params["duration"] = min(60, int(round(duration)))
+    try:
+        res = _api("sendVideoNote", params, {"video_note": ("circle.mp4", mp4, "video/mp4")})
+    except Exception as e:  # noqa: BLE001
+        return False, _explain(str(e))
+    file_id = (res.get("video_note") or {}).get("file_id")
+    with core.db() as c:
+        c.execute("INSERT INTO biz_messages(conn_id, chat_id, msg_id, chat_name, chat_username, from_id, from_name, outgoing, "
+                  "kind, text, file_id, sent_at, edited, sent_by) VALUES(?, ?, ?, ?, ?, ?, ?, 1, 'video_note', '', ?, ?, 0, ?) "
+                  "ON CONFLICT(conn_id, chat_id, msg_id) DO UPDATE SET sent_by=excluded.sent_by",
+                  (conn, chat, res["message_id"], head["chat_name"], head["chat_username"], owner["user_id"],
+                   bizwatch._owner_name(owner), file_id, core.now().strftime(core.FMT), uid))
+    return True, "⭕ Кружок отправлен"

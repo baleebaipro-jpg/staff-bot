@@ -635,6 +635,26 @@ def api_crm_voice(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+@app.post("/api/crm/circle")
+@need_user(admin=True)
+def api_crm_circle(uid, data):
+    """Кружок из CRM: видео из браузера (base64) → кружок Telegram от рабочего аккаунта."""
+    raw = str(data.get("video") or "")
+    mime = raw[5:raw.find(";")] if raw.startswith("data:") and ";" in raw else ""
+    try:
+        blob = base64.b64decode(raw.split(",", 1)[-1], validate=True)
+    except Exception:  # noqa: BLE001
+        return jsonify(ok=False, msg="Видео не загрузилось, запишите ещё раз.")
+    if len(blob) > 40 * 1024 * 1024:
+        return jsonify(ok=False, msg="Слишком большое видео.")
+    try:
+        dur = float(data.get("duration") or 0)
+    except (TypeError, ValueError):
+        dur = 0
+    ok, msg = crm.send_circle(uid, str(data.get("conn") or ""), int(data.get("chat") or 0), blob, mime, dur)
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/crm/info")
 @need_user(admin=True)
 def api_crm_info(uid, data):
@@ -1439,6 +1459,7 @@ PAGE = r"""<!doctype html>
   .crm-msg.out .who { color: #e9d5ff; }
   .crm-msg img, .crm-msg video { max-width: 100%; border-radius: 12px; display: block; margin-bottom: 4px; }
   .crm-msg audio { width: 230px; max-width: 100%; }
+  .crm-msg video.circle { width: 220px; height: 220px; border-radius: 50%; object-fit: cover; }
   .crm-msg .old { font-size: 12.5px; color: var(--muted); border-left: 2px solid #fbbf24; padding-left: 6px; margin-top: 4px; white-space: pre-wrap; }
   .crm-foot { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
     background: linear-gradient(180deg, transparent, var(--bg) 30%); z-index: 6; }
@@ -1836,7 +1857,8 @@ PAGE = r"""<!doctype html>
       <div class="crm-comp" id="crm-comp">
         <button class="crm-ib" id="crm-tpl" title="Быстрые ответы">⚡</button>
         <label class="crm-ib" title="Фото">📷<input type="file" accept="image/*" id="crm-file" hidden></label>
-        <textarea id="crm-input" rows="1" placeholder="Сообщение · / быстрые ответы"></textarea>
+        <button class="crm-ib" id="crm-circle" title="Кружок">⭕</button>
+        <textarea id="crm-input" rows="1" placeholder="Сообщение"></textarea>
         <button class="crm-send" id="crm-send">🎤</button></div>
       <div class="crm-recbar hidden" id="crm-recbar"><span class="dot"></span><b id="crm-rect">0:00</b>
         <span class="hint" style="flex:1;font-size:13px">Запись голосового…</span>
@@ -4126,7 +4148,7 @@ function renderBossDay() {
 $("bd-btn").onclick = () => action(data.boss_day.on_site ? "/api/checkout" : "/api/checkin");
 /* Видео-подтверждение прихода прямо в кабинете: камера на экране, человек говорит вслух число */
 const REC_MAX = 8;
-let recStream = null, recRec = null, recTimer = null;
+let recStream = null, recRec = null, recTimer = null, recMax = REC_MAX, recOnSend = null;
 function recStop() {
   clearInterval(recTimer);
   if (recRec && recRec.state !== "inactive") { recRec.onstop = null; recRec.stop(); }
@@ -4137,6 +4159,7 @@ function recClose() { recStop(); $("rec").classList.add("hidden"); $("rec-v").sr
 async function recSend(blob, dur) {
   $("rec-hint").textContent = sx("rec_send"); $("rec-btn").disabled = true;
   const url = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
+  if (recOnSend) return recOnSend(url, dur);  // другой режим (кружок клиенту из CRM)
   try {
     const r = await api("/api/proof_video", {video: url, duration: dur});
     if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
@@ -4156,16 +4179,17 @@ async function recCamera() {
 }
 async function openRecorder(r) {
   const minSec = r.min_sec || 3;
-  $("rec-code").textContent = r.code; $("rec").classList.remove("hidden");
+  recOnSend = r.onSend || null; recMax = r.max || REC_MAX;
+  $("rec-code").textContent = r.code || ""; $("rec-code").classList.toggle("hidden", !r.code); $("rec").classList.remove("hidden");
   $("rec-prog").style.transition = "none"; $("rec-prog").style.strokeDashoffset = 301.6;
   $("rec-ph").classList.remove("hidden"); $("rec-btn").textContent = sx("rec_btn");
-  $("rec-say").textContent = sx("rec_say"); $("rec-hint").textContent = sx("rec_cam");
+  $("rec-say").textContent = r.title || sx("rec_say"); $("rec-hint").textContent = sx("rec_cam");
   $("rec-file-t").textContent = sx("rec_open"); $("rec-x").textContent = sx("rec_cancel");
   $("rec-x").onclick = recClose;
   const canRec = window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && await recCamera();
   $("rec-btn").classList.toggle("hidden", !canRec); $("rec-file").classList.toggle("hidden", !!canRec);
   if (!canRec) {  // камера в странице недоступна — системная камера телефона
-    $("rec-hint").textContent = sx("rec_sys", {a: minSec, b: REC_MAX, m: r.minutes});
+    $("rec-hint").textContent = r.onSend ? "Запишите видео на камеру телефона" : sx("rec_sys", {a: minSec, b: recMax, m: r.minutes});
     $("rec-input").value = "";
     $("rec-input").onchange = () => {
       const f = $("rec-input").files[0]; if (!f) return;
@@ -4176,7 +4200,7 @@ async function openRecorder(r) {
     };
     return;
   }
-  $("rec-hint").textContent = sx("rec_go", {a: minSec, b: REC_MAX});
+  $("rec-hint").textContent = r.onSend ? `Нажмите «Записать». До ${recMax} сек.` : sx("rec_go", {a: minSec, b: recMax});
   $("rec-btn").disabled = false;
   $("rec-btn").onclick = () => {
     if (recRec && recRec.state === "recording") {
@@ -4194,12 +4218,12 @@ async function openRecorder(r) {
       recSend(new Blob(chunks, {type: mime}), dur);
     };
     recRec.t0 = Date.now(); recRec.start(250);
-    $("rec-prog").style.transition = `stroke-dashoffset ${REC_MAX}s linear`; $("rec-prog").style.strokeDashoffset = 0;
+    $("rec-prog").style.transition = `stroke-dashoffset ${recMax}s linear`; $("rec-prog").style.strokeDashoffset = 0;
     $("rec-btn").textContent = sx("rec_done");
     recTimer = setInterval(() => {
       const s = (Date.now() - recRec.t0) / 1000;
       $("rec-hint").textContent = s < minSec ? sx("rec_rec", {s: Math.ceil(minSec - s)}) : sx("rec_can");
-      if (s >= REC_MAX) recRec.stop();
+      if (s >= recMax) recRec.stop();
     }, 200);
   };
 }
@@ -4248,7 +4272,8 @@ function crmBody(m) {
   const md = m.media;
   let media = "";
   if (md) media = m.kind === "photo" || m.kind === "sticker" ? `<img loading="lazy" src="${md}">`
-    : ["video", "video_note", "animation"].includes(m.kind) ? `<video controls playsinline preload="metadata" src="${md}"></video>`
+    : m.kind === "video_note" ? `<video class="circle" controls playsinline preload="metadata" src="${md}"></video>`
+    : ["video", "animation"].includes(m.kind) ? `<video controls playsinline preload="metadata" src="${md}"></video>`
     : ["voice", "audio"].includes(m.kind) ? `<audio controls preload="none" src="${md}"></audio>`
     : `<a href="${md}" target="_blank">📎 Открыть файл</a>`;
   const label = !md && m.kind !== "text" ? `<i>${{contact: "👤 Контакт", location: "📍 Геолокация", other: "Сообщение"}[m.kind] || m.kind}</i> ` : "";
@@ -4315,6 +4340,14 @@ function crmVoiceStop(send) {
   rec.stop();
 }
 $("crm-recx").onclick = () => crmVoiceStop(false);
+$("crm-circle").onclick = () => openRecorder({title: "⭕ Кружок для клиента", min_sec: 1, max: 60, onSend: async (url, dur) => {
+  try {
+    const r = await api("/api/crm/circle", Object.assign({}, crmChat, {video: url, duration: dur}));
+    if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(r.ok ? "success" : "warning");
+    if (!r.ok) { $("rec-hint").textContent = r.msg; $("rec-btn").disabled = false; $("rec-btn").textContent = sx("rec_again"); return recCamera(); }
+    recClose(); toast(r.msg); crmLastSig = ""; loadCrmChat();
+  } catch (e) { $("rec-hint").textContent = e.message; $("rec-btn").disabled = false; }
+}});
 $("crm-recok").onclick = () => crmVoiceStop(true);
 function crmPut(text) { $("crm-input").value = text; crmFit(); $("crm-sug").classList.add("hidden"); $("crm-input").focus(); }
 $("crm-input").oninput = async () => {
