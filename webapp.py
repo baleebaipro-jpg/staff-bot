@@ -684,6 +684,15 @@ def api_crm_templates(uid, data):
     return jsonify(ok=ok, msg=msg, items=crm.templates())
 
 
+@app.get("/crm/ava/<int:chat>")
+def crm_ava(chat):
+    """Фото профиля клиента (ссылка подписана сервером)."""
+    path = crm.avatar(chat, request.args.get("s", ""))
+    if not path:
+        abort(404)
+    return send_file(path, mimetype="image/jpeg", max_age=6 * 3600)
+
+
 @app.get("/crm/media/<conn>/<int:chat>/<int:msg>")
 def crm_media(conn, chat, msg):
     """Фото / видео / голосовые из переписки (ссылка подписана сервером — открывается только из CRM)."""
@@ -1414,6 +1423,8 @@ PAGE = r"""<!doctype html>
   .crm-ava { width: 46px; height: 46px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center;
     font-weight: 800; font-size: 17px; background: linear-gradient(150deg, #a78bfa, #6d28d9); color: #fff; }
   .crm-item .mid { flex: 1; min-width: 0; }
+  .crm-ava { position: relative; overflow: hidden; }
+  .crm-ava img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .crm-item .nm { display: flex; justify-content: space-between; gap: 8px; }
   .crm-item .nm b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .crm-item .nm span { color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -4251,6 +4262,8 @@ const crmInit = n => (n || "?").trim().split(/\s+/).slice(0, 2).map(w => w[0]).j
 const crmTime = at => { if (!at) return ""; const d = at.slice(0, 10), t = new Date(); const today = t.toISOString().slice(0, 10);
   return d === today ? at.slice(11, 16) : at.slice(8, 10) + "." + at.slice(5, 7); };
 const crmWin = w => w === null || w === undefined ? "" : w >= 1 ? `можно ответить ещё ${Math.floor(w)} ч` : `ещё ${Math.round(w * 60)} мин`;
+/* Аватар: фото профиля из Telegram, если его нет или оно скрыто — буквы */
+const crmAva = c => `<div class="crm-ava">${esc(crmInit(c.name))}${c.ava ? `<img src="${c.ava}" alt="" loading="lazy" onerror="this.remove()">` : ""}</div>`;
 function crmOnShow(v) {
   clearInterval(crmTimer);
   if (v !== "crmchat") { crmVoiceStop(false); if (vpAudio) vpAudio.pause(); }
@@ -4269,7 +4282,7 @@ async function loadCrm(silent) {
   acc.value = keep;
   $("d-crm").textContent = `чатов: ${r.chats.length}`;
   $("crm-list").innerHTML = r.chats.length ? r.chats.map(c => `<div class="crm-item" data-crm="${c.conn}|${c.chat}">
-      <div class="crm-ava">${esc(crmInit(c.name))}</div>
+      ${crmAva(c)}
       <div class="mid"><div class="nm"><b>${esc(c.name)}</b><span>${crmTime(c.at)}</span></div>
         <div class="pv">${c.last_out ? "Вы: " : ""}${esc(c.last)}</div>
         <div class="crm-tags">${c.waiting ? `<span class="crm-tag wait">⏳ ждёт ответа</span>` : ""}
@@ -4346,7 +4359,7 @@ async function loadCrmChat(silent) {
   const sig = r.items.map(m => m.id + (m.deleted ? "d" : "") + m.edits.length).join(",") + "|" + r.window;
   if (sig === crmLastSig) return; crmLastSig = sig;
   const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
-  $("crm-head").innerHTML = `<div class="crm-ava">${esc(crmInit(r.name))}</div><div style="min-width:0"><b>${esc(r.name)}</b>
+  $("crm-head").innerHTML = `${crmAva(r)}<div style="min-width:0"><b>${esc(r.name)}</b>
     <div class="st ${r.window !== null ? "on" : ""}">${r.window !== null ? crmWin(r.window) : "окно ответа закрыто"}${r.username ? " · @" + esc(r.username) : ""}</div></div>`;
   let day = "";
   $("crm-feed").innerHTML = r.items.map(m => {

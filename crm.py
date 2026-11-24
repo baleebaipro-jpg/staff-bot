@@ -79,6 +79,7 @@ def chats(account: str = "", q: str = "", only: str = "") -> list:
             win = _window(r["last_in"])
             waiting = bool(r["last_in"] and (not r["last_out"] or r["last_in"] > r["last_out"]))
             item = {"conn": r["conn_id"], "chat": r["chat_id"], "name": name, "username": m["chat_username"] or "",
+                    "ava": f"/crm/ava/{r['chat_id']}?s={ava_sig(r['chat_id'])}",
                     "account": owners.get(r["conn_id"], ""), "last": _preview(m), "last_out": bool(m["outgoing"]),
                     "at": m["sent_at"], "n": r["n"], "deleted": r["deleted"] or 0, "edited": r["edited"] or 0,
                     "window": win, "waiting": waiting}
@@ -133,6 +134,7 @@ def messages(conn: str, chat: int, before: int = 0, limit: int = 60) -> dict:
                                                           "document", "sticker") else "")}
              for r in rows]
     return {"name": head["chat_name"] if head else "", "username": head["chat_username"] if head else "",
+            "ava": f"/crm/ava/{chat}?s={ava_sig(chat)}",
             "window": _window(head["last_in"] if head else None), "items": items, "more": len(rows) == limit}
 
 
@@ -542,3 +544,46 @@ def set_dur(conn: str, chat: int, msg: int, dur) -> None:
     if dur:
         with core.db() as c:
             c.execute("UPDATE biz_messages SET dur=? WHERE conn_id=? AND chat_id=? AND msg_id=?", (int(round(float(dur))), conn, chat, msg))
+
+
+
+# ---------- фото профиля клиента (для списка чатов и шапки) ----------
+
+AVA_DIR = os.path.join(config.DATA_DIR, "crm_ava")
+AVA_DAYS = 3
+
+
+def ava_sig(chat: int) -> str:
+    return _sig("ava", chat, 0)
+
+
+def avatar(chat: int, sig: str):
+    """Маленькое фото профиля клиента (Bot API getUserProfilePhotos). Кэш на AVA_DAYS дней; нет фото — None."""
+    import time
+    if not hmac.compare_digest(sig or "", ava_sig(chat)):
+        return None
+    os.makedirs(AVA_DIR, exist_ok=True)
+    path, none = os.path.join(AVA_DIR, f"{chat}.jpg"), os.path.join(AVA_DIR, f"{chat}.none")
+    fresh = lambda p: os.path.exists(p) and time.time() - os.path.getmtime(p) < AVA_DAYS * 86400  # noqa: E731
+    if fresh(path):
+        return path
+    if fresh(none):
+        return None
+    try:
+        res = _api("getUserProfilePhotos", {"user_id": chat, "limit": 1})
+        photos = res.get("photos") or []
+        if not photos:
+            open(none, "w").close()
+            return None
+        size = sorted(photos[0], key=lambda x: x.get("width", 0))
+        pick = next((x for x in size if x.get("width", 0) >= 160), size[-1])
+        f = _api("getFile", {"file_id": pick["file_id"]})
+        token = getattr(config, "BIZ_BOT_TOKEN", "") or config.BOT_TOKEN
+        with urllib.request.urlopen(f"https://api.telegram.org/file/bot{token}/{f['file_path']}", timeout=30) as r:
+            data = r.read()
+        with open(path, "wb") as out:
+            out.write(data)
+        return path
+    except Exception:  # noqa: BLE001 — нет доступа к фото (приватность) — показываем буквы
+        open(none, "w").close()
+        return path if os.path.exists(path) else None
