@@ -114,11 +114,11 @@ KIND_LABEL = {"photo": "📷 фото", "video": "🎬 видео", "video_note"
 
 
 def _line(r) -> str:
-    who = "🧑‍💼" if r["outgoing"] else "👤"
+    who = "🧑‍💼 менеджер" if r["outgoing"] else "👤 клиент"
     body = (r["text"] or "").strip()
     if r["kind"] not in ("text", None):
         body = KIND_LABEL.get(r["kind"], r["kind"]) + (f": {body}" if body else "")
-    return f"[{r['sent_at'][8:10]}.{r['sent_at'][5:7]} {r['sent_at'][11:16]}] {who} {r['from_name']}: {body or '—'}"
+    return f"[{r['sent_at'][8:10]}.{r['sent_at'][5:7]} {r['sent_at'][11:16]}] писал(а) {who}: {body or '—'}"
 
 
 async def _to_admins(bot, text: str, document=None) -> None:
@@ -223,10 +223,10 @@ async def _on_message(m, edited: bool, bot) -> None:
                    frm.id if frm else None, from_name, outgoing, kind, text,
                    file_id, (old["sent_at"] if old else _local(m.date)), int(edited)))
     if edited and old and (old["text"] or "") != text:
-        who = f"🧑‍💼 {_owner_name(row)}" if outgoing else f"👤 собеседник ({from_name})"
+        who = "🧑‍💼 МЕНЕДЖЕР" if outgoing else "👤 КЛИЕНТ"  # изменить может только автор — здесь точно
         info = f"было: {old['text'] or '—'}\nстало: {text or '—'}"
         _event(m.business_connection_id, chat.id, chat_name, "edited", info)
-        await _to_admins(bot, f"✏️ Изменено сообщение\n📱 Аккаунт: {_owner_name(row)}\n💬 Чат с: {chat_name}"
+        await _to_admins(bot, f"✏️ Изменено сообщение\n🧑‍💼 Менеджер (рабочий аккаунт): {_owner_name(row)}\n👤 Клиент: {chat_name}"
                               f"{' (@' + chat.username + ')' if chat.username else ''}\n✍️ Изменил: {who}\n\n"
                               f"Было:\n{old['text'] or '—'}\n\nСтало:\n{text or '—'}")
 
@@ -246,10 +246,18 @@ async def _on_deleted(d, bot) -> None:
     unknown = len(ids) - len(rows)
     whole = len(ids) > LIST_MAX
     head = (f"🗑 {'Удалена переписка' if whole else 'Удалено сообщений: ' + str(len(ids))}\n"
-            f"📱 Аккаунт: {_owner_name(row)}\n💬 Чат с: {chat_name}{' (@' + chat.username + ')' if chat.username else ''}"
+            f"🧑‍💼 Менеджер (рабочий аккаунт): {_owner_name(row)}\n"
+            f"👤 Клиент: {chat_name}{' (@' + chat.username + ')' if chat.username else ''}"
             f"\n🕐 {core.now():%d.%m.%Y %H:%M}" + (f"\n📨 Сообщений: {len(ids)}" if whole else ""))
     lines = [_line(r) for r in rows]
     tail = f"\n\n❔ Ещё {unknown} сообщ. — были до подключения контроля, текст неизвестен." if unknown else ""
+    # кто удалил — Telegram не сообщает; оценка по тому, чьи сообщения удалены
+    if rows and all(r["outgoing"] for r in rows) and not unknown:
+        tail += "\n\n🔎 Кто удалил: вероятно, МЕНЕДЖЕР — удалены его собственные сообщения."
+    elif rows and not any(r["outgoing"] for r in rows) and not unknown:
+        tail += "\n\n🔎 Кто удалил: клиент или менеджер — удалены сообщения клиента (Telegram не сообщает, кто именно)."
+    else:
+        tail += "\n\n🔎 Кто удалил: Telegram не сообщает (удалены сообщения обеих сторон или неизвестные)."
     _event(d.business_connection_id, chat.id, chat_name, "deleted", "\n".join(lines) or f"{len(ids)} сообщ.")
     if len(lines) > LIST_MAX:
         f = io.BytesIO("\n".join(lines).encode("utf-8"))
