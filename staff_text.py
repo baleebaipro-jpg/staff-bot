@@ -141,12 +141,15 @@ S = {
     # ---------- штрафы ----------
     "penalty": {"ru": "🔴 Штраф", "uz": "🔴 Jarima"},
     "penalty_cancelled": {"ru": "✅ Штраф отменён", "uz": "✅ Jarima bekor qilindi"},
+    "penalty_updated": {"ru": "🔴 Штраф пересчитан по факту прихода", "uz": "🔴 Jarima kelgan vaqt bo'yicha qayta hisoblandi"},
     "penalty_paid": {"ru": "💸 Штраф оплачен", "uz": "💸 Jarima to'landi"},
     "penalty_msg": {"ru": "{title}\n📅 {date}\nПричина: {reason}", "uz": "{title}\n📅 {date}\nSabab: {reason}"},
     "penalty_sum": {"ru": "\n💰 Сумма: {amount}", "uz": "\n💰 Summa: {amount}"},
     "late_reason": {"ru": "не отметил(а) приход до {t} (график {start})",
                     "uz": "kelishni soat {t} gacha belgilamagan (grafik {start})"},
     "late_short": {"ru": "опоздание", "uz": "kechikish"},
+    "late_hours_reason": {"ru": "опоздание {m} (приход {t}, по графику {start})",
+                          "uz": "kechikish {m} (kelgan vaqt {t}, grafik {start})"},
 
     # ---------- задачи ----------
     "task_new": {"ru": "📌 Новая задача:\n{t}", "uz": "📌 Yangi vazifa:\n{t}"},
