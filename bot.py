@@ -1078,6 +1078,15 @@ BIZ_APP = {}
 async def rename_penalty_chats(bot) -> None:
     """Темы штрафов сотрудников (заданные в PENALTY_CHATS явно) — название PENALTY_CHAT_TITLE.
     Саму группу НЕ переименовываем: штрафы — это тема внутри группы сотрудника."""
+    wrong = getattr(config, "PENALTY_CHAT_TITLE", "") or "Shtraf/Bonus"
+    for chat, old in getattr(config, "PENALTY_GROUP_RESTORE", {}).items():  # вернуть имена групп
+        try:
+            ch = await bot.get_chat(chat)
+            if ch.title == wrong:
+                await bot.set_chat_title(chat, old)
+                logging.info("Группе %s возвращено название %s", chat, old)
+        except TelegramError as e:
+            logging.warning("Не удалось вернуть название группы %s: %s", chat, e)
     for uid, (chat, thread) in getattr(config, "PENALTY_CHATS", {}).items():
         if thread:
             await _rename_topic(bot, chat, thread)
