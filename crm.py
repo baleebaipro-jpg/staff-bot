@@ -165,6 +165,7 @@ ERRORS = [
                           "включите «Ответы на сообщения»."),
     ("business_peer", "Окно ответа закрыто: клиент не писал больше 24 часов. Написать первым можно из Telegram."),
     ("peer_usage_missing", "Окно ответа закрыто: клиент не писал больше 24 часов. Написать первым можно из Telegram."),
+    ("voice_messages_forbidden", "Клиент запретил голосовые и кружки в настройках приватности Telegram."),
     ("bot_business_missing", "Бот отключён от рабочего аккаунта — подключите его снова в «Чат-боты»."),
     ("business_connection_invalid", "Бот отключён от рабочего аккаунта — подключите его снова в «Чат-боты»."),
 ]
@@ -386,6 +387,33 @@ def to_voice(blob: bytes, ext: str = "webm") -> bytes:
         raise RuntimeError((r.stderr or b"").decode(errors="ignore")[-300:] or "ошибка конвертации")
 
 
+def to_m4a(blob: bytes, ext: str = "webm") -> bytes:
+    """Запасной вариант, если клиент запретил голосовые: обычный аудиофайл M4A (AAC)."""
+    import subprocess
+    import tempfile
+    exe = _ffmpeg()
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in." + ext), os.path.join(d, "out.m4a")
+        with open(src, "wb") as f:
+            f.write(blob)
+        r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-c:a", "aac", "-b:a", "64k", dst],
+                           capture_output=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or b"").decode(errors="ignore")[-300:])
+        with open(dst, "rb") as f:
+            return f.read()
+
+
+def _save_out(uid, conn, chat, head, owner, msg_id, kind, file_id, text=""):
+    import bizwatch
+    with core.db() as c:
+        c.execute("INSERT INTO biz_messages(conn_id, chat_id, msg_id, chat_name, chat_username, from_id, from_name, outgoing, "
+                  "kind, text, file_id, sent_at, edited, sent_by) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?) "
+                  "ON CONFLICT(conn_id, chat_id, msg_id) DO UPDATE SET sent_by=excluded.sent_by",
+                  (conn, chat, msg_id, head["chat_name"], head["chat_username"], owner["user_id"],
+                   bizwatch._owner_name(owner), kind, text, file_id, core.now().strftime(core.FMT), uid))
+
+
 def send_voice(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", duration: float = 0):
     import bizwatch
     if len(blob) < 500:
@@ -407,7 +435,16 @@ def send_voice(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dura
     try:
         res = _api("sendVoice", params, {"voice": ("voice.ogg", ogg, "audio/ogg")})
     except Exception as e:  # noqa: BLE001
-        return False, _explain(str(e))
+        if "voice_messages_forbidden" not in str(e).lower():
+            return False, _explain(str(e))
+        # клиент запретил голосовые → отправляем то же самое обычным аудиофайлом (это разрешено всегда)
+        try:
+            res = _api("sendAudio", dict(params, title="🎤 Голосовое", performer=owner["name"] or ""),
+                       {"audio": ("golosovoe.m4a", to_m4a(blob, ext), "audio/mp4")})
+        except Exception as e2:  # noqa: BLE001
+            return False, _explain(str(e2))
+        _save_out(uid, conn, chat, head, owner, res["message_id"], "audio", (res.get("audio") or {}).get("file_id"))
+        return True, "🎤 Клиент запретил голосовые — отправлено аудиофайлом"
     file_id = (res.get("voice") or {}).get("file_id")
     with core.db() as c:
         c.execute("INSERT INTO biz_messages(conn_id, chat_id, msg_id, chat_name, chat_username, from_id, from_name, outgoing, "
@@ -463,7 +500,18 @@ def send_circle(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dur
     try:
         res = _api("sendVideoNote", params, {"video_note": ("circle.mp4", mp4, "video/mp4")})
     except Exception as e:  # noqa: BLE001
-        return False, _explain(str(e))
+        if "voice_messages_forbidden" not in str(e).lower():
+            return False, _explain(str(e))
+        # клиент запретил кружки → то же видео обычным видеосообщением
+        vp = {"chat_id": chat, "business_connection_id": conn, "width": 384, "height": 384, "supports_streaming": "true"}
+        if duration:
+            vp["duration"] = min(60, int(round(duration)))
+        try:
+            res = _api("sendVideo", vp, {"video": ("video.mp4", mp4, "video/mp4")})
+        except Exception as e2:  # noqa: BLE001
+            return False, _explain(str(e2))
+        _save_out(uid, conn, chat, head, owner, res["message_id"], "video", (res.get("video") or {}).get("file_id"))
+        return True, "⭕ Клиент запретил кружки — отправлено обычным видео"
     file_id = (res.get("video_note") or {}).get("file_id")
     with core.db() as c:
         c.execute("INSERT INTO biz_messages(conn_id, chat_id, msg_id, chat_name, chat_username, from_id, from_name, outgoing, "
