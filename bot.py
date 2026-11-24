@@ -1075,6 +1075,27 @@ async def set_menu_button(app: Application, title: str = "Kabinet") -> None:
 BIZ_APP = {}
 
 
+async def rename_penalty_chats(bot) -> None:
+    """Группы штрафов сотрудников — одно название (PENALTY_CHAT_TITLE). Один раз на каждую группу и название;
+    если не вышло (нет прав) — попробуем при следующем запуске."""
+    title = getattr(config, "PENALTY_CHAT_TITLE", "")
+    if not title:
+        return
+    for uid, (chat_id, thread) in getattr(config, "PENALTY_CHATS", {}).items():
+        key = f"pen_title:{chat_id}:{thread}:{title}"
+        if not core.flag_once(key):
+            continue
+        try:
+            if thread:
+                await bot.edit_forum_topic(chat_id, thread, name=title)
+            else:
+                await bot.set_chat_title(chat_id, title)
+        except TelegramError as e:
+            logging.warning("Не удалось переименовать группу штрафов %s (%s): %s", chat_id, core.name(uid), e)
+            with core.db() as c:
+                c.execute("DELETE FROM flags WHERE name=?", (key,))
+
+
 async def biz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if core.is_admin(uid):
@@ -1104,6 +1125,7 @@ async def start_biz_bot() -> None:
 
 async def post_init(app: Application) -> None:
     await start_biz_bot()
+    await rename_penalty_chats(app.bot)
     core.flag_json("staff_bot", {"username": app.bot.username})
     await set_menu_button(app)
     app.bot_data["outbox"] = asyncio.create_task(outbox_loop(app))
@@ -1156,6 +1178,7 @@ async def _run_both(app: Application, capp: Application) -> None:
             await capp.start()
             await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         await start_biz_bot()
+        await rename_penalty_chats(app.bot)
         outbox = asyncio.create_task(outbox_loop(app, capp))
         core.flag_json("staff_bot", {"username": app.bot.username})  # для ссылки входа в приложение
         print(f"Боты запущены: сотрудники @{app.bot.username}, клиенты @{CLIENT_BOT['username'] or '— (не запущен)'}")
