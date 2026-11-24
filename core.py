@@ -498,6 +498,37 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
     return True, msg
 
 
+def admin_checkout(uid: int, hhmm: str = ""):
+    """Руководитель сам закрывает смену сотрудника, который забыл нажать «Ушёл».
+    hhmm — время ухода сегодня (по умолчанию — сейчас). Задачи не проверяем, штраф за ранний уход не ставим."""
+    emp = employee(uid)
+    if not emp:
+        return False, "Сотрудник не найден."
+    t = now()
+    with db() as c:
+        s = _open_session(c, uid)
+        if not s:
+            return False, f"{emp['name']} сейчас не на месте — закрывать нечего."
+        cin = parse(s["check_in"])
+        if hhmm:
+            try:
+                h, m = map(int, hhmm.split(":"))
+                out = cin.replace(hour=h, minute=m, second=0)
+            except (ValueError, TypeError):
+                return False, "Время в формате ЧЧ:ММ, например 18:00."
+            if out < cin:
+                return False, f"Время ухода раньше прихода ({cin:%H:%M})."
+            if out > t:
+                return False, "Время ухода ещё не наступило."
+        else:
+            out = t
+        c.execute("UPDATE sessions SET check_out=?, auto_closed=2 WHERE id=?", (out.strftime(FMT), s["id"]))
+        worked = int((out - cin).total_seconds() // 60)
+        L = staff_lang(uid)
+        notify(c, uid, st.s(L, "out_by_boss", t=f"{out:%H:%M}", w=fmt_min(worked, L)))
+    return True, f"🚪 Смена {emp['name']} закрыта в {out:%H:%M} · отработано {fmt_min(worked)}"
+
+
 def check_out(uid: int):
     emp = _self_emp(uid)
     L = staff_lang(uid)
@@ -674,7 +705,7 @@ def history(uid: int, limit: int = 30) -> list:
             "worked": fmt_min(((cout or t) - cin).total_seconds() // 60, L),
             "late": fmt_min(r["late_min"], L) if r["late_min"] else None,
             "early": fmt_min(r["early_min"], L) if r["early_min"] else None,
-            "auto": bool(r["auto_closed"]),
+            "auto": r["auto_closed"] == 1, "by_boss": r["auto_closed"] == 2,
         })
     return out
 
@@ -1367,6 +1398,7 @@ def team() -> list:
                 "penalties": penalties_list(c, uid),
                 "penalties_total": penalties_total(c, uid),
                 "penalties_active": penalties_active(c, uid),
+                "on_site_since": s["check_in"] if s else "",
                 "penalties_history": penalties_list(c, uid, history=True),
                 "total_hours": round(_hours(c, uid) + emp.get("hours_before", 0), 1),
                 "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"],

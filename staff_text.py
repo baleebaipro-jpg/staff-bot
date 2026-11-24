@@ -110,6 +110,8 @@ S = {
         "uz": "⛔ Ketish mumkin emas — yopilmagan vazifalar bor:\n{lines}\n\n"
               "«Bajarildi» tugmasini bosing va rahbar vazifani qabul qilishini kuting.",
     },
+    "out_by_boss": {"ru": "🚪 Руководитель отметил ваш уход в {t}.\nСегодня отработано: {w}",
+                    "uz": "🚪 Rahbar ketishingizni {t} da belgiladi.\nBugun ishlangan: {w}"},
     "out_ok": {"ru": "🚪 Уход отмечен в {t}.\nСегодня отработано: {w}",
                "uz": "🚪 Ketish soat {t} da belgilandi.\nBugun ishlangan vaqt: {w}"},
     "early": {"ru": "\n⚠️ Раньше графика на {m}", "uz": "\n⚠️ Grafikdan {m} oldin"},
