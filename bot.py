@@ -1087,9 +1087,7 @@ async def rename_penalty_chats(bot) -> None:
                 logging.info("Группе %s возвращено название %s", chat, old)
         except TelegramError as e:
             logging.warning("Не удалось вернуть название группы %s: %s", chat, e)
-    for uid, (chat, thread) in getattr(config, "PENALTY_CHATS", {}).items():
-        if thread:
-            await _rename_topic(bot, chat, thread)
+    # темы, заданные в PENALTY_CHATS явно, не переименовываем: руководитель уже назвал их сам
 
 
 async def _rename_topic(bot, chat: int, thread: int) -> None:
@@ -1125,6 +1123,9 @@ async def shtraf_topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         await context.bot.edit_forum_topic(chat, thread, name=title)
         res = f"✅ Тема переименована в «{title}»."
+    except BadRequest as e:
+        res = "✅ Тема назначена для штрафов." if "not modified" in str(e).lower() else (
+            f"⚠️ Не смог переименовать тему: {e}\nДайте боту право «Управление темами» и отправьте /shtraf ещё раз.")
     except TelegramError as e:
         res = (f"⚠️ Не смог переименовать тему: {e}\nДайте боту право «Управление темами» "
                "(Администраторы → RADI TEAM) и отправьте /shtraf ещё раз.")
@@ -1139,7 +1140,7 @@ async def learn_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Запоминаем темы групп по названию (бот — админ, видит сообщения в темах). Тему «Штраф» в группе
     сотрудника из PENALTY_CHATS — переименовываем в PENALTY_CHAT_TITLE, штрафы идут в неё."""
     m = update.effective_message
-    if not m or not m.chat or not getattr(m.chat, "is_forum", False) or not m.message_thread_id:
+    if not m or not m.chat or m.chat.type != "supergroup" or not m.is_topic_message or not m.message_thread_id:
         return
     name = None
     if m.forum_topic_created:
@@ -1152,7 +1153,8 @@ async def learn_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     core.save_topic(m.chat.id, m.message_thread_id, name)
     chats = {ch for ch, _ in getattr(config, "PENALTY_CHATS", {}).values()}
-    if m.chat.id in chats and core.is_penalty_topic(name):
+    # переименовываем только «Штраф» (кириллицей); названия «Shtraf…», которые дал руководитель, не трогаем
+    if m.chat.id in chats and core.is_penalty_topic(name) and "shtraf" not in name.lower():
         await _rename_topic(context.bot, m.chat.id, m.message_thread_id)
 
 
