@@ -376,6 +376,8 @@ def init_db():
         cols = {r[1] for r in c.execute("PRAGMA table_info(penalties)")}
         if "note" not in cols:
             c.execute("ALTER TABLE penalties ADD COLUMN note TEXT")
+        if "paid_at" not in cols:  # штраф оплачен: не активный, но остаётся в истории и в счётчиках
+            c.execute("ALTER TABLE penalties ADD COLUMN paid_at TEXT")
     import shop  # таблицы ERP (учёт продаж)
     shop.init()
     import appauth  # вход в мобильное приложение
@@ -625,6 +627,7 @@ def profile(uid: int) -> dict:
             "penalties_month": penalties_month(c, uid),
             "penalties": penalties_list(c, uid, L),
             "penalties_total": penalties_total(c, uid),
+            "penalties_active": penalties_active(c, uid),
             "workday": workday(emp, t),
             "in_window": window_text(emp, "in", t, L),
             "out_window": window_text(emp, "out", t, L),
@@ -905,6 +908,24 @@ def delete_penalty(pid: int):
     return True, "Штраф отменён."
 
 
+def pay_penalty(pid: int):
+    """Штраф оплачен: перестаёт быть активным, но остаётся в истории и в счётчиках «всего» / «за месяц»."""
+    with db() as c:
+        r = c.execute("SELECT * FROM penalties WHERE id=?", (pid,)).fetchone()
+        if not r:
+            return False, "Штраф не найден."
+        if r["paid_at"]:
+            return False, "Штраф уже отмечен как оплаченный."
+        c.execute("UPDATE penalties SET paid_at=? WHERE id=?", (now().strftime(FMT), pid))
+        _announce(c, r["user_id"], "penalty_paid", r["note"] or "—", r["amount"],
+                  reason_emp=_penalty_reason(r, staff_lang(r["user_id"])))
+    return True, "Штраф отмечен как оплаченный ✅"
+
+
+def penalties_active(c, uid) -> int:
+    return c.execute("SELECT COUNT(*) FROM penalties WHERE user_id=? AND paid_at IS NULL", (uid,)).fetchone()[0]
+
+
 def penalties_total(c, uid) -> int:
     return c.execute("SELECT COUNT(*) FROM penalties WHERE user_id=?", (uid,)).fetchone()[0]
 
@@ -921,15 +942,21 @@ def _penalty_reason(r, lang=None) -> str:
     return note or st.s(lang, "late_short")
 
 
-def penalties_list(c, uid, lang=None) -> list:
-    rows = c.execute(
-        "SELECT * FROM penalties WHERE user_id=? AND day >= ? ORDER BY id DESC",
-        (uid, now().strftime("%Y-%m-01")),
-    ).fetchall()
+def penalties_list(c, uid, lang=None, history: bool = False) -> list:
+    """Активные (неоплаченные, за любое время) + оплаченные за этот месяц.
+    history=True — вся история штрафов (последние 200)."""
+    if history:
+        rows = c.execute("SELECT * FROM penalties WHERE user_id=? ORDER BY day DESC, id DESC LIMIT 200", (uid,)).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT * FROM penalties WHERE user_id=? AND (paid_at IS NULL OR day >= ?) ORDER BY paid_at IS NOT NULL, id DESC",
+            (uid, now().strftime("%Y-%m-01")),
+        ).fetchall()
     return [
-        {"id": r["id"], "date": datetime.strptime(r["day"], "%Y-%m-%d").strftime("%d.%m"),
+        {"id": r["id"], "date": datetime.strptime(r["day"], "%Y-%m-%d").strftime("%d.%m.%y" if history else "%d.%m"),
          "reason": _penalty_reason(r, lang), "amount": r["amount"] or "",
-         "auto": r["reason"] == "late"}
+         "auto": r["reason"] == "late", "paid": bool(r["paid_at"]),
+         "paid_at": parse(r["paid_at"]).strftime("%d.%m") if r["paid_at"] else ""}
         for r in rows
     ]
 
@@ -1213,6 +1240,8 @@ def team() -> list:
                 "penalties_month": penalties_month(c, uid),
                 "penalties": penalties_list(c, uid),
                 "penalties_total": penalties_total(c, uid),
+                "penalties_active": penalties_active(c, uid),
+                "penalties_history": penalties_list(c, uid, history=True),
                 "total_hours": round(_hours(c, uid) + emp.get("hours_before", 0), 1),
                 "tasks": [{"id": r["id"], "title": r["title"], "status": r["status"],
                            "due": _due_label(r["due_date"]), "repeat": bool(r["template_id"]),
