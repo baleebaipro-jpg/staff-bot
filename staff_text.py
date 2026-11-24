@@ -141,6 +141,7 @@ S = {
     # ---------- штрафы ----------
     "penalty": {"ru": "🔴 Штраф", "uz": "🔴 Jarima"},
     "penalty_cancelled": {"ru": "✅ Штраф отменён", "uz": "✅ Jarima bekor qilindi"},
+    "penalty_more": {"ru": "🔴 Штраф увеличен: приход всё ещё не отмечен", "uz": "🔴 Jarima oshirildi: kelish hali belgilanmagan"},
     "penalty_updated": {"ru": "🔴 Штраф пересчитан по факту прихода", "uz": "🔴 Jarima kelgan vaqt bo'yicha qayta hisoblandi"},
     "penalty_paid": {"ru": "💸 Штраф оплачен", "uz": "💸 Jarima to'landi"},
     "penalty_msg": {"ru": "{title}\n📅 {date}\nПричина: {reason}", "uz": "{title}\n📅 {date}\nSabab: {reason}"},
