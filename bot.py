@@ -1106,6 +1106,33 @@ async def _rename_topic(bot, chat: int, thread: int) -> None:
         logging.warning("Не удалось переименовать тему штрафов %s/%s: %s", chat, thread, e)
         with core.db() as c:
             c.execute("DELETE FROM flags WHERE name=?", (key,))
+            core.notify_admins(c, f"⚠️ Не смог переименовать тему штрафов в группе {chat}: {e}\n"
+                                  "Проверьте право бота «Управление темами» и отправьте /shtraf внутри темы.")
+
+
+async def shtraf_topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/shtraf — написать руководителю ВНУТРИ темы группы: эта тема — для штрафов/бонусов сотрудника
+    (бот переименует её в PENALTY_CHAT_TITLE и будет слать штрафы сюда)."""
+    m = update.effective_message
+    if not m or not core.is_admin(update.effective_user.id):
+        return
+    if not m.is_topic_message or not m.message_thread_id:
+        return await m.reply_text("Напишите /shtraf внутри темы «Штраф» (откройте тему и отправьте там).")
+    chat, thread = m.chat.id, m.message_thread_id
+    whose = [core.name(u) for u, (ch, _) in getattr(config, "PENALTY_CHATS", {}).items() if ch == chat]
+    title = getattr(config, "PENALTY_CHAT_TITLE", "") or "Shtraf/Bonus"
+    core.save_topic(chat, thread, title)  # теперь эта тема — тема штрафов этой группы
+    try:
+        await context.bot.edit_forum_topic(chat, thread, name=title)
+        res = f"✅ Тема переименована в «{title}»."
+    except TelegramError as e:
+        res = (f"⚠️ Не смог переименовать тему: {e}\nДайте боту право «Управление темами» "
+               "(Администраторы → RADI TEAM) и отправьте /shtraf ещё раз.")
+    if whose:
+        res += f"\nШтрафы {', '.join(whose)} теперь приходят сюда."
+    else:
+        res += f"\n❗ Эта группа ещё не привязана к сотруднику. ID группы: {chat} — пришлите его разработчику с именем."
+    await m.reply_text(res)
 
 
 async def learn_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1251,6 +1278,7 @@ def main() -> None:
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("biz", biz_cmd))
     app.add_handler(CommandHandler("chatid", chat_id))
+    app.add_handler(CommandHandler("shtraf", shtraf_topic_cmd))
     app.add_handler(CommandHandler("billz", billz_cmd))
     app.add_handler(CommandHandler("investchat", invest_chat_cmd))
     app.add_handler(CommandHandler("task", task_cmd))
