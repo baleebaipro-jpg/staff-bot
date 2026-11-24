@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import urllib.error
 import urllib.request
 from datetime import timedelta
 
@@ -22,6 +23,10 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS biz_edits(id INTEGER PRIMARY KEY, conn_id TEXT, chat_id INTEGER, msg_id INTEGER, "
                   "old TEXT, new TEXT, at TEXT)")
         c.execute("CREATE INDEX IF NOT EXISTS biz_msg_chat ON biz_messages(conn_id, chat_id, msg_id)")
+        c.execute("CREATE TABLE IF NOT EXISTS crm_templates(id INTEGER PRIMARY KEY, title TEXT, text TEXT, sort INTEGER DEFAULT 0, "
+                  "created_at TEXT)")
+        if "sent_by" not in {r[1] for r in c.execute("PRAGMA table_info(biz_messages)")}:
+            c.execute("ALTER TABLE biz_messages ADD COLUMN sent_by INTEGER")  # кто из CRM отправил
 
 
 def _window(last_in: str):
@@ -112,7 +117,8 @@ def messages(conn: str, chat: int, before: int = 0, limit: int = 60) -> dict:
                 edits.setdefault(e["msg_id"], []).append({"old": e["old"], "at": e["at"][11:16]})
         head = c.execute("SELECT chat_name, chat_username, MAX(CASE WHEN outgoing=0 THEN sent_at END) AS last_in "
                          "FROM biz_messages WHERE conn_id=? AND chat_id=?", (conn, chat)).fetchone()
-    items = [{"id": r["msg_id"], "out": bool(r["outgoing"]), "from": r["from_name"], "kind": r["kind"] or "text",
+    items = [{"id": r["msg_id"], "out": bool(r["outgoing"]), "from": r["from_name"],
+              "via": core.name(r["sent_by"]) if r["sent_by"] else "", "kind": r["kind"] or "text",
               "text": r["text"] or "", "at": r["sent_at"], "edited": bool(r["edited"]), "edits": edits.get(r["msg_id"], []),
               "deleted": r["deleted_at"][:16] if r["deleted_at"] else "",
               "media": (f"/crm/media/{conn}/{chat}/{r['msg_id']}?s={_sig(conn, chat, r['msg_id'])}"
@@ -146,3 +152,110 @@ def media_file(conn: str, chat: int, msg: int, sig: str):
     mime = {"photo": "image/jpeg", "sticker": "image/webp", "video": "video/mp4", "video_note": "video/mp4",
             "animation": "video/mp4", "voice": "audio/ogg", "audio": "audio/mpeg"}.get(r["kind"], "application/octet-stream")
     return path, mime
+
+
+# ---------- отправка из CRM (через бизнес-подключение: от имени рабочего аккаунта) ----------
+
+ERRORS = [
+    ("not enough rights", "У бота нет права отвечать: Telegram → Настройки → Telegram для бизнеса → Чат-боты → бот → "
+                          "включите «Ответы на сообщения»."),
+    ("business_peer", "Окно ответа закрыто: клиент не писал больше 24 часов. Написать первым можно из Telegram."),
+    ("peer_usage_missing", "Окно ответа закрыто: клиент не писал больше 24 часов. Написать первым можно из Telegram."),
+    ("bot_business_missing", "Бот отключён от рабочего аккаунта — подключите его снова в «Чат-боты»."),
+    ("business_connection_invalid", "Бот отключён от рабочего аккаунта — подключите его снова в «Чат-боты»."),
+]
+
+
+def _explain(err: str) -> str:
+    e = (err or "").lower()
+    for key, text in ERRORS:
+        if key in e:
+            return text
+    return f"Telegram не принял сообщение: {err}"
+
+
+def _api(method: str, params: dict, files: dict = None):
+    token = getattr(config, "BIZ_BOT_TOKEN", "") or config.BOT_TOKEN
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    if files:
+        boundary = "----radicrm" + hashlib.md5(os.urandom(8)).hexdigest()
+        body = b""
+        for k, v in params.items():
+            body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
+        for k, (fname, data, mime) in files.items():
+            body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"; filename=\"{fname}\"\r\n"
+                     f"Content-Type: {mime}\r\n\r\n").encode() + data + b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    else:
+        req = urllib.request.Request(url, data=json.dumps(params).encode(), headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            j = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            j = json.loads(e.read().decode())
+        except Exception:  # noqa: BLE001
+            j = {"ok": False, "description": str(e)}
+    if not j.get("ok"):
+        raise RuntimeError(j.get("description") or "error")
+    return j["result"]
+
+
+def send(uid: int, conn: str, chat: int, text: str = "", photo: bytes = b"", photo_name: str = "photo.jpg"):
+    """Отправить клиенту от имени рабочего аккаунта. Сообщение сразу появляется в переписке CRM."""
+    import bizwatch
+    text = (text or "").strip()
+    if not text and not photo:
+        return False, "Напишите сообщение."
+    with core.db() as c:
+        head = c.execute("SELECT chat_name, chat_username FROM biz_messages WHERE conn_id=? AND chat_id=? LIMIT 1",
+                         (conn, chat)).fetchone()
+        owner = c.execute("SELECT * FROM biz_connections WHERE id=?", (conn,)).fetchone()
+    if not head or not owner:
+        return False, "Чат не найден."
+    first = (head["chat_name"] or "").split()[0] if head["chat_name"] else ""
+    text = text.replace("{имя}", first).replace("{ism}", first).replace("{name}", first)
+    try:
+        if photo:
+            res = _api("sendPhoto", {"chat_id": chat, "business_connection_id": conn, "caption": text[:1024]},
+                       {"photo": (photo_name, photo, "image/jpeg")})
+        else:
+            res = _api("sendMessage", {"chat_id": chat, "business_connection_id": conn, "text": text[:4096]})
+    except Exception as e:  # noqa: BLE001
+        return False, _explain(str(e))
+    kind, file_id = "text", None
+    if res.get("photo"):
+        kind, file_id = "photo", res["photo"][-1]["file_id"]
+    with core.db() as c:
+        c.execute("INSERT INTO biz_messages(conn_id, chat_id, msg_id, chat_name, chat_username, from_id, from_name, outgoing, "
+                  "kind, text, file_id, sent_at, edited, sent_by) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?) "
+                  "ON CONFLICT(conn_id, chat_id, msg_id) DO UPDATE SET sent_by=excluded.sent_by",
+                  (conn, chat, res["message_id"], head["chat_name"], head["chat_username"], owner["user_id"],
+                   bizwatch._owner_name(owner), kind, text, file_id, core.now().strftime(core.FMT), uid))
+    return True, "Отправлено ✅"
+
+
+def templates() -> list:
+    with core.db() as c:
+        return [dict(r) for r in c.execute("SELECT id, title, text FROM crm_templates ORDER BY sort, id")]
+
+
+def save_template(tid: int, title: str, text: str):
+    title, text = (title or "").strip()[:60], (text or "").strip()[:4000]
+    if not text:
+        return False, "Напишите текст быстрого ответа."
+    title = title or text.split("\n")[0][:40]
+    with core.db() as c:
+        if tid:
+            c.execute("UPDATE crm_templates SET title=?, text=? WHERE id=?", (title, text, tid))
+        else:
+            c.execute("INSERT INTO crm_templates(title, text, created_at) VALUES(?, ?, ?)",
+                      (title, text, core.now().strftime(core.FMT)))
+    return True, "Быстрый ответ сохранён."
+
+
+def delete_template(tid: int):
+    with core.db() as c:
+        c.execute("DELETE FROM crm_templates WHERE id=?", (tid,))
+    return True, "Быстрый ответ удалён."
