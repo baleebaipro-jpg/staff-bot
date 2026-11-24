@@ -35,6 +35,7 @@ import core
 import erp
 import shop
 import appauth
+import bizwatch
 import i18n
 import invest as invest_mod
 import posts
@@ -541,6 +542,19 @@ async def billz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text = f"❌ Ошибка проверки: {e}"
     # без превью ссылки: иначе Telegram открывает адрес API и показывает его ответ как «.json»
     await reply(update, text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
+async def biz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/biz — руководителю: подключённые рабочие аккаунты (контроль удалённых сообщений)."""
+    if not core.is_admin(update.effective_user.id):
+        return
+    rows = bizwatch.connections()
+    if not rows:
+        return await reply(update, "Рабочие аккаунты пока не подключены.\n\nTelegram → Настройки → Telegram для бизнеса → "
+                                   f"Чат-боты → @{context.bot.username}")
+    await reply(update, "🔗 Контроль рабочих аккаунтов:\n\n" + "\n".join(
+        f"{'🟢' if r['enabled'] else '🔴 отключён'} {r['name']}{' @' + r['username'] if r['username'] else ''}"
+        f" — сообщений {r['messages']}, удалено {r['deleted']}" for r in rows))
 
 
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1071,6 +1085,7 @@ def build_client_app() -> Application:
     """Бот клиентов: только клиентская часть (язык, номер, BILLZ, новости, кабинет, «Выйти»)."""
     capp = Application.builder().token(config.CLIENT_BOT_TOKEN).build()
     capp.bot_data["role"] = "client"
+    capp.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)  # бизнес-чаты — бот молчит
     capp.add_handler(TypeHandler(Update, remember_client), group=-2)
     capp.add_handler(TypeHandler(Update, gate), group=-1)
     capp.add_handler(CommandHandler("start", client_start))
@@ -1135,10 +1150,12 @@ def main() -> None:
         (filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.StatusUpdate.ALL & ~filters.COMMAND,
         relay.on_group_message,
     ))
+    app.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)  # бизнес-чаты — только запись, бот молчит
     app.add_handler(TypeHandler(Update, gate), group=-1)
     app.add_handler(ChatMemberHandler(bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
+    app.add_handler(CommandHandler("biz", biz_cmd))
     app.add_handler(CommandHandler("chatid", chat_id))
     app.add_handler(CommandHandler("billz", billz_cmd))
     app.add_handler(CommandHandler("investchat", invest_chat_cmd))
