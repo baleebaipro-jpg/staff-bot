@@ -382,6 +382,8 @@ def init_db():
     shop.init()
     import appauth  # вход в мобильное приложение
     appauth.init()
+    import bizwatch  # контроль рабочих Telegram-аккаунтов (Telegram Business)
+    bizwatch.init()
 
 
 def notify_admins(c, text: str, buttons=None):
