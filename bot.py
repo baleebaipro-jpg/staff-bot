@@ -1067,7 +1067,38 @@ async def set_menu_button(app: Application, title: str = "Kabinet") -> None:
         logging.warning("Не удалось поставить кнопку меню: %s", e)
 
 
+BIZ_APP = {}
+
+
+async def biz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if core.is_admin(uid):
+        await update.message.reply_text("🔐 RADI Control: сюда приходят удалённые и изменённые сообщения рабочих аккаунтов.\n"
+                                        "/biz — подключённые аккаунты.")
+    else:
+        await update.message.reply_text("🔐 RADI Control")
+
+
+async def start_biz_bot() -> None:
+    """Отдельный бот контроля рабочих аккаунтов (если задан BIZ_BOT_TOKEN). Сбой не мешает остальным ботам."""
+    if not config.BIZ_BOT_TOKEN or BIZ_APP:
+        return
+    try:
+        bapp = Application.builder().token(config.BIZ_BOT_TOKEN).build()
+        bapp.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)
+        bapp.add_handler(CommandHandler("start", biz_start))
+        bapp.add_handler(CommandHandler("biz", biz_cmd))
+        await bapp.initialize()
+        await bapp.start()
+        await bapp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        BIZ_APP["app"] = bapp
+        print(f"Бот контроля рабочих аккаунтов: @{bapp.bot.username}")
+    except Exception as e:  # noqa: BLE001
+        logging.error("❌ Бот контроля (BIZ_BOT_TOKEN) не запустился: %s", e)
+
+
 async def post_init(app: Application) -> None:
+    await start_biz_bot()
     core.flag_json("staff_bot", {"username": app.bot.username})
     await set_menu_button(app)
     app.bot_data["outbox"] = asyncio.create_task(outbox_loop(app))
@@ -1119,6 +1150,7 @@ async def _run_both(app: Application, capp: Application) -> None:
             await set_menu_button(capp)
             await capp.start()
             await capp.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await start_biz_bot()
         outbox = asyncio.create_task(outbox_loop(app, capp))
         core.flag_json("staff_bot", {"username": app.bot.username})  # для ссылки входа в приложение
         print(f"Боты запущены: сотрудники @{app.bot.username}, клиенты @{CLIENT_BOT['username'] or '— (не запущен)'}")

@@ -10,6 +10,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 #   CLIENT_BOT_TOKEN — бот клиентов (язык, номер, покупки и бонусы BILLZ, новости, кабинет клиента)
 # Без него всё работает в одном боте, как раньше.
 CLIENT_BOT_TOKEN = os.getenv("CLIENT_BOT_TOKEN", "").strip()
+# Отдельный бот для контроля рабочих Telegram-аккаунтов (Telegram Business, необязательно).
+# Задан BIZ_BOT_TOKEN — рабочие аккаунты подключают ЕГО («RADI Control»), иначе — бота сотрудников.
+BIZ_BOT_TOKEN = os.getenv("BIZ_BOT_TOKEN", "").strip()
 # Адрес личного кабинета (мини-приложения) — для кнопок «🏠 Личный кабинет / Kabinetim» в обоих ботах.
 # Берётся из WEBAPP_URL в Railway; если там пусто или старый адрес PythonAnywhere — этот:
 WEBAPP_URL_DEFAULT = "https://staff-bot-production-7a47ab13.up.railway.app"
