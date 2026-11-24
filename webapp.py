@@ -1017,8 +1017,24 @@ PAGE = r"""<!doctype html>
   .kpi-types button { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px;
     font-size: 13.5px; color: inherit; }
   .kpi-types button b { color: #c4b5fd; }
-  .kpi-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .kpi-add input, .kpi-add select { margin: 0; }
+  .kpi-form .f-lbl { margin: 12px 0 6px; font-size: 13px; color: var(--muted); }
+  .kpi-seg { display: flex; flex-wrap: wrap; gap: 8px; }
+  .kpi-seg > * { flex: 1 1 0; min-width: 0; position: relative; background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: 14px; padding: 10px 8px; font-size: 14px; color: inherit; text-align: center; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px; cursor: pointer; }
+  .kpi-seg > * b { color: #c4b5fd; font-size: 15px; }
+  .kpi-seg > .on { background: linear-gradient(150deg, rgba(167,139,250,.35), rgba(124,58,237,.35)); border-color: #a78bfa; }
+  .kpi-seg > .on b { color: #fff; }
+  .kpi-other input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .kpi-sum { display: flex; align-items: center; background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: 14px; padding: 0 14px; }
+  .kpi-sum input { flex: 1; margin: 0; background: none; border: 0; font-size: 22px; font-weight: 800; padding: 12px 0;
+    font-variant-numeric: tabular-nums; }
+  .kpi-sum span { color: var(--muted); font-weight: 600; }
+  .kpi-res { margin: 10px 0; padding: 10px 14px; border-radius: 14px; background: rgba(52,211,153,.08); border: 1px solid rgba(52,211,153,.25);
+    font-size: 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+  .kpi-res b { color: var(--green); font-size: 18px; }
+  .kpi-res span { color: var(--muted); font-size: 12.5px; margin-left: auto; }
   .kpi-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
   .kpi-row .tt { flex: 1 1 60%; min-width: 0; }
   .kpi-row .k { font-weight: 800; color: var(--green); white-space: nowrap; }
@@ -2299,6 +2315,9 @@ function kpiTiles(k, T) {
 }
 const KPI_T_RU = {cur: "сум", paid: "✅ выплачено", wait: "⏳ ожидается", empty: "Продаж в этом месяце пока нет",
                   exp: "ожидаемый доход", paidm: "выплачено за месяц", sales: "продажи за месяц"};
+function kpiShift(iso, days) {
+  const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10);
+}
 function kpiCardAdmin(e) {
   const k = (data.kpi || {})[e.id]; if (!k) return "";
   const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -2306,12 +2325,18 @@ function kpiCardAdmin(e) {
       <span style="display:flex;gap:6px">${k.expected ? `<button class="btn btn-main btn-sm" id="kpi-payall">💸 Оплатить всё</button>` : ""}
       <button class="btn btn-soft btn-sm" id="kpi-settings" title="Виды продаж и проценты">⚙️</button></span></div>
     ${kpiTiles(k, KPI_T_RU)}
-    ${k.types.length ? `<div class="kpi-add">
-      <input type="date" id="kpi-day" value="${today}" max="${today}">
-      <select id="kpi-type">${k.types.map(t => `<option value="${t.id}">${esc(t.name)} · ${pctT(t.pct)}%</option>`).join("")}</select>
-      <input id="kpi-amount" inputmode="numeric" placeholder="Сумма продаж, сум" style="grid-column:1/-1">
-      <button class="btn btn-main" id="kpi-addbtn" style="grid-column:1/-1">＋ Записать продажи</button></div>
-      <div class="hint" style="font-size:12.5px;margin:8px 0 4px" id="kpi-preview"></div>`
+    ${k.types.length ? `<div class="kpi-form">
+      <div class="f-lbl">1. Вид продаж</div>
+      <div class="kpi-seg" id="kpi-type">${k.types.map((t, i) => `<button data-kt="${t.id}" class="${i ? "" : "on"}">${esc(t.name)}<b>${pctT(t.pct)}%</b></button>`).join("")}</div>
+      <div class="f-lbl">2. Дата</div>
+      <div class="kpi-seg kpi-days" id="kpi-days"><button data-d="${today}" class="on">Сегодня</button>
+        <button data-d="${kpiShift(today, -1)}">Вчера</button>
+        <label class="kpi-other"><span id="kpi-other-t">Другая дата</span><input type="date" id="kpi-day-pick" max="${today}"></label></div>
+      <input type="hidden" id="kpi-day" value="${today}">
+      <div class="f-lbl">3. Сумма продаж за день</div>
+      <div class="kpi-sum"><input id="kpi-amount" inputmode="numeric" placeholder="0"><span>сум</span></div>
+      <div class="kpi-res" id="kpi-preview">KPI сотрудника: <b>0 сум</b></div>
+      <button class="btn btn-main" id="kpi-addbtn" style="width:100%">＋ Записать продажи</button></div>`
       : `<button class="btn btn-main" style="width:100%" id="kpi-first">⚙️ Добавить вид продаж и процент KPI</button>`}
     <div style="margin-top:6px">${kpiRowsHtml(k, true, KPI_T_RU)}</div></div>`;
 }
@@ -2348,12 +2373,26 @@ function bindKpiAdmin(e) {
   $("kpi-settings").onclick = () => kpiSettings(e);
   if ($("kpi-first")) $("kpi-first").onclick = () => kpiTypeSheet(e, null);
   if ($("kpi-addbtn")) {
-    const prev = () => { const t = k.types.find(x => x.id === +$("kpi-type").value), a = +$("kpi-amount").value.replace(/\D/g, "");
-      $("kpi-preview").textContent = t && a ? `KPI: ${money0(a, "").trim()} × ${pctT(t.pct)}% = ${money0(a * t.pct / 100, "сум")}` : ""; };
-    $("kpi-amount").oninput = $("kpi-type").onchange = prev;
+    let typeId = k.types[0].id;
+    const prev = () => {
+      const t = k.types.find(x => x.id === typeId), a = +$("kpi-amount").value.replace(/\D/g, "");
+      $("kpi-preview").innerHTML = `KPI сотрудника: <b>+${money0(t && a ? a * t.pct / 100 : 0, "сум")}</b>` +
+        (t && a ? `<span>${money0(a, "").trim()} × ${pctT(t.pct)}%</span>` : "");
+      $("kpi-addbtn").textContent = a ? `＋ Записать: ${money0(a, "сум")}` : "＋ Записать продажи";
+    };
+    document.querySelectorAll("#kpi-type [data-kt]").forEach(b => b.onclick = () => {
+      typeId = +b.dataset.kt; document.querySelectorAll("#kpi-type [data-kt]").forEach(x => x.classList.toggle("on", x === b)); prev(); });
+    const setDay = (d, el) => { $("kpi-day").value = d; document.querySelectorAll("#kpi-days > *").forEach(x => x.classList.toggle("on", x === el)); };
+    document.querySelectorAll("#kpi-days [data-d]").forEach(b => b.onclick = () => { setDay(b.dataset.d, b); $("kpi-other-t").textContent = "Другая дата"; });
+    $("kpi-day-pick").onchange = () => { const v = $("kpi-day-pick").value; if (!v) return;
+      setDay(v, $("kpi-day-pick").parentElement); $("kpi-other-t").textContent = v.split("-").reverse().slice(0, 2).join("."); };
+    $("kpi-amount").oninput = () => {  // 100000 → 100 000
+      const n = $("kpi-amount").value.replace(/\D/g, "").slice(0, 13);
+      $("kpi-amount").value = n ? (+n).toLocaleString("ru-RU") : ""; prev(); };
+    prev();
     $("kpi-addbtn").onclick = () => {
       const amount = $("kpi-amount").value.replace(/\D/g, ""); if (!+amount) return toast("Введите сумму продаж");
-      action("/api/kpi", {action: "add", user_id: e.id, type_id: +$("kpi-type").value, amount, day: $("kpi-day").value});
+      action("/api/kpi", {action: "add", user_id: e.id, type_id: typeId, amount, day: $("kpi-day").value});
     };
   }
   if ($("kpi-payall")) $("kpi-payall").onclick = () => tg.showConfirm(
