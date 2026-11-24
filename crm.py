@@ -29,6 +29,8 @@ def init() -> None:
                   "text TEXT, at TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS crm_tasks(id INTEGER PRIMARY KEY, conn_id TEXT, chat_id INTEGER, kind TEXT, "
                   "task_id INTEGER, assignee INTEGER, title TEXT, due TEXT, created_by INTEGER, at TEXT)")
+        if "dur" not in {r[1] for r in c.execute("PRAGMA table_info(biz_messages)")}:
+            c.execute("ALTER TABLE biz_messages ADD COLUMN dur INTEGER")  # длительность голосового / видео, сек
         if "sent_by" not in {r[1] for r in c.execute("PRAGMA table_info(biz_messages)")}:
             c.execute("ALTER TABLE biz_messages ADD COLUMN sent_by INTEGER")  # кто из CRM отправил
 
@@ -122,10 +124,11 @@ def messages(conn: str, chat: int, before: int = 0, limit: int = 60) -> dict:
         head = c.execute("SELECT chat_name, chat_username, MAX(CASE WHEN outgoing=0 THEN sent_at END) AS last_in "
                          "FROM biz_messages WHERE conn_id=? AND chat_id=?", (conn, chat)).fetchone()
     items = [{"id": r["msg_id"], "out": bool(r["outgoing"]), "from": r["from_name"],
-              "via": core.name(r["sent_by"]) if r["sent_by"] else "", "kind": r["kind"] or "text",
+              "via": core.name(r["sent_by"]) if r["sent_by"] else "", "dur": r["dur"] or 0, "kind": r["kind"] or "text",
               "text": r["text"] or "", "at": r["sent_at"], "edited": bool(r["edited"]), "edits": edits.get(r["msg_id"], []),
               "deleted": r["deleted_at"][:16] if r["deleted_at"] else "",
               "media": (f"/crm/media/{conn}/{chat}/{r['msg_id']}?s={_sig(conn, chat, r['msg_id'])}"
+                        + ("&f=m4a" if r["kind"] in ("voice", "audio") else "")
                         if r["file_id"] and r["kind"] in ("photo", "video", "voice", "audio", "video_note", "animation",
                                                           "document", "sticker") else "")}
              for r in rows]
@@ -133,7 +136,7 @@ def messages(conn: str, chat: int, before: int = 0, limit: int = 60) -> dict:
             "window": _window(head["last_in"] if head else None), "items": items, "more": len(rows) == limit}
 
 
-def media_file(conn: str, chat: int, msg: int, sig: str):
+def media_file(conn: str, chat: int, msg: int, sig: str, fmt: str = ""):
     """Файл сообщения: скачиваем через Bot API (бот, к которому подключён аккаунт) и кэшируем на диске."""
     if not hmac.compare_digest(sig or "", _sig(conn, chat, msg)):
         return None, None
@@ -153,6 +156,14 @@ def media_file(conn: str, chat: int, msg: int, sig: str):
             return None, None
         with urllib.request.urlopen(f"https://api.telegram.org/file/bot{token}/{fp}", timeout=60) as f, open(path, "wb") as out:
             out.write(f.read())
+    if fmt == "m4a" and r["kind"] in ("voice", "audio"):  # для прослушивания в CRM: M4A играет на любом телефоне
+        m4a = path + ".m4a"
+        if not os.path.exists(m4a):
+            with open(path, "rb") as f:
+                data = to_m4a(f.read(), "ogg" if r["kind"] == "voice" else "mp3")
+            with open(m4a, "wb") as f:
+                f.write(data)
+        return m4a, "audio/mp4"
     mime = {"photo": "image/jpeg", "sticker": "image/webp", "video": "video/mp4", "video_note": "video/mp4",
             "animation": "video/mp4", "voice": "audio/ogg", "audio": "audio/mpeg"}.get(r["kind"], "application/octet-stream")
     return path, mime
@@ -444,6 +455,7 @@ def send_voice(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dura
         except Exception as e2:  # noqa: BLE001
             return False, _explain(str(e2))
         _save_out(uid, conn, chat, head, owner, res["message_id"], "audio", (res.get("audio") or {}).get("file_id"))
+        set_dur(conn, chat, res["message_id"], (res.get("audio") or {}).get("duration") or duration)
         return True, "🎤 Клиент запретил голосовые — отправлено аудиофайлом"
     file_id = (res.get("voice") or {}).get("file_id")
     with core.db() as c:
@@ -452,6 +464,7 @@ def send_voice(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dura
                   "ON CONFLICT(conn_id, chat_id, msg_id) DO UPDATE SET sent_by=excluded.sent_by",
                   (conn, chat, res["message_id"], head["chat_name"], head["chat_username"], owner["user_id"],
                    bizwatch._owner_name(owner), file_id, core.now().strftime(core.FMT), uid))
+    set_dur(conn, chat, res["message_id"], (res.get("voice") or {}).get("duration") or duration)
     return True, "🎤 Голосовое отправлено"
 
 
@@ -511,6 +524,7 @@ def send_circle(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dur
         except Exception as e2:  # noqa: BLE001
             return False, _explain(str(e2))
         _save_out(uid, conn, chat, head, owner, res["message_id"], "video", (res.get("video") or {}).get("file_id"))
+        set_dur(conn, chat, res["message_id"], duration)
         return True, "⭕ Клиент запретил кружки — отправлено обычным видео"
     file_id = (res.get("video_note") or {}).get("file_id")
     with core.db() as c:
@@ -519,4 +533,12 @@ def send_circle(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", dur
                   "ON CONFLICT(conn_id, chat_id, msg_id) DO UPDATE SET sent_by=excluded.sent_by",
                   (conn, chat, res["message_id"], head["chat_name"], head["chat_username"], owner["user_id"],
                    bizwatch._owner_name(owner), file_id, core.now().strftime(core.FMT), uid))
+    set_dur(conn, chat, res["message_id"], (res.get("video_note") or {}).get("duration") or duration)
     return True, "⭕ Кружок отправлен"
+
+
+
+def set_dur(conn: str, chat: int, msg: int, dur) -> None:
+    if dur:
+        with core.db() as c:
+            c.execute("UPDATE biz_messages SET dur=? WHERE conn_id=? AND chat_id=? AND msg_id=?", (int(round(float(dur))), conn, chat, msg))

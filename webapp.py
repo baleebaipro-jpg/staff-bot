@@ -688,7 +688,7 @@ def api_crm_templates(uid, data):
 def crm_media(conn, chat, msg):
     """Фото / видео / голосовые из переписки (ссылка подписана сервером — открывается только из CRM)."""
     try:
-        path, mime = crm.media_file(conn, chat, msg, request.args.get("s", ""))
+        path, mime = crm.media_file(conn, chat, msg, request.args.get("s", ""), request.args.get("f", ""))
     except Exception as e:  # noqa: BLE001
         app.logger.warning("CRM медиа %s/%s/%s: %s", conn, chat, msg, e)
         abort(404)
@@ -1459,6 +1459,22 @@ PAGE = r"""<!doctype html>
   .crm-msg.out .who { color: #e9d5ff; }
   .crm-msg img, .crm-msg video { max-width: 100%; border-radius: 12px; display: block; margin-bottom: 4px; }
   .crm-msg audio { width: 230px; max-width: 100%; }
+  .vp { display: flex; align-items: center; gap: 10px; width: 250px; max-width: 100%; padding: 4px 0 2px; }
+  .vp-btn { width: 42px; height: 42px; flex: none; border-radius: 50%; border: 0; font-size: 16px; color: #fff; padding-left: 3px;
+    background: linear-gradient(150deg, #a78bfa, #7c3aed); box-shadow: 0 4px 14px rgba(124,58,237,.45); }
+  .crm-msg.out .vp-btn { background: #fff; color: #6d28d9; }
+  .vp-btn.on { padding-left: 0; }
+  .vp-mid { flex: 1; min-width: 0; }
+  .vp-bar { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; margin: 8px 0 6px; border-radius: 4px; padding: 0;
+    border: 0; background: linear-gradient(90deg, #c4b5fd var(--p, 0%), rgba(255,255,255,.22) var(--p, 0%)); }
+  .vp-bar::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  .vp-bar::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 0; }
+  .crm-msg.out .vp-bar { background: linear-gradient(90deg, #fff var(--p, 0%), rgba(255,255,255,.3) var(--p, 0%)); }
+  .vp-t { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .crm-msg.out .vp-t { color: rgba(237,233,254,.8); }
+  .vp-sp { flex: none; border: 0; border-radius: 10px; padding: 3px 7px; font-size: 12px; font-weight: 700; color: inherit;
+    background: rgba(255,255,255,.12); }
   .crm-msg video.circle { width: 220px; height: 220px; border-radius: 50%; object-fit: cover; }
   .crm-msg .old { font-size: 12.5px; color: var(--muted); border-left: 2px solid #fbbf24; padding-left: 6px; margin-top: 4px; white-space: pre-wrap; }
   .crm-foot { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
@@ -4237,7 +4253,7 @@ const crmTime = at => { if (!at) return ""; const d = at.slice(0, 10), t = new D
 const crmWin = w => w === null || w === undefined ? "" : w >= 1 ? `можно ответить ещё ${Math.floor(w)} ч` : `ещё ${Math.round(w * 60)} мин`;
 function crmOnShow(v) {
   clearInterval(crmTimer);
-  if (v !== "crmchat") crmVoiceStop(false);
+  if (v !== "crmchat") { crmVoiceStop(false); if (vpAudio) vpAudio.pause(); }
   $("crm-foot").classList.toggle("hidden", v !== "crmchat");
   if (v === "crm") { loadCrm(); crmTimer = setInterval(() => loadCrm(true), 7000); }
   if (v === "crmchat") { crmLastSig = ""; $("crm-pin").classList.add("hidden"); loadCrmChat(); crmInfo();
@@ -4276,11 +4292,54 @@ function crmBody(m) {
   if (md) media = m.kind === "photo" || m.kind === "sticker" ? `<img loading="lazy" src="${md}">`
     : m.kind === "video_note" ? `<video class="circle" controls playsinline preload="metadata" src="${md}"></video>`
     : ["video", "animation"].includes(m.kind) ? `<video controls playsinline preload="metadata" src="${md}"></video>`
-    : ["voice", "audio"].includes(m.kind) ? `<audio controls preload="none" src="${md}"></audio>`
+    : ["voice", "audio"].includes(m.kind) ? `<div class="vp" data-src="${md}" data-dur="${m.dur || 0}">
+        <button class="vp-btn" aria-label="play">▶</button>
+        <div class="vp-mid"><input type="range" class="vp-bar" min="0" max="${m.dur || 1}" step="0.1" value="0">
+          <div class="vp-t"><span class="vp-cur">0:00</span><span class="vp-tot">${vpFmt(m.dur || 0)}</span></div></div>
+        <button class="vp-sp">1x</button></div>`
     : `<a href="${md}" target="_blank">📎 Открыть файл</a>`;
   const label = !md && m.kind !== "text" ? `<i>${{contact: "👤 Контакт", location: "📍 Геолокация", other: "Сообщение"}[m.kind] || m.kind}</i> ` : "";
   return media + (label || m.text ? `<div class="crm-tx">${label}${esc(m.text)}</div>` : "");
 }
+/* Плеер голосовых: ▶/⏸, перемотка ползунком, время, скорость 1x / 1.5x / 2x */
+const vpFmt = t => { t = Math.max(0, Math.floor(t || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+let vpAudio = null, vpSrc = "", vpRate = 1;
+function vpEl() { return [...document.querySelectorAll("#crm-feed .vp")].find(v => v.dataset.src === vpSrc); }
+function vpPaint() {
+  document.querySelectorAll("#crm-feed .vp").forEach(v => {
+    const me = vpAudio && v.dataset.src === vpSrc, a = vpAudio;
+    const dur = me && isFinite(a.duration) && a.duration > 0 ? a.duration : +v.dataset.dur || 0;
+    const cur = me ? a.currentTime : 0, bar = v.querySelector(".vp-bar");
+    bar.max = dur || 1; if (!v.dragging) bar.value = cur;
+    bar.style.setProperty("--p", (dur ? Math.min(100, cur / dur * 100) : 0) + "%");
+    v.querySelector(".vp-cur").textContent = vpFmt(cur); v.querySelector(".vp-tot").textContent = vpFmt(dur);
+    const playing = me && !a.paused; v.querySelector(".vp-btn").textContent = playing ? "⏸" : "▶";
+    v.querySelector(".vp-btn").classList.toggle("on", playing); v.querySelector(".vp-sp").textContent = (me ? vpRate : 1) + "x";
+  });
+}
+function vpOpen(src) {
+  if (vpAudio && vpSrc === src) return vpAudio;
+  if (vpAudio) { vpAudio.pause(); vpAudio.src = ""; }
+  vpSrc = src; vpRate = 1; vpAudio = new Audio(src); vpAudio.preload = "auto";
+  ["timeupdate", "loadedmetadata", "play", "pause", "ended"].forEach(ev => vpAudio.addEventListener(ev, vpPaint));
+  vpAudio.addEventListener("ended", () => { vpAudio.currentTime = 0; vpPaint(); });
+  vpAudio.addEventListener("error", () => toast("Не удалось воспроизвести запись"));
+  return vpAudio;
+}
+$("crm-feed").addEventListener("click", e => {
+  const v = e.target.closest(".vp"); if (!v) return;
+  if (e.target.closest(".vp-btn")) { const a = vpOpen(v.dataset.src); a.paused ? a.play().catch(() => toast("Нажмите ещё раз")) : a.pause(); vpPaint(); }
+  if (e.target.closest(".vp-sp")) { const a = vpOpen(v.dataset.src); vpRate = vpRate === 1 ? 1.5 : vpRate === 1.5 ? 2 : 1;
+    a.playbackRate = vpRate; vpPaint(); }
+});
+$("crm-feed").addEventListener("input", e => {
+  if (!e.target.classList.contains("vp-bar")) return;
+  const v = e.target.closest(".vp"), a = vpOpen(v.dataset.src); v.dragging = true;
+  const t = +e.target.value; e.target.style.setProperty("--p", (t / (+e.target.max || 1) * 100) + "%");
+  v.querySelector(".vp-cur").textContent = vpFmt(t);
+  if (a.readyState >= 1) a.currentTime = t; else a.addEventListener("loadedmetadata", () => { a.currentTime = t; }, {once: true});
+});
+$("crm-feed").addEventListener("change", e => { const v = e.target.closest(".vp"); if (v) { v.dragging = false; vpPaint(); } });
 async function loadCrmChat(silent) {
   if (!crmChat) return;
   let r; try { r = await api("/api/crm/messages", crmChat); } catch (e) { if (!silent) toast(e.message); return; }
@@ -4297,6 +4356,7 @@ async function loadCrmChat(silent) {
       ${m.edits.map(e => `<div class="old">✏️ было: ${esc(e.old || "—")}</div>`).join("")}
       <div class="meta">${m.edited ? "✏️ изменено · " : ""}${m.at.slice(11, 16)}${m.deleted ? ` · <b style="color:var(--red)">🗑 удалено ${m.deleted.slice(8, 10)}.${m.deleted.slice(5, 7)} ${m.deleted.slice(11, 16)}</b>` : ""}</div></div>`;
   }).join("") || `<div class="empty">Сообщений нет</div>`;
+  vpPaint();
   const open = r.window !== null;
   $("crm-comp").classList.toggle("off", !open);
   $("crm-note").classList.toggle("hidden", open);
