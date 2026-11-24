@@ -86,7 +86,7 @@ PENALTY_CHAT_TITLE = "Shtraf/Bonus"
 PENALTY_CHATS = {
     6658459389: (-1002579578901, None),  # Omina Sadikova
     675957862: (-1003280534380, 4),      # Moxira Isxakova — тема «Shtraf / Retro»
-    8566968710: (-1003886108577, None),  # Moxinur Yoldasheva
+    8566968710: (-1003886108577, 157),   # Moxinur Yoldasheva — тема 157
     745848319: (-1003780512973, None),   # Nilufar Tursunbaeva
     6834141071: (-1003729921591, None),  # Aziza Tursunbaeva
 }
