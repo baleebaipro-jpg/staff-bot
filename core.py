@@ -385,6 +385,8 @@ def init_db():
     import bizwatch  # контроль рабочих Telegram-аккаунтов (Telegram Business)
     bizwatch.init()
     split_late_penalties()
+    import kpi  # касса сотрудника и KPI
+    kpi.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")
