@@ -419,6 +419,14 @@ def api_client_channel(uid, data):
     return jsonify(ok=True, status="link", link=link, msg=i18n.t(lang, "channel_link"), btn=i18n.t(lang, "channel_btn"))
 
 
+@app.post("/api/admin_checkout")
+@need_user(admin=True)
+def api_admin_checkout(uid, data):
+    """Руководитель закрывает смену сотрудника, который забыл нажать «Ушёл»."""
+    ok, msg = core.admin_checkout(int(data.get("user_id") or 0), str(data.get("time") or ""))
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/checkout")
 @need_user(staff=True)
 def api_checkout(uid, data):
@@ -2353,7 +2361,7 @@ const SX = {
        my_week: "🗓 Мой график на неделю", ranks: "Звания", my_tasks: "📋 Мои задачи", posting_title: "Постинг", posting_sub: "Посты в бот, группы и каналы", shop_title: "Продажи", shop_sub: "Новая продажа и мои продажи", done_title: "Выполненные задачи", done_sub: "Так держать! 💪",
        done_month: "в этом месяце", done_total: "за всё время", mt_ph: "Добавить себе задачу…", mt_today: "Сегодня", mt_tomorrow: "Завтра", mt_pick: "📅 Дата…", mt_mine: "моя", last_visits: "Последние посещения",
        all: "Все →", all_visits: "Все посещения", now: "сейчас", late: "опоздание", early: "ранний уход",
-       auto: "уход закрыт автоматически", here_since: "На месте с {t}", not_here: "Не на месте",
+       auto: "уход закрыт автоматически", by_boss: "уход отметил руководитель", here_since: "На месте с {t}", not_here: "Не на месте",
        close_tasks: "⛔ Сначала закройте задачи ({n})", free_here: "Свободный график · отметьте уход, когда закончите",
        free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
        rec_say: "Скажите вслух число", rec_cam: "Включаю камеру…", rec_btn: "● Записать", rec_again: "● Записать ещё раз", rec_done: "■ Готово", rec_open: "📹 Открыть камеру", rec_cancel: "Отмена", rec_send: "Отправляю…", rec_go: "Нажмите «Записать» и назовите число. {a}–{b} сек.", rec_sys: "Запишите видео {a}–{b} сек и назовите число. У вас {m} мин.", rec_rec: "Запись… {s}", rec_can: "Можно нажать «Готово»", rec_short: "Не короче {s} сек",
@@ -2372,7 +2380,7 @@ const SX = {
        my_week: "🗓 Haftalik grafigim", ranks: "Unvonlar", my_tasks: "📋 Vazifalarim", posting_title: "Posting", posting_sub: "Bot, guruh va kanallarga postlar", shop_title: "Savdo", shop_sub: "Yangi savdo va savdolarim", done_title: "Bajarilgan vazifalar", done_sub: "Shunday davom eting! 💪",
        done_month: "shu oyda", done_total: "jami", mt_ph: "O'zingizga vazifa qo'shing…", mt_today: "Bugun", mt_tomorrow: "Ertaga", mt_pick: "📅 Sana…", mt_mine: "o'zimniki", last_visits: "Oxirgi tashriflar",
        all: "Hammasi →", all_visits: "Barcha tashriflar", now: "hozir", late: "kechikish", early: "erta ketish",
-       auto: "ketish avtomatik yopildi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
+       auto: "ketish avtomatik yopildi", by_boss: "ketishni rahbar belgiladi", here_since: "{t} dan beri ishda", not_here: "Ishda emas",
        close_tasks: "⛔ Avval vazifalarni yoping ({n})", free_here: "Erkin grafik · tugatganingizda ketishni belgilang",
        free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
        rec_say: "Raqamni ovoz chiqarib ayting", rec_cam: "Kamera yoqilmoqda…", rec_btn: "● Yozish", rec_again: "● Qayta yozish", rec_done: "■ Tayyor", rec_open: "📹 Kamerani ochish", rec_cancel: "Bekor qilish", rec_send: "Yuborilmoqda…", rec_go: "«Yozish»ni bosing va raqamni ayting. {a}–{b} soniya.", rec_sys: "{a}–{b} soniyalik video yozing va raqamni ayting. {m} daqiqa vaqtingiz bor.", rec_rec: "Yozilmoqda… {s}", rec_can: "«Tayyor»ni bosish mumkin", rec_short: "Kamida {s} soniya",
@@ -2397,10 +2405,10 @@ function visitRow(h, full) {
     <div class="t">
       <span>${icCal}${h.date.slice(0, 5)}<span class="yr">${h.date.slice(5)}</span>${full ? ` <span class="hint">${h.wd}</span>` : ""}</span>
       <span>${icClock}${h.in} – ${h.out || sx("now")}</span>
-      ${full && (h.late || h.early || h.auto) ? `<div class="tag" style="width:100%">
+      ${full && (h.late || h.early || h.auto || h.by_boss) ? `<div class="tag" style="width:100%">
         ${h.late ? `<span style="color:var(--orange)">${sx("late")} ${h.late}</span> ` : ""}
         ${h.early ? `<span style="color:var(--orange)">${sx("early")} ${h.early}</span> ` : ""}
-        ${h.auto ? `<span class="hint">${sx("auto")}</span>` : ""}</div>` : ""}
+        ${h.auto ? `<span class="hint">${sx("auto")}</span>` : ""}${h.by_boss ? `<span class="hint">${sx("by_boss")}</span>` : ""}</div>` : ""}
     </div>
     <div class="dur">${h.worked}</div></div>`;
 }
@@ -2679,6 +2687,7 @@ function renderEmp() {
       <div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:20px">${esc(e.name)}</b><span style="font-size:20px">${e.icon}</span></div>
         <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
         <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div></div></div>
+      ${e.on_site_since ? `<button class="btn btn-soft" style="width:100%;margin-top:12px" id="ec-out">🚪 Закончить смену за сотрудника</button>` : ""}
       <div class="bar mini-bar" style="margin-top:12px"><div style="width:${pct}%"></div></div>
       <div class="hint" style="font-size:13px;margin-top:6px"><span class="rank-sm">${lvl.icon()}</span> ${esc(lvl.name)} · ${num(e.total_hours)} / ${num(data.goal)} ч</div></div>
     <div class="menu-grid" style="margin-bottom:14px">
@@ -2713,6 +2722,22 @@ function renderEmp() {
           ${x.paid ? `<span class="pen-tag">оплачен ${x.paid_at}</span>` : `<span class="pen-tag" style="color:var(--red)">не оплачен</span>`}</div>`).join("")}</details>` : ""}</div>`;
   $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
   bindKpiAdmin(e);
+  if ($("ec-out")) $("ec-out").onclick = () => {
+    const now = new Date(), p2 = n => String(n).padStart(2, "0"), cur = `${p2(now.getHours())}:${p2(now.getMinutes())}`;
+    invSheet(`<h3>🚪 Закончить смену — ${esc(e.name)}</h3>
+      <div class="hint" style="font-size:13px;margin:-6px 0 10px">На месте с ${e.on_site_since.slice(11, 16)}. Забыл(а) нажать «Ушёл» — отметьте уход сами.
+        Задачи не проверяются, штраф за ранний уход не ставится. Сотруднику придёт уведомление.</div>
+      <div class="kpi-seg" id="eo-q"><button data-t="" class="on">Сейчас</button>${["18:00", "19:00", "20:00"].filter(t => t > e.on_site_since.slice(11, 16) && t <= cur)
+        .map(t => `<button data-t="${t}">${t}</button>`).join("")}</div>
+      <div class="f-lbl">или своё время ухода</div><input type="time" id="eo-time" max="${cur}">
+      ${sheetBtns("Закончить смену")}`);
+    let tm = "";
+    document.querySelectorAll("#eo-q [data-t]").forEach(b => b.onclick = () => { tm = b.dataset.t; $("eo-time").value = "";
+      document.querySelectorAll("#eo-q [data-t]").forEach(x => x.classList.toggle("on", x === b)); });
+    $("eo-time").onchange = () => { tm = $("eo-time").value; document.querySelectorAll("#eo-q [data-t]").forEach(x => x.classList.remove("on")); };
+    $("is-cancel").onclick = invSheetClose;
+    $("is-ok").onclick = () => { const time = tm; invSheetClose(); action("/api/admin_checkout", {user_id: e.id, time}); };
+  };
   $("ec-earn").onclick = () => earnSheet(e.id);
   $("ec-task").onclick = () => {
     invSheet(`<h3>📌 Задача — ${esc(e.name)}</h3><input id="ek-t" maxlength="500" placeholder="Что нужно сделать?">
