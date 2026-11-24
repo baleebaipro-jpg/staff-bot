@@ -2303,17 +2303,16 @@ function kpiCardAdmin(e) {
   const k = (data.kpi || {})[e.id]; if (!k) return "";
   const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   return `<div class="card" id="kpi-admin"><div class="head"><h3>🧾 Касса · KPI</h3>
-      ${k.expected ? `<button class="btn btn-main btn-sm" id="kpi-payall">💸 Оплатить всё</button>` : ""}</div>
+      <span style="display:flex;gap:6px">${k.expected ? `<button class="btn btn-main btn-sm" id="kpi-payall">💸 Оплатить всё</button>` : ""}
+      <button class="btn btn-soft btn-sm" id="kpi-settings" title="Виды продаж и проценты">⚙️</button></span></div>
     ${kpiTiles(k, KPI_T_RU)}
-    <div class="kpi-types">${k.types.map(t => `<button data-ktype="${t.id}">${esc(t.name)} <b>${pctT(t.pct)}%</b> ✏️</button>`).join("")}
-      <button id="kpi-newtype">＋ тип продаж</button></div>
     ${k.types.length ? `<div class="kpi-add">
       <input type="date" id="kpi-day" value="${today}" max="${today}">
       <select id="kpi-type">${k.types.map(t => `<option value="${t.id}">${esc(t.name)} · ${pctT(t.pct)}%</option>`).join("")}</select>
       <input id="kpi-amount" inputmode="numeric" placeholder="Сумма продаж, сум" style="grid-column:1/-1">
       <button class="btn btn-main" id="kpi-addbtn" style="grid-column:1/-1">＋ Записать продажи</button></div>
       <div class="hint" style="font-size:12.5px;margin:8px 0 4px" id="kpi-preview"></div>`
-      : `<div class="hint" style="font-size:13px">Сначала добавьте тип продаж и процент KPI (например «Optom 5%»).</div>`}
+      : `<button class="btn btn-main" style="width:100%" id="kpi-first">⚙️ Добавить вид продаж и процент KPI</button>`}
     <div style="margin-top:6px">${kpiRowsHtml(k, true, KPI_T_RU)}</div></div>`;
 }
 function kpiTypeSheet(e, t) {
@@ -2330,10 +2329,24 @@ function kpiTypeSheet(e, t) {
   if (t) $("kt-del").onclick = () => tg.showConfirm("Убрать тип продаж? Записанные продажи останутся.", ok => {
     if (ok) { invSheetClose(); action("/api/kpi", {action: "delete_type", id: t.id}); } });
 }
-function bindKpiAdmin(e) {
-  const k = (data.kpi || {})[e.id]; if (!k || !$("kpi-admin")) return;
+function kpiSettings(e) {
+  const k = (data.kpi || {})[e.id] || {types: []};
+  invSheet(`<h3>⚙️ Виды продаж — ${esc(e.name)}</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Вид продаж и процент KPI. Настраивается один раз; новый процент
+      действует на новые продажи.</div>
+    ${k.types.length ? k.types.map(t => `<div class="kpi-row" style="cursor:pointer" data-ktype="${t.id}">
+      <div class="tt"><b>${esc(t.name)}</b></div><b style="color:#c4b5fd">${pctT(t.pct)}%</b><span>✏️</span></div>`).join("")
+      : `<div class="empty">Видов продаж пока нет</div>`}
+    <button class="btn btn-main" style="width:100%;margin-top:12px" id="kpi-newtype">＋ Вид продаж</button>
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="kpi-close">Готово</button>`);
+  $("kpi-close").onclick = invSheetClose;
   $("kpi-newtype").onclick = () => kpiTypeSheet(e, null);
   document.querySelectorAll("[data-ktype]").forEach(b => b.onclick = () => kpiTypeSheet(e, k.types.find(t => t.id === +b.dataset.ktype)));
+}
+function bindKpiAdmin(e) {
+  const k = (data.kpi || {})[e.id]; if (!k || !$("kpi-admin")) return;
+  $("kpi-settings").onclick = () => kpiSettings(e);
+  if ($("kpi-first")) $("kpi-first").onclick = () => kpiTypeSheet(e, null);
   if ($("kpi-addbtn")) {
     const prev = () => { const t = k.types.find(x => x.id === +$("kpi-type").value), a = +$("kpi-amount").value.replace(/\D/g, "");
       $("kpi-preview").textContent = t && a ? `KPI: ${money0(a, "").trim()} × ${pctT(t.pct)}% = ${money0(a * t.pct / 100, "сум")}` : ""; };
