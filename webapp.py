@@ -18,6 +18,7 @@ import erp
 import shop
 import appauth
 import invest
+import kpi
 import posts
 import projects
 import staff_text as st
@@ -240,6 +241,7 @@ def api_me(uid, data):
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
         res["earnings"] = core.earnings_of(uid, core.staff_lang(uid))
+        res["kpi_me"] = kpi.summary(uid)
     res["invest_enabled"] = invest.ENABLED
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest"] = invest.mine(uid)  # руководители тоже могут инвестировать (по заявке)
@@ -277,6 +279,7 @@ def api_me(uid, data):
             res["boss_day"] = core.boss_day(uid)  # «Пришёл / Ушёл» руководителя
             res["boss_day"]["video"] = core.PROOF_REQUIRED
         res["earnings_team"] = core.earnings_team()
+        res["kpi"] = {str(k): v for k, v in kpi.team_summary().items()}
         if invest.ENABLED:
             res["invest_admin"] = invest.overview()
         res["news"] = core.news_list(10)
@@ -580,6 +583,26 @@ def api_add_task(uid, data):
     for t in targets:
         core.add_task(t, title)
     return jsonify(ok=True, msg="Задача поставлена: " + ", ".join(core.name(t) for t in targets))
+
+
+@app.post("/api/kpi")
+@need_user(admin=True)
+def api_kpi(uid, data):
+    """Касса и KPI сотрудника: тип продаж (save_type/delete_type), продажа (add/delete), «Оплачено» (pay)."""
+    a, emp = data.get("action"), int(data.get("user_id") or 0)
+    if a == "save_type":
+        ok, msg = kpi.save_type(emp, str(data.get("name") or ""), data.get("pct"), int(data.get("id") or 0))
+    elif a == "delete_type":
+        ok, msg = kpi.delete_type(int(data.get("id") or 0))
+    elif a == "add":
+        ok, msg = kpi.add_sale(emp, int(data.get("type_id") or 0), data.get("amount"), str(data.get("day") or ""), uid)
+    elif a == "delete":
+        ok, msg = kpi.delete_sale(int(data.get("id") or 0))
+    elif a == "pay":
+        ok, msg = kpi.pay(emp, int(data.get("id") or 0))
+    else:
+        ok, msg = False, "Неизвестное действие."
+    return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/earning")
@@ -990,6 +1013,16 @@ PAGE = r"""<!doctype html>
   .pen { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
   .pen .tt { flex: 1; word-break: break-word; }
   .pen.paid .tt { opacity: .55; }
+  .kpi-types { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+  .kpi-types button { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px;
+    font-size: 13.5px; color: inherit; }
+  .kpi-types button b { color: #c4b5fd; }
+  .kpi-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .kpi-add input, .kpi-add select { margin: 0; }
+  .kpi-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .kpi-row .tt { flex: 1 1 60%; min-width: 0; }
+  .kpi-row .k { font-weight: 800; color: var(--green); white-space: nowrap; }
+  .kpi-row.paid .tt, .kpi-row.paid .k { opacity: .55; }
   .pen-act { flex-wrap: wrap; } .pen-act .tt { flex: 1 1 100%; }
   .pen-btns { display: flex; gap: 8px; width: 100%; } .pen-btns .btn { flex: 1; }
   .pen-tag { font-size: 12px; color: var(--green); white-space: nowrap; }
@@ -1502,6 +1535,7 @@ PAGE = r"""<!doctype html>
       <div class="hint" style="font-size:13px" data-sx="my_week"></div>
       <div class="week" id="my-week"></div>
     </div>
+    <div class="card hidden" id="kpi-card"></div>
     <div class="card" id="pen-card"></div>
 
     <div class="card">
@@ -2053,6 +2087,7 @@ const SX = {
        free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
        rec_say: "Скажите вслух число", rec_cam: "Включаю камеру…", rec_btn: "● Записать", rec_again: "● Записать ещё раз", rec_done: "■ Готово", rec_open: "📹 Открыть камеру", rec_cancel: "Отмена", rec_send: "Отправляю…", rec_go: "Нажмите «Записать» и назовите число. {a}–{b} сек.", rec_sys: "Запишите видео {a}–{b} сек и назовите число. У вас {m} мин.", rec_rec: "Запись… {s}", rec_can: "Можно нажать «Готово»", rec_short: "Не короче {s} сек",
        shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", late_now: "⚠️ Вы опаздываете — отметьте приход", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
+       kpi_title: "Касса · KPI", kpi_exp: "ожидаемый доход", kpi_paidm: "выплачено за месяц", kpi_sales: "продажи за месяц", kpi_paid: "✅ выплачено", kpi_wait: "⏳ ожидается", kpi_empty: "Продаж в этом месяце пока нет",
        fines: "🔴 Штрафы", fines_active: "активные", fine_paid: "✅ оплачен {d}", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
        no_fines: "Штрафов нет — так держать! 👍", due: "📅 на {d}", review: "⏳ на проверке", done: "Готово",
        no_tasks: "Задач нет 🎉", no_visits: "Посещений пока нет", to_rank: "до звания «{r}»",
@@ -2071,6 +2106,7 @@ const SX = {
        free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
        rec_say: "Raqamni ovoz chiqarib ayting", rec_cam: "Kamera yoqilmoqda…", rec_btn: "● Yozish", rec_again: "● Qayta yozish", rec_done: "■ Tayyor", rec_open: "📹 Kamerani ochish", rec_cancel: "Bekor qilish", rec_send: "Yuborilmoqda…", rec_go: "«Yozish»ni bosing va raqamni ayting. {a}–{b} soniya.", rec_sys: "{a}–{b} soniyalik video yozing va raqamni ayting. {m} daqiqa vaqtingiz bor.", rec_rec: "Yozilmoqda… {s}", rec_can: "«Tayyor»ni bosish mumkin", rec_short: "Kamida {s} soniya",
        shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", late_now: "⚠️ Kechikyapsiz — kelganingizni belgilang", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
+       kpi_title: "Kassa · KPI", kpi_exp: "kutilayotgan daromad", kpi_paidm: "shu oy to'langan", kpi_sales: "shu oy savdo", kpi_paid: "✅ to'langan", kpi_wait: "⏳ kutilmoqda", kpi_empty: "Bu oyda hali savdo yo'q",
        fines: "🔴 Jarimalar", fines_active: "faol", fine_paid: "✅ to'langan {d}", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
        no_fines: "Jarima yo'q — shunday davom eting! 👍", due: "📅 {d} ga", review: "⏳ tekshiruvda", done: "Bajarildi",
        no_tasks: "Vazifa yo'q 🎉", no_visits: "Hozircha tashriflar yo'q", to_rank: "«{r}» unvonigacha",
@@ -2244,6 +2280,87 @@ function renderTeam() {
   if (view === "emp") renderEmp();
 }
 /* Карточка сотрудника: всё о нём и все действия */
+/* Касса и KPI сотрудника (руководитель): типы продаж с процентом, продажи за день, «Оплачено» → в Foyda */
+const pctT = p => String(p).replace(".", ",");
+function kpiRowsHtml(k, admin, T) {
+  return k.items.length ? k.items.map(x => `<div class="kpi-row ${x.paid ? "paid" : ""}">
+    <div class="tt">${x.day} · ${esc(x.type)}<div class="hint" style="font-size:12.5px">${money0(x.amount, T.cur)} × ${pctT(x.pct)}%</div></div>
+    <span class="k">+${money0(x.kpi, T.cur)}</span>
+    ${x.paid ? `<span class="pen-tag">${T.paid} ${x.paid_at}</span>` : admin ? `<span style="display:flex;gap:6px;width:100%">
+      <button class="btn btn-main btn-sm" style="flex:1" data-kpay="${x.id}">💸 Оплачено</button>
+      <button class="btn btn-soft btn-sm" data-kdel="${x.id}">✕</button></span>` : `<span class="hint" style="font-size:12.5px">${T.wait}</span>`}
+    </div>`).join("") : `<div class="empty">${T.empty}</div>`;
+}
+function kpiTiles(k, T) {
+  return `<div class="pen-stats three">
+    <div><b style="color:#fbbf24;font-size:18px">${money0(k.expected, "")}</b><span>${T.exp}</span></div>
+    <div><b style="color:var(--green);font-size:18px">${money0(k.paid_month, "")}</b><span>${T.paidm}</span></div>
+    <div><b style="font-size:18px">${money0(k.sales_month, "")}</b><span>${T.sales}</span></div></div>`;
+}
+const KPI_T_RU = {cur: "сум", paid: "✅ выплачено", wait: "⏳ ожидается", empty: "Продаж в этом месяце пока нет",
+                  exp: "ожидаемый доход", paidm: "выплачено за месяц", sales: "продажи за месяц"};
+function kpiCardAdmin(e) {
+  const k = (data.kpi || {})[e.id]; if (!k) return "";
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  return `<div class="card" id="kpi-admin"><div class="head"><h3>🧾 Касса · KPI</h3>
+      ${k.expected ? `<button class="btn btn-main btn-sm" id="kpi-payall">💸 Оплатить всё</button>` : ""}</div>
+    ${kpiTiles(k, KPI_T_RU)}
+    <div class="kpi-types">${k.types.map(t => `<button data-ktype="${t.id}">${esc(t.name)} <b>${pctT(t.pct)}%</b> ✏️</button>`).join("")}
+      <button id="kpi-newtype">＋ тип продаж</button></div>
+    ${k.types.length ? `<div class="kpi-add">
+      <input type="date" id="kpi-day" value="${today}" max="${today}">
+      <select id="kpi-type">${k.types.map(t => `<option value="${t.id}">${esc(t.name)} · ${pctT(t.pct)}%</option>`).join("")}</select>
+      <input id="kpi-amount" inputmode="numeric" placeholder="Сумма продаж, сум" style="grid-column:1/-1">
+      <button class="btn btn-main" id="kpi-addbtn" style="grid-column:1/-1">＋ Записать продажи</button></div>
+      <div class="hint" style="font-size:12.5px;margin:8px 0 4px" id="kpi-preview"></div>`
+      : `<div class="hint" style="font-size:13px">Сначала добавьте тип продаж и процент KPI (например «Optom 5%»).</div>`}
+    <div style="margin-top:6px">${kpiRowsHtml(k, true, KPI_T_RU)}</div></div>`;
+}
+function kpiTypeSheet(e, t) {
+  invSheet(`<h3>${t ? "✏️ Тип продаж" : "＋ Тип продаж"} — ${esc(e.name)}</h3>
+    <input id="kt-name" maxlength="40" placeholder="Название, например Optom / Chakana" value="${t ? esc(t.name) : ""}">
+    <input id="kt-pct" inputmode="decimal" maxlength="6" placeholder="Процент KPI, например 5" value="${t ? pctT(t.pct) : ""}">
+    <div class="quick" style="margin:-4px 0 10px">${[3, 5, 8, 10, 15, 18].map(p => `<button data-kp="${p}">${p}%</button>`).join("")}</div>
+    ${sheetBtns(t ? "Сохранить" : "Добавить")}
+    ${t ? `<button class="btn btn-soft" style="width:100%;margin-top:8px" id="kt-del">Убрать этот тип</button>` : ""}`);
+  document.querySelectorAll("[data-kp]").forEach(b => b.onclick = () => { $("kt-pct").value = b.dataset.kp; });
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = () => { const body = {action: "save_type", user_id: e.id, name: $("kt-name").value, pct: $("kt-pct").value};
+    if (t) body.id = t.id; invSheetClose(); action("/api/kpi", body); };
+  if (t) $("kt-del").onclick = () => tg.showConfirm("Убрать тип продаж? Записанные продажи останутся.", ok => {
+    if (ok) { invSheetClose(); action("/api/kpi", {action: "delete_type", id: t.id}); } });
+}
+function bindKpiAdmin(e) {
+  const k = (data.kpi || {})[e.id]; if (!k || !$("kpi-admin")) return;
+  $("kpi-newtype").onclick = () => kpiTypeSheet(e, null);
+  document.querySelectorAll("[data-ktype]").forEach(b => b.onclick = () => kpiTypeSheet(e, k.types.find(t => t.id === +b.dataset.ktype)));
+  if ($("kpi-addbtn")) {
+    const prev = () => { const t = k.types.find(x => x.id === +$("kpi-type").value), a = +$("kpi-amount").value.replace(/\D/g, "");
+      $("kpi-preview").textContent = t && a ? `KPI: ${money0(a, "").trim()} × ${pctT(t.pct)}% = ${money0(a * t.pct / 100, "сум")}` : ""; };
+    $("kpi-amount").oninput = $("kpi-type").onchange = prev;
+    $("kpi-addbtn").onclick = () => {
+      const amount = $("kpi-amount").value.replace(/\D/g, ""); if (!+amount) return toast("Введите сумму продаж");
+      action("/api/kpi", {action: "add", user_id: e.id, type_id: +$("kpi-type").value, amount, day: $("kpi-day").value});
+    };
+  }
+  if ($("kpi-payall")) $("kpi-payall").onclick = () => tg.showConfirm(
+    `Выплатить весь ожидаемый KPI: ${money0(k.expected, "сум")}? Сумма перейдёт в «Foyda».`,
+    ok => ok && action("/api/kpi", {action: "pay", user_id: e.id}));
+  document.querySelectorAll("#kpi-admin [data-kpay]").forEach(b => b.onclick = () => tg.showConfirm("Отметить KPI как оплаченный?",
+    ok => ok && action("/api/kpi", {action: "pay", user_id: e.id, id: +b.dataset.kpay})));
+  document.querySelectorAll("#kpi-admin [data-kdel]").forEach(b => b.onclick = () => tg.showConfirm("Удалить эту продажу?",
+    ok => ok && action("/api/kpi", {action: "delete", id: +b.dataset.kdel})));
+}
+function renderKpiMe() {
+  const k = data.kpi_me, box = $("kpi-card");
+  const show = !!(k && (k.types.length || k.items.length));
+  box.classList.toggle("hidden", !show); if (!show) return;
+  const T = {cur: sx("cur"), paid: sx("kpi_paid"), wait: sx("kpi_wait"), empty: sx("kpi_empty"), exp: sx("kpi_exp"),
+             paidm: sx("kpi_paidm"), sales: sx("kpi_sales")};
+  box.innerHTML = `<div class="head"><h3>📈 ${sx("kpi_title")}</h3></div>${kpiTiles(k, T)}
+    <div class="kpi-types" style="margin-top:0">${k.types.map(t => `<button style="pointer-events:none">${esc(t.name)} <b>${pctT(t.pct)}%</b></button>`).join("")}</div>
+    ${kpiRowsHtml(k, false, T)}`;
+}
 function renderEmp() {
   const e = data.team.find(x => x.id === empId);
   if (!e) { $("emp-body").innerHTML = `<div class="card empty">Сотрудник не найден</div>`; return; }
@@ -2262,6 +2379,7 @@ function renderEmp() {
       <button class="card" id="ec-fine"><span>🔴</span>Штраф</button>
       <button class="card" id="ec-earn"><span>💵</span>Foyda${earn ? `<div class="hint" style="font-size:12px;font-weight:600">${money0(earn.total, "сум")}</div>` : ""}</button></div>
     <div class="card"><div class="head"><h3>🗓 График на неделю</h3><button class="link" id="ec-week2">Изменить</button></div>${weekChips(e.week, data.today_wd)}</div>
+    ${kpiCardAdmin(e)}
     <div class="card"><div class="head"><h3>📋 Задачи</h3><span class="hint" style="font-size:13px">${e.tasks.length}</span></div>
       ${e.tasks.length ? e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : t.self ? "✍️" : "📌"} ${esc(t.title)}${t.self ? ` <span class="hint" style="font-size:11.5px">(сам себе)</span>` : ""}${t.due
           ? `<div style="font-size:12px" class="hint">📅 на ${t.due}</div>`
@@ -2286,6 +2404,7 @@ function renderEmp() {
         ${e.penalties_history.map(x => `<div class="pen ${x.paid ? "paid" : ""}"><div class="tt">${x.paid ? "✅" : "🔴"} ${x.date} · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
           ${x.paid ? `<span class="pen-tag">оплачен ${x.paid_at}</span>` : `<span class="pen-tag" style="color:var(--red)">не оплачен</span>`}</div>`).join("")}</details>` : ""}</div>`;
   $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
+  bindKpiAdmin(e);
   $("ec-earn").onclick = () => earnSheet(e.id);
   $("ec-task").onclick = () => {
     invSheet(`<h3>📌 Задача — ${esc(e.name)}</h3><input id="ek-t" maxlength="500" placeholder="Что нужно сделать?">
@@ -2970,7 +3089,7 @@ async function load(fresh = false) {
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); hideSplash(true); return; }
     applyBranding(); hideSplash();
-    if (data.is_employee) { renderMe(); renderEarn(); }
+    if (data.is_employee) { renderMe(); renderEarn(); renderKpiMe(); }
     $("go-shop-me").classList.toggle("hidden", !(data.shop_access && data.is_employee));
     $("go-shop").classList.toggle("hidden", !data.is_admin);
     SUBPAGES.shop = data.is_admin && !data.is_employee ? "team" : (view === "shop" && SUBPAGES.shop) || (data.is_employee ? "me" : "team");
