@@ -470,8 +470,8 @@ def check_in(uid: int, t: datetime = None, dry_run: bool = False, notify_boss: b
             if diff > config.GRACE_MINUTES:
                 late = diff
         c.execute("INSERT INTO sessions(user_id, check_in, late_min) VALUES(?, ?, ?)", (uid, t.strftime(FMT), late))
-        if late and not emp.get("boss") and LATE_FINE_PER_HOUR:
-            _late_fine(c, uid, late, t, shift_start(emp, t))
+        if workday(emp, t) and not emp.get("boss"):  # штраф по часам от начала смены (до конца окна — без штрафа)
+            _late_fine(c, uid, int((t - at(t, shift_start(emp, t))).total_seconds() // 60), t, shift_start(emp, t), True)
         if not notify_boss or emp.get("boss"):
             pass
         elif late:
@@ -682,30 +682,45 @@ def _money(n: int) -> str:
     return f"{n:,}".replace(",", " ") + " сум"
 
 
-def late_fine_amount(late_min: int) -> str:
-    """50 000 сум за каждый начатый час опоздания (1–60 мин — 1 час, 61–120 — 2 часа…)."""
+def late_fine_hours(diff_min: int) -> int:
+    """Сколько «часов» штрафа: diff — минут от начала смены. До конца окна (9:15) — 0,
+    с 9:16 — 1, с 10:00 — 2, с 11:00 — 3 и т.д."""
+    if diff_min <= WINDOW:
+        return 0
+    return 1 + int(diff_min) // 60
+
+
+def late_fine_amount(hours: int) -> str:
     if not LATE_FINE_PER_HOUR:
         return PENALTY_AMOUNT
-    return _money(max(1, -(-int(late_min) // 60)) * LATE_FINE_PER_HOUR)
+    return _money(hours * LATE_FINE_PER_HOUR)
 
 
-def _late_fine(c, uid: int, late: int, t, start: str) -> None:
-    """Пришёл с опозданием: штраф по часам. Если штраф за неотметку уже выписан — пересчитать сумму."""
-    amount = late_fine_amount(late)
+def _late_fine(c, uid: int, diff: int, t, start: str, arrived: bool) -> None:
+    """Штраф за опоздание по часам. Пока не пришёл — растёт каждый час; пришёл — фиксируется по времени прихода."""
+    hours = late_fine_hours(diff)
+    if not hours:
+        return
+    amount = late_fine_amount(hours)
     today = t.strftime("%Y-%m-%d")
-    reason = st.s("ru", "late_hours_reason", m=fmt_min(late), t=f"{t:%H:%M}", start=start)
     L = staff_lang(uid)
-    reason_emp = st.s(L, "late_hours_reason", m=fmt_min(late, L), t=f"{t:%H:%M}", start=start)
-    r = c.execute("SELECT id, amount, paid_at FROM penalties WHERE user_id=? AND day=? AND reason='late'",
+    if arrived:
+        reason = st.s("ru", "late_hours_reason", m=fmt_min(diff), t=f"{t:%H:%M}", start=start)
+        reason_emp = st.s(L, "late_hours_reason", m=fmt_min(diff, L), t=f"{t:%H:%M}", start=start)
+    else:
+        reason = st.s("ru", "late_reason", t=f"{t:%H:%M}", start=start)
+        reason_emp = st.s(L, "late_reason", t=f"{t:%H:%M}", start=start)
+    r = c.execute("SELECT id, amount, note, paid_at FROM penalties WHERE user_id=? AND day=? AND reason='late'",
                   (uid, today)).fetchone()
     if r:
         if r["paid_at"] or (r["amount"] or "") == amount:
+            if arrived and not r["paid_at"]:  # сумма та же — только причина «пришёл в …»
+                c.execute("UPDATE penalties SET note=? WHERE id=?", (reason, r["id"]))
             return
         c.execute("UPDATE penalties SET amount=?, note=? WHERE id=?", (amount, reason, r["id"]))
-        return _announce(c, uid, "penalty_updated", reason, amount, reason_emp=reason_emp)
-    else:
-        c.execute("INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
-                  (uid, today, amount, reason))
+        return _announce(c, uid, "penalty_updated" if arrived else "penalty_more", reason, amount, reason_emp=reason_emp)
+    c.execute("INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
+              (uid, today, amount, reason))
     _announce(c, uid, "penalty", reason, amount, reason_emp=reason_emp)
 
 
@@ -892,16 +907,10 @@ def check_penalties():
                 continue
             if c.execute("SELECT 1 FROM proof_pending WHERE user_id=?", (uid,)).fetchone():
                 continue  # нажал «Пришёл», ждём кружок — штраф пока не выписываем
-            until, start = f"{window(emp, 'in', t)[1]:%H:%M}", shift_start(emp, t)
-            reason = st.s("ru", "late_reason", t=until, start=start)
-            cur = c.execute(
-                "INSERT OR IGNORE INTO penalties(user_id, day, reason, amount, note) VALUES(?, ?, 'late', ?, ?)",
-                (uid, today, late_fine_amount(60), reason),
-            )
-            if not cur.rowcount:
-                continue  # штраф за сегодня уже выписан
-            _announce(c, uid, "penalty", reason, late_fine_amount(60),
-                      reason_emp=st.s(staff_lang(uid), "late_reason", t=until, start=start))
+            # всё ещё не пришёл: 9:16 — 50 000, 10:00 — +50 000, 11:00 — +50 000… до конца смены
+            start = shift_start(emp, t)
+            tt = min(t, at(t, shift_end(emp, t)))
+            _late_fine(c, uid, int((tt - at(t, start)).total_seconds() // 60), tt, start, False)
 
 
 def _announce(c, uid, title_key, reason, amount, reason_emp=None):
