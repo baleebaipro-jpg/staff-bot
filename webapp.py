@@ -615,6 +615,26 @@ def api_crm_send(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+@app.post("/api/crm/voice")
+@need_user(admin=True)
+def api_crm_voice(uid, data):
+    """Голосовое из CRM: запись из браузера (base64) → OGG/Opus → голосовое от рабочего аккаунта."""
+    raw = str(data.get("audio") or "")
+    mime = raw[5:raw.find(";")] if raw.startswith("data:") and ";" in raw else str(data.get("mime") or "")
+    try:
+        blob = base64.b64decode(raw.split(",", 1)[-1], validate=True)
+    except Exception:  # noqa: BLE001
+        return jsonify(ok=False, msg="Запись не загрузилась, попробуйте ещё раз.")
+    if len(blob) > 20 * 1024 * 1024:
+        return jsonify(ok=False, msg="Слишком длинная запись.")
+    try:
+        dur = float(data.get("duration") or 0)
+    except (TypeError, ValueError):
+        dur = 0
+    ok, msg = crm.send_voice(uid, str(data.get("conn") or ""), int(data.get("chat") or 0), blob, mime, dur)
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/crm/info")
 @need_user(admin=True)
 def api_crm_info(uid, data):
@@ -1435,6 +1455,11 @@ PAGE = r"""<!doctype html>
   .crm-send { width: 42px; height: 42px; flex: none; border-radius: 50%; border: 0; color: #fff; font-size: 18px;
     background: linear-gradient(150deg, #a78bfa, #6d28d9); }
   .crm-send:disabled { opacity: .5; }
+  .crm-recbar { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 22px; padding: 6px 6px 6px 16px; }
+  .crm-recbar .dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; animation: recBlink 1s infinite; }
+  .crm-recbar b { font-variant-numeric: tabular-nums; }
+  @keyframes recBlink { 50% { opacity: .2; } }
   .crm-sug { background: var(--card); border: 1px solid var(--line); border-radius: 16px; margin-bottom: 8px; max-height: 40vh; overflow: auto; }
   .crm-sug div { padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 14px; }
   .crm-sug div:last-child { border-bottom: 0; }
@@ -1812,7 +1837,10 @@ PAGE = r"""<!doctype html>
         <button class="crm-ib" id="crm-tpl" title="Быстрые ответы">⚡</button>
         <label class="crm-ib" title="Фото">📷<input type="file" accept="image/*" id="crm-file" hidden></label>
         <textarea id="crm-input" rows="1" placeholder="Сообщение · / быстрые ответы"></textarea>
-        <button class="crm-send" id="crm-send">➤</button></div>
+        <button class="crm-send" id="crm-send">🎤</button></div>
+      <div class="crm-recbar hidden" id="crm-recbar"><span class="dot"></span><b id="crm-rect">0:00</b>
+        <span class="hint" style="flex:1;font-size:13px">Запись голосового…</span>
+        <button class="btn btn-soft btn-sm" id="crm-recx">✕</button><button class="crm-send" id="crm-recok">➤</button></div>
     </div>
   </div>
 
@@ -4183,6 +4211,7 @@ const crmTime = at => { if (!at) return ""; const d = at.slice(0, 10), t = new D
 const crmWin = w => w === null || w === undefined ? "" : w >= 1 ? `можно ответить ещё ${Math.floor(w)} ч` : `ещё ${Math.round(w * 60)} мин`;
 function crmOnShow(v) {
   clearInterval(crmTimer);
+  if (v !== "crmchat") crmVoiceStop(false);
   $("crm-foot").classList.toggle("hidden", v !== "crmchat");
   if (v === "crm") { loadCrm(); crmTimer = setInterval(() => loadCrm(true), 7000); }
   if (v === "crmchat") { crmLastSig = ""; $("crm-pin").classList.add("hidden"); loadCrmChat(); crmInfo();
@@ -4253,7 +4282,40 @@ async function crmLoadTpls(body = {}) {
   try { const r = await api("/api/crm/templates", body); crmTpls = r.items; if (r.msg) toast(r.msg); } catch (e) { toast(e.message); }
   return crmTpls || [];
 }
-function crmFit() { const t = $("crm-input"); t.style.height = "auto"; t.style.height = Math.min(140, t.scrollHeight) + "px"; }
+function crmFit() { const t = $("crm-input"); t.style.height = "auto"; t.style.height = Math.min(140, t.scrollHeight) + "px";
+  $("crm-send").textContent = t.value.trim() || crmPhoto ? "➤" : "🎤"; }
+/* Голосовое: как в Telegram — пустое поле, нажали 🎤 → запись → ➤ отправить / ✕ отмена */
+let crmRec = null, crmRecT = null;
+async function crmVoiceStart() {
+  if (!navigator.mediaDevices || !window.MediaRecorder) return toast("Запись голоса не поддерживается на этом устройстве");
+  let stream; try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (e) { return toast("Нет доступа к микрофону — разрешите его в настройках"); }
+  const type = ["audio/mp4", "audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm"].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+  const chunks = [];
+  crmRec = new MediaRecorder(stream, type ? {mimeType: type} : {});
+  crmRec.ondataavailable = e => e.data && e.data.size && chunks.push(e.data);
+  crmRec.chunks = chunks; crmRec.stream = stream; crmRec.t0 = Date.now(); crmRec.start(250);
+  $("crm-comp").classList.add("hidden"); $("crm-recbar").classList.remove("hidden");
+  crmRecT = setInterval(() => { const s = Math.floor((Date.now() - crmRec.t0) / 1000);
+    $("crm-rect").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; if (s >= 300) $("crm-recok").onclick(); }, 250);
+}
+function crmVoiceStop(send) {
+  if (!crmRec) return; const rec = crmRec; crmRec = null; clearInterval(crmRecT);
+  $("crm-recbar").classList.add("hidden"); $("crm-comp").classList.remove("hidden"); $("crm-rect").textContent = "0:00";
+  rec.onstop = async () => {
+    rec.stream.getTracks().forEach(t => t.stop());
+    if (!send) return;
+    const dur = (Date.now() - rec.t0) / 1000; if (dur < 1) return toast("Слишком коротко");
+    const blob = new Blob(rec.chunks, {type: (rec.mimeType || "audio/webm").split(";")[0]});
+    const url = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
+    toast("⏳ Отправляю голосовое…");
+    try { const r = await api("/api/crm/voice", Object.assign({}, crmChat, {audio: url, duration: dur}));
+      toast(r.msg); if (r.ok) { crmLastSig = ""; loadCrmChat(); } } catch (e) { toast(e.message); }
+  };
+  rec.stop();
+}
+$("crm-recx").onclick = () => crmVoiceStop(false);
+$("crm-recok").onclick = () => crmVoiceStop(true);
 function crmPut(text) { $("crm-input").value = text; crmFit(); $("crm-sug").classList.add("hidden"); $("crm-input").focus(); }
 $("crm-input").oninput = async () => {
   crmFit();
@@ -4269,11 +4331,12 @@ $("crm-input").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaK
 $("crm-file").onchange = async () => {
   const f = $("crm-file").files[0]; $("crm-file").value = ""; if (!f) return;
   try { crmPhoto = await reportJpeg(f); } catch (e) { return toast(e.message); }
-  $("crm-photo-img").src = crmPhoto; $("crm-photo").classList.remove("hidden");
+  $("crm-photo-img").src = crmPhoto; $("crm-photo").classList.remove("hidden"); crmFit();
 };
-$("crm-photo-x").onclick = () => { crmPhoto = null; $("crm-photo").classList.add("hidden"); };
+$("crm-photo-x").onclick = () => { crmPhoto = null; $("crm-photo").classList.add("hidden"); crmFit(); };
 $("crm-send").onclick = async () => {
   const text = $("crm-input").value.trim();
+  if (!text && !crmPhoto) return crmVoiceStart();
   if (crmSending || !crmChat || (!text && !crmPhoto)) return;
   crmSending = true; $("crm-send").disabled = true;
   try {

@@ -350,3 +350,69 @@ def add_task(uid: int, conn: str, chat: int, title: str, day: str, assignee: int
                   "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", (conn, chat, kind, tid, assignee, title, due, uid,
                                                         core.now().strftime(core.FMT)))
     return True, f"📌 Задача на {due[8:10]}.{due[5:7]} — {core.name(assignee)}"
+
+
+# ---------- голосовые из CRM ----------
+
+def _ffmpeg() -> str:
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg  # своя копия ffmpeg (ставится из requirements.txt на сервере)
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def to_voice(blob: bytes, ext: str = "webm") -> bytes:
+    """Любая запись с телефона (webm / mp4 / ogg) → голосовое Telegram: OGG + Opus, моно."""
+    import subprocess
+    import tempfile
+    exe = _ffmpeg()
+    if not exe:
+        raise RuntimeError("на сервере нет ffmpeg")
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in." + ext), os.path.join(d, "out.ogg")
+        with open(src, "wb") as f:
+            f.write(blob)
+        for codec in (["-c:a", "libopus"], ["-c:a", "opus", "-strict", "-2", "-ar", "48000"]):
+            r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-b:a", "32k", *codec, dst],
+                               capture_output=True, timeout=60)
+            if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 100:
+                with open(dst, "rb") as f:
+                    return f.read()
+        raise RuntimeError((r.stderr or b"").decode(errors="ignore")[-300:] or "ошибка конвертации")
+
+
+def send_voice(uid: int, conn: str, chat: int, blob: bytes, mime: str = "", duration: float = 0):
+    import bizwatch
+    if len(blob) < 500:
+        return False, "Запись слишком короткая."
+    with core.db() as c:
+        head = c.execute("SELECT chat_name, chat_username FROM biz_messages WHERE conn_id=? AND chat_id=? LIMIT 1",
+                         (conn, chat)).fetchone()
+        owner = c.execute("SELECT * FROM biz_connections WHERE id=?", (conn,)).fetchone()
+    if not head or not owner:
+        return False, "Чат не найден."
+    ext = "mp4" if "mp4" in mime or "aac" in mime or "m4a" in mime else "ogg" if "ogg" in mime else "webm"
+    try:
+        ogg = to_voice(blob, ext)
+    except Exception as e:  # noqa: BLE001
+        return False, f"Не удалось подготовить голосовое: {e}"
+    params = {"chat_id": chat, "business_connection_id": conn}
+    if duration:
+        params["duration"] = int(round(duration))
+    try:
+        res = _api("sendVoice", params, {"voice": ("voice.ogg", ogg, "audio/ogg")})
+    except Exception as e:  # noqa: BLE001
+        return False, _explain(str(e))
+    file_id = (res.get("voice") or {}).get("file_id")
+    with core.db() as c:
+        c.execute("INSERT INTO biz_messages(conn_id, chat_id, msg_id, chat_name, chat_username, from_id, from_name, outgoing, "
+                  "kind, text, file_id, sent_at, edited, sent_by) VALUES(?, ?, ?, ?, ?, ?, ?, 1, 'voice', '', ?, ?, 0, ?) "
+                  "ON CONFLICT(conn_id, chat_id, msg_id) DO UPDATE SET sent_by=excluded.sent_by",
+                  (conn, chat, res["message_id"], head["chat_name"], head["chat_username"], owner["user_id"],
+                   bizwatch._owner_name(owner), file_id, core.now().strftime(core.FMT), uid))
+    return True, "🎤 Голосовое отправлено"
