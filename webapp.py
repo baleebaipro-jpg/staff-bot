@@ -557,6 +557,13 @@ def api_add_penalty(uid, data):
     return jsonify(ok=True, msg=f"Штраф выписан: {core.name(target)}")
 
 
+@app.post("/api/pay_penalty")
+@need_user(admin=True)
+def api_pay_penalty(uid, data):
+    ok, msg = core.pay_penalty(int(data.get("id", 0)))
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/delete_penalty")
 @need_user(admin=True)
 def api_delete_penalty(uid, data):
@@ -926,6 +933,12 @@ PAGE = r"""<!doctype html>
   .btn-danger { background: linear-gradient(90deg, #ef4444, #f97316); color: #fff; }
   .pen { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
   .pen .tt { flex: 1; word-break: break-word; }
+  .pen.paid .tt { opacity: .55; }
+  .pen-act { flex-wrap: wrap; } .pen-act .tt { flex: 1 1 100%; }
+  .pen-btns { display: flex; gap: 8px; width: 100%; } .pen-btns .btn { flex: 1; }
+  .pen-tag { font-size: 12px; color: var(--green); white-space: nowrap; }
+  .pen-hist summary { cursor: pointer; color: var(--hint); font-size: 14px; padding: 10px 0 4px; list-style: none; }
+  .pen-stats.three { grid-template-columns: 1fr 1fr 1fr; }
   .pen-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; text-align: center; }
   .pen-stats > div { background: var(--card2); border-radius: 14px; padding: 10px 6px; }
   .pen-stats b { display: block; font-size: 24px; }
@@ -1980,7 +1993,7 @@ const SX = {
        free_any: "Свободный график · отмечайтесь в любое время", day_off: "Сегодня выходной", out_at: "Уход: {w}",
        rec_say: "Скажите вслух число", rec_cam: "Включаю камеру…", rec_btn: "● Записать", rec_again: "● Записать ещё раз", rec_done: "■ Готово", rec_open: "📹 Открыть камеру", rec_cancel: "Отмена", rec_send: "Отправляю…", rec_go: "Нажмите «Записать» и назовите число. {a}–{b} сек.", rec_sys: "Запишите видео {a}–{b} сек и назовите число. У вас {m} мин.", rec_rec: "Запись… {s}", rec_can: "Можно нажать «Готово»", rec_short: "Не короче {s} сек",
        shift_done: "Смена завершена · график {s}", in_at: "Приход: {w}", late_now: "⚠️ Вы опаздываете — отметьте приход", btn_out: "🚪 Ушёл", btn_in: "✅ Пришёл",
-       fines: "🔴 Штрафы", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
+       fines: "🔴 Штрафы", fines_active: "активные", fine_paid: "✅ оплачен {d}", total: "всего", this_month: "за этот месяц", no_fines_month: "В этом месяце штрафов нет 👍",
        no_fines: "Штрафов нет — так держать! 👍", due: "📅 на {d}", review: "⏳ на проверке", done: "Готово",
        no_tasks: "Задач нет 🎉", no_visits: "Посещений пока нет", to_rank: "до звания «{r}»",
        keep_going: "Продолжайте в том же духе!", you_are: "Вы — {r}! 🏆", left_to: "До звания «{r}» осталось {h} ч 💪",
@@ -1998,7 +2011,7 @@ const SX = {
        free_any: "Erkin grafik · istalgan vaqtda belgilang", day_off: "Bugun dam olish kuni", out_at: "Ketish: {w}",
        rec_say: "Raqamni ovoz chiqarib ayting", rec_cam: "Kamera yoqilmoqda…", rec_btn: "● Yozish", rec_again: "● Qayta yozish", rec_done: "■ Tayyor", rec_open: "📹 Kamerani ochish", rec_cancel: "Bekor qilish", rec_send: "Yuborilmoqda…", rec_go: "«Yozish»ni bosing va raqamni ayting. {a}–{b} soniya.", rec_sys: "{a}–{b} soniyalik video yozing va raqamni ayting. {m} daqiqa vaqtingiz bor.", rec_rec: "Yozilmoqda… {s}", rec_can: "«Tayyor»ni bosish mumkin", rec_short: "Kamida {s} soniya",
        shift_done: "Smena tugadi · grafik {s}", in_at: "Kelish: {w}", late_now: "⚠️ Kechikyapsiz — kelganingizni belgilang", btn_out: "🚪 Ketdim", btn_in: "✅ Keldim",
-       fines: "🔴 Jarimalar", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
+       fines: "🔴 Jarimalar", fines_active: "faol", fine_paid: "✅ to'langan {d}", total: "jami", this_month: "shu oyda", no_fines_month: "Bu oyda jarima yo'q 👍",
        no_fines: "Jarima yo'q — shunday davom eting! 👍", due: "📅 {d} ga", review: "⏳ tekshiruvda", done: "Bajarildi",
        no_tasks: "Vazifa yo'q 🎉", no_visits: "Hozircha tashriflar yo'q", to_rank: "«{r}» unvonigacha",
        keep_going: "Shunday davom eting!", you_are: "Siz — {r}! 🏆", left_to: "«{r}» unvonigacha {h} soat qoldi 💪",
@@ -2060,15 +2073,17 @@ function renderMe() {
   $("btn-mark").textContent = p.on_site ? sx("btn_out") : sx("btn_in");
   $("btn-mark").className = "btn " + (p.on_site ? "btn-soft" : "btn-main");
   $("btn-mark").disabled = !can;
-  $("pen-card").style.borderColor = p.penalties_total ? "rgba(248,113,113,.35)" : "";
+  $("pen-card").style.borderColor = p.penalties_active ? "rgba(248,113,113,.35)" : "";
   $("pen-card").innerHTML = `
     <div class="head"><h3>${sx("fines")}</h3></div>
-    <div class="pen-stats">
-      <div><b style="color:${p.penalties_total ? "var(--red)" : "var(--green)"}">${p.penalties_total}</b><span>${sx("total")}</span></div>
-      <div><b style="color:${p.penalties_month ? "var(--red)" : "var(--green)"}">${p.penalties_month}</b><span>${sx("this_month")}</span></div>
+    <div class="pen-stats three">
+      <div><b style="color:${p.penalties_active ? "var(--red)" : "var(--green)"}">${p.penalties_active || 0}</b><span>${sx("fines_active")}</span></div>
+      <div><b>${p.penalties_month}</b><span>${sx("this_month")}</span></div>
+      <div><b>${p.penalties_total}</b><span>${sx("total")}</span></div>
     </div>` + (p.penalties.length ? p.penalties.map(x => `
-    <div class="pen"><div class="tt">${x.date} · ${esc(x.reason)}</div>
-    ${x.amount ? `<b style="color:var(--red)">${esc(x.amount)}</b>` : ""}</div>`).join("")
+    <div class="pen ${x.paid ? "paid" : ""}"><div class="tt">${x.date} · ${esc(x.reason)}</div>
+    ${x.paid ? `<span class="pen-tag">${sx("fine_paid", {d: x.paid_at})}</span>` : ""}
+    ${x.amount ? `<b style="color:${x.paid ? "var(--hint)" : "var(--red)"}">${esc(x.amount)}</b>` : ""}</div>`).join("")
     : `<div class="empty">${p.penalties_total ? sx("no_fines_month") : sx("no_fines")}</div>`);
 
   $("levels").innerHTML = L.map((l, k) => (k ? `<div class="arrow">›</div>` : "") + `
@@ -2163,7 +2178,7 @@ function renderTeam() {
     return `<button class="emp-row" data-emp="${e.id}"><div class="ava">${avatar(e.id, e.name, e.ava_v)}</div>
       <div style="flex:1;min-width:0;text-align:left"><b>${esc(e.name)}</b>
         <div class="hint" style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.status)}${e.late ? ` · <span style="color:var(--red)">опоздание ${e.late}</span>` : ""}</div>
-        <div class="emp-badges">${review ? `<span class="badge" style="color:var(--orange)">⏳ ${review} на проверке</span>` : ""}${open ? `<span class="badge">📌 ${open}</span>` : ""}${e.penalties_month ? `<span class="badge" style="color:var(--red)">🔴 ${e.penalties_month}</span>` : ""}</div></div>
+        <div class="emp-badges">${review ? `<span class="badge" style="color:var(--orange)">⏳ ${review} на проверке</span>` : ""}${open ? `<span class="badge">📌 ${open}</span>` : ""}${e.penalties_active ? `<span class="badge" style="color:var(--red)">🔴 ${e.penalties_active}</span>` : ""}</div></div>
       <span style="font-size:18px">${e.icon}</span><span class="f-arrow" style="font-size:22px;color:#c4b5fd">›</span></button>`; }).join("")}</div>`;
   document.querySelectorAll("[data-emp]").forEach(b => b.onclick = () => { empId = +b.dataset.emp; show("emp"); renderEmp(); });
   if (view === "emp") renderEmp();
@@ -2198,9 +2213,18 @@ function renderEmp() {
       ${(e.recurring || []).length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🔁 Повторяющиеся:</div>` +
         e.recurring.map(r => `<div class="task"><div class="tt">🔁 ${esc(r.title)}<div style="font-size:12px" class="hint">${esc(r.when)}</div></div>
           <button class="btn btn-soft btn-sm" data-stoprep="${r.id}" title="Остановить повтор">✕</button></div>`).join("") : ""}</div>
-    <div class="card"><div class="head"><h3>🔴 Штрафы</h3><span class="hint" style="font-size:13px">всего ${e.penalties_total} · за месяц ${e.penalties_month}</span></div>
-      ${e.penalties.length ? e.penalties.map(x => `<div class="pen"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
-        <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div>`).join("") : `<div class="empty">Штрафов нет 👍</div>`}</div>`;
+    <div class="card"><div class="head"><h3>🔴 Штрафы</h3></div>
+      <div class="pen-stats three">
+        <div><b style="color:${e.penalties_active ? "var(--red)" : "var(--green)"}">${e.penalties_active || 0}</b><span>активные</span></div>
+        <div><b>${e.penalties_month}</b><span>за месяц</span></div><div><b>${e.penalties_total}</b><span>за всё время</span></div></div>
+      ${(() => { const act = e.penalties.filter(x => !x.paid);
+        return act.length ? act.map(x => `<div class="pen pen-act"><div class="tt"><span style="color:var(--red)">🔴 ${x.date}</span> · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
+        <div class="pen-btns"><button class="btn btn-main btn-sm" data-paypen="${x.id}">💸 Оплачено</button>
+        <button class="btn btn-soft btn-sm" data-delpen="${x.id}">Отменить</button></div></div>`).join("")
+        : `<div class="empty">Активных штрафов нет 👍</div>`; })()}
+      ${(e.penalties_history || []).length ? `<details class="pen-hist"><summary>📜 История штрафов (${e.penalties_history.length}) ›</summary>
+        ${e.penalties_history.map(x => `<div class="pen ${x.paid ? "paid" : ""}"><div class="tt">${x.paid ? "✅" : "🔴"} ${x.date} · ${esc(x.reason)}${x.amount ? ` · <b>${esc(x.amount)}</b>` : ""}</div>
+          ${x.paid ? `<span class="pen-tag">оплачен ${x.paid_at}</span>` : `<span class="pen-tag" style="color:var(--red)">не оплачен</span>`}</div>`).join("")}</details>` : ""}</div>`;
   $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
   $("ec-earn").onclick = () => earnSheet(e.id);
   $("ec-task").onclick = () => {
@@ -2225,6 +2249,8 @@ function renderEmp() {
   };
   document.querySelectorAll("#emp-body [data-review]").forEach(b => b.onclick = () =>
     action("/api/task_review", {id: +b.dataset.review, action: b.dataset.act}));
+  document.querySelectorAll("#emp-body [data-paypen]").forEach(b => b.onclick = () =>
+    tg.showConfirm("Отметить штраф как оплаченный?", ok => ok && action("/api/pay_penalty", {id: +b.dataset.paypen})));
   document.querySelectorAll("#emp-body [data-delpen]").forEach(b => b.onclick = () =>
     tg.showConfirm("Отменить штраф?", ok => ok && action("/api/delete_penalty", {id: +b.dataset.delpen})));
   document.querySelectorAll("#emp-body [data-del]").forEach(b => b.onclick = () =>
