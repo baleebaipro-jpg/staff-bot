@@ -167,6 +167,9 @@ def _cleanup() -> None:
 
 async def on_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Перехват всех бизнес-обновлений (раньше остальных обработчиков) — бот в этих чатах молчит."""
+    if update.business_connection or update.business_message or update.edited_business_message or update.deleted_business_messages:
+        logging.info("Бизнес-обновление: %s", "connection" if update.business_connection else "message" if update.business_message
+                     else "edited" if update.edited_business_message else "deleted")
     try:
         if update.business_connection:
             await _on_connection(update.business_connection, context.bot)
@@ -266,6 +269,14 @@ def connections() -> list:
         for r in rows:
             n = c.execute("SELECT COUNT(*) FROM biz_messages WHERE conn_id=?", (r["id"],)).fetchone()[0]
             dl = c.execute("SELECT COUNT(*) FROM biz_messages WHERE conn_id=? AND deleted_at IS NOT NULL", (r["id"],)).fetchone()[0]
+            last = c.execute("SELECT MAX(sent_at) FROM biz_messages WHERE conn_id=?", (r["id"],)).fetchone()[0]
+            chats = c.execute("SELECT COUNT(DISTINCT chat_id) FROM biz_messages WHERE conn_id=?", (r["id"],)).fetchone()[0]
             out.append({"name": _owner_name(r), "username": r["username"], "enabled": bool(r["enabled"]),
-                        "messages": n, "deleted": dl, "since": r["created_at"]})
+                        "messages": n, "deleted": dl, "since": r["created_at"], "last": last or "", "chats": chats})
     return out
+
+
+def recent_events(limit: int = 8) -> list:
+    with core.db() as c:
+        return [dict(r) for r in c.execute("SELECT kind, chat_name, at, substr(info, 1, 60) AS info FROM biz_events "
+                                           "ORDER BY id DESC LIMIT ?", (limit,))]
