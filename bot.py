@@ -552,9 +552,14 @@ async def biz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not rows:
         return await reply(update, "Рабочие аккаунты пока не подключены.\n\nTelegram → Настройки → Telegram для бизнеса → "
                                    f"Чат-боты → @{context.bot.username}")
-    await reply(update, "🔗 Контроль рабочих аккаунтов:\n\n" + "\n".join(
-        f"{'🟢' if r['enabled'] else '🔴 отключён'} {r['name']}{' @' + r['username'] if r['username'] else ''}"
-        f" — сообщений {r['messages']}, удалено {r['deleted']}" for r in rows))
+    kinds = {"connected": "🔗 подключён", "disconnected": "⚠️ отключён", "edited": "✏️ изменено", "deleted": "🗑 удалено"}
+    ev = bizwatch.recent_events()
+    await reply(update, "🔗 Контроль рабочих аккаунтов:\n\n" + "\n\n".join(
+        f"{'🟢' if r['enabled'] else '🔴 отключён'} {r['name']}{' @' + r['username'] if r['username'] else ''}\n"
+        f"с {r['since'][:16]} · записано сообщений: {r['messages']} в {r['chats']} чатах · удалено: {r['deleted']}\n"
+        f"последнее сообщение: {r['last'][:16] or 'пока ни одного'}" for r in rows)
+        + ("\n\nПоследние события:\n" + "\n".join(f"{e['at'][5:16]} {kinds.get(e['kind'], e['kind'])} {e['chat_name'] or ''}"
+                                                    for e in ev) if ev else ""))
 
 
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
