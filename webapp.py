@@ -348,6 +348,8 @@ def api_proof_video(uid, data):
     path = os.path.join(PROOF_DIR, f"{uid}_{core.now():%Y%m%d_%H%M%S}.{ext}")
     with open(path, "wb") as f:
         f.write(blob)
+    with core.db() as c:  # в чат бота самому человеку — его видео и «Приход отмечен», как было с кружком
+        c.execute("INSERT INTO outbox(chat_id, text, photo) VALUES(?, ?, ?)", (uid, msg, "video:" + path))
     if core.employee(uid):  # видео сотрудника — руководителю / в группу проверки, как кружок
         cin, late = core.last_checkin(uid)
         note = f"📹 {core.name(uid)}: приход отмечен в {cin} (видео из приложения)\n🔢 Код: {code} — проверьте, что назвал(а) его"
@@ -366,6 +368,9 @@ def api_proof_video(uid, data):
 @need_user(staff=True)
 def api_checkout(uid, data):
     ok, msg = core.check_out(uid)
+    if ok:
+        with core.db() as c:
+            core.notify(c, uid, msg)  # «Уход отмечен» — и в чат бота
     return jsonify(ok=ok, msg=msg)
 
 
