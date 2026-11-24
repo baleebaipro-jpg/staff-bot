@@ -4146,6 +4146,8 @@ function renderBossDay() {
     : `<div class="empty">Смен пока нет</div>`;
 }
 $("bd-btn").onclick = () => action(data.boss_day.on_site ? "/api/checkout" : "/api/checkin");
+/* Микрофон «как есть»: без шумо- и эхоподавления и автоусиления браузера — они глушат начало и рвут голос */
+const RAW_AUDIO = {echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1};
 /* Видео-подтверждение прихода прямо в кабинете: камера на экране, человек говорит вслух число */
 const REC_MAX = 8;
 let recStream = null, recRec = null, recTimer = null, recMax = REC_MAX, recOnSend = null;
@@ -4172,7 +4174,7 @@ async function recCamera() {
   if (recStream) return true;
   try {
     recStream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user", width: {ideal: 480}, height: {ideal: 480}},
-                                                           audio: true});
+                                                           audio: RAW_AUDIO});
   } catch (e) { return false; }
   $("rec-v").srcObject = recStream; $("rec-ph").classList.add("hidden");
   return true;
@@ -4209,7 +4211,7 @@ async function openRecorder(r) {
     }
     const type = ["video/mp4", "video/webm;codecs=vp8,opus", "video/webm"].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
     const chunks = [];
-    recRec = new MediaRecorder(recStream, Object.assign({videoBitsPerSecond: 700000}, type ? {mimeType: type} : {}));
+    recRec = new MediaRecorder(recStream, Object.assign({videoBitsPerSecond: 700000, audioBitsPerSecond: 128000}, type ? {mimeType: type} : {}));
     recRec.ondataavailable = e => e.data && e.data.size && chunks.push(e.data);
     recRec.onstop = () => {
       clearInterval(recTimer);
@@ -4313,13 +4315,15 @@ function crmFit() { const t = $("crm-input"); t.style.height = "auto"; t.style.h
 let crmRec = null, crmRecT = null;
 async function crmVoiceStart() {
   if (!navigator.mediaDevices || !window.MediaRecorder) return toast("Запись голоса не поддерживается на этом устройстве");
-  let stream; try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  let stream; try { stream = await navigator.mediaDevices.getUserMedia({audio: RAW_AUDIO}); }
   catch (e) { return toast("Нет доступа к микрофону — разрешите его в настройках"); }
   const type = ["audio/mp4", "audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm"].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
   const chunks = [];
-  crmRec = new MediaRecorder(stream, type ? {mimeType: type} : {});
+  crmRec = new MediaRecorder(stream, Object.assign({audioBitsPerSecond: 128000}, type ? {mimeType: type} : {}));
   crmRec.ondataavailable = e => e.data && e.data.size && chunks.push(e.data);
-  crmRec.chunks = chunks; crmRec.stream = stream; crmRec.t0 = Date.now(); crmRec.start(250);
+  crmRec.chunks = chunks; crmRec.stream = stream;
+  await new Promise(ok => setTimeout(ok, 250));  // микрофон «прогревается» — иначе теряется начало
+  crmRec.t0 = Date.now(); crmRec.start(1000);
   $("crm-comp").classList.add("hidden"); $("crm-recbar").classList.remove("hidden");
   crmRecT = setInterval(() => { const s = Math.floor((Date.now() - crmRec.t0) / 1000);
     $("crm-rect").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; if (s >= 300) $("crm-recok").onclick(); }, 250);

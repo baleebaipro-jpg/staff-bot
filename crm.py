@@ -379,7 +379,7 @@ def to_voice(blob: bytes, ext: str = "webm") -> bytes:
         with open(src, "wb") as f:
             f.write(blob)
         for codec in (["-c:a", "libopus"], ["-c:a", "opus", "-strict", "-2", "-ar", "48000"]):
-            r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-b:a", "32k", *codec, dst],
+            r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-b:a", "64k", *codec, dst],
                                capture_output=True, timeout=60)
             if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 100:
                 with open(dst, "rb") as f:
@@ -471,7 +471,7 @@ def to_video_note(blob: bytes, ext: str = "webm") -> bytes:
         vf = "crop='min(iw,ih)':'min(iw,ih)',scale=384:384,setsar=1"
         r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-t", "60", "-vf", vf, "-c:v", "libx264",
                             "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", "-profile:v", "main",
-                            "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-movflags", "+faststart", dst],
+                            "-c:a", "aac", "-b:a", "96k", "-ac", "1", "-movflags", "+faststart", dst],
                            capture_output=True, timeout=180)
         if r.returncode != 0 or not os.path.exists(dst):
             raise RuntimeError((r.stderr or b"").decode(errors="ignore")[-300:] or "ошибка конвертации")
