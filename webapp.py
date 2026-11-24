@@ -615,6 +615,22 @@ def api_crm_send(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+@app.post("/api/crm/info")
+@need_user(admin=True)
+def api_crm_info(uid, data):
+    """Заметки и задачи по клиенту: action = note / del_note / task (иначе — просто прочитать)."""
+    conn, chat, a = str(data.get("conn") or ""), int(data.get("chat") or 0), data.get("action")
+    ok, msg = True, ""
+    if a == "note":
+        ok, msg = crm.add_note(uid, conn, chat, str(data.get("text") or ""))
+    elif a == "del_note":
+        ok, msg = crm.delete_note(int(data.get("id") or 0))
+    elif a == "task":
+        ok, msg = crm.add_task(uid, conn, chat, str(data.get("title") or ""), str(data.get("day") or "today"),
+                               int(data.get("assignee") or 0))
+    return jsonify(ok=ok, msg=msg, **crm.info(conn, chat))
+
+
 @app.post("/api/crm/templates")
 @need_user(admin=True)
 def api_crm_templates(uid, data):
@@ -1367,17 +1383,40 @@ PAGE = r"""<!doctype html>
   .crm-tag.wait { background: rgba(251,191,36,.15); color: #fbbf24; }
   .crm-tag.del { background: rgba(248,113,113,.15); color: var(--red); }
   .crm-tag.win { background: rgba(52,211,153,.12); color: var(--green); }
-  .crm-head { display: flex; align-items: center; gap: 12px; position: sticky; top: 8px; z-index: 5; }
+  body.crm-open { background: radial-gradient(circle at 20% 20%, rgba(124,58,237,.10) 0 2px, transparent 3px) 0 0/34px 34px,
+    radial-gradient(circle at 70% 60%, rgba(196,181,253,.07) 0 1.5px, transparent 2.5px) 0 0/26px 26px, var(--bg); }
+  body.crm-open .wrap, body.crm-open main { padding-top: 0 !important; }
+  .crm-bar { position: sticky; top: 0; z-index: 7; display: flex; align-items: center; gap: 8px; margin: 0 -16px 8px;
+    padding: 8px 12px; background: rgba(12,10,24,.86); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line); }
+  .crm-back { background: none; border: 0; color: #c4b5fd; font-size: 34px; line-height: 1; padding: 0 6px 4px; }
+  .crm-head { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
+  .crm-head .crm-ava { width: 40px; height: 40px; font-size: 15px; }
+  .crm-head b { display: block; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crm-head .st { font-size: 12.5px; color: var(--muted); }
+  .crm-head .st.on { color: #86efac; }
+  .crm-pin { display: flex; gap: 10px; align-items: center; margin: -8px -16px 8px; padding: 8px 16px; font-size: 13px;
+    background: rgba(12,10,24,.7); border-bottom: 1px solid var(--line); cursor: pointer; }
+  .crm-pin i { width: 3px; align-self: stretch; background: #a78bfa; border-radius: 2px; }
+  .crm-pin div { min-width: 0; flex: 1; }
+  .crm-pin b { color: #c4b5fd; font-size: 12.5px; display: block; }
+  .crm-pin span { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #crm-feed { display: flex; flex-direction: column; gap: 6px; padding-bottom: 130px; }
   .crm-day { align-self: center; font-size: 12px; color: var(--muted); background: rgba(255,255,255,.06); padding: 3px 10px;
     border-radius: 999px; margin: 8px 0 2px; }
-  .crm-msg { max-width: 82%; padding: 8px 12px 6px; border-radius: 16px; font-size: 15px; line-height: 1.35; word-wrap: break-word;
+  .crm-msg { max-width: 82%; padding: 6px 10px 5px 12px; border-radius: 18px 18px 18px 6px; font-size: 15px; line-height: 1.35; word-wrap: break-word;
     background: rgba(255,255,255,.07); border: 1px solid var(--line); align-self: flex-start; }
-  .crm-msg.out { align-self: flex-end; background: linear-gradient(150deg, rgba(167,139,250,.35), rgba(109,40,217,.45)); border-color: rgba(167,139,250,.4); }
-  .crm-msg.del { border: 1.5px dashed var(--red); background: rgba(248,113,113,.08); }
+  .crm-msg.out { align-self: flex-end; border-radius: 18px 18px 6px 18px; background: linear-gradient(150deg, #7c3aed, #5b21b6);
+    border-color: transparent; }
+  .crm-msg.out .meta { color: rgba(237,233,254,.75); }
+  .crm-msg { background: #1c1830; border-color: transparent; }
+  .crm-msg.del { border: 1.5px dashed var(--red) !important; background: rgba(127,29,29,.35) !important; }
   .crm-msg .crm-tx { white-space: pre-wrap; }
-  .crm-msg .meta { font-size: 11px; color: var(--muted); text-align: right; margin-top: 3px; white-space: normal; }
-  .crm-msg .who { font-size: 11.5px; font-weight: 700; color: #c4b5fd; margin-bottom: 2px; white-space: normal; }
+  .crm-msg .meta { font-size: 11px; color: var(--muted); text-align: right; margin: 2px 0 0 12px; float: right; white-space: nowrap;
+    position: relative; top: 4px; }
+  .crm-msg::after { content: ""; display: block; clear: both; }
+  .crm-msg .who { font-size: 12px; font-weight: 700; color: #c4b5fd; margin-bottom: 1px; white-space: normal; }
+  .crm-msg.out .who { color: #e9d5ff; }
   .crm-msg img, .crm-msg video { max-width: 100%; border-radius: 12px; display: block; margin-bottom: 4px; }
   .crm-msg audio { width: 230px; max-width: 100%; }
   .crm-msg .old { font-size: 12.5px; color: var(--muted); border-left: 2px solid #fbbf24; padding-left: 6px; margin-top: 4px; white-space: pre-wrap; }
@@ -1761,7 +1800,9 @@ PAGE = r"""<!doctype html>
     <div class="card" id="crm-list" style="padding:6px 14px"></div>
   </div>
   <div id="view-crmchat" class="hidden">
-    <div class="card crm-head" id="crm-head"></div>
+    <div class="crm-bar"><button class="crm-back" id="crm-back">‹</button><div id="crm-head" class="crm-head"></div>
+      <button class="crm-ib" id="crm-notes" title="Заметки">📝</button><button class="crm-ib" id="crm-task" title="Задача">📌</button></div>
+    <div class="crm-pin hidden" id="crm-pin"></div>
     <div id="crm-feed"></div>
     <div class="crm-foot" id="crm-foot">
       <div class="crm-sug hidden" id="crm-sug"></div>
@@ -1770,7 +1811,7 @@ PAGE = r"""<!doctype html>
       <div class="crm-comp" id="crm-comp">
         <button class="crm-ib" id="crm-tpl" title="Быстрые ответы">⚡</button>
         <label class="crm-ib" title="Фото">📷<input type="file" accept="image/*" id="crm-file" hidden></label>
-        <textarea id="crm-input" rows="1" placeholder="Сообщение…  ( / — быстрые ответы)"></textarea>
+        <textarea id="crm-input" rows="1" placeholder="Сообщение · / быстрые ответы"></textarea>
         <button class="crm-send" id="crm-send">➤</button></div>
     </div>
   </div>
@@ -2217,7 +2258,8 @@ function show(v) {
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
-  $("brand").classList.toggle("hidden", v === "client" || !data);
+  $("brand").classList.toggle("hidden", v === "client" || v === "crmchat" || !data);
+  document.body.classList.toggle("crm-open", v === "crmchat");
   const tabs = !!(data && data.is_admin) && ["team", "projects", "staff", "clients"].includes(v);
   $("tabbar").classList.toggle("hidden", !tabs);
   $("shop-nav").classList.toggle("hidden", v !== "shop");
@@ -4143,7 +4185,8 @@ function crmOnShow(v) {
   clearInterval(crmTimer);
   $("crm-foot").classList.toggle("hidden", v !== "crmchat");
   if (v === "crm") { loadCrm(); crmTimer = setInterval(() => loadCrm(true), 7000); }
-  if (v === "crmchat") { crmLastSig = ""; loadCrmChat(); crmTimer = setInterval(() => loadCrmChat(true), 4000); }
+  if (v === "crmchat") { crmLastSig = ""; $("crm-pin").classList.add("hidden"); loadCrmChat(); crmInfo();
+    crmTimer = setInterval(() => loadCrmChat(true), 4000); }
 }
 async function loadCrm(silent) {
   if (!silent && !$("crm-list").innerHTML) $("crm-list").innerHTML = `<div class="empty">⏳</div>`;
@@ -4188,8 +4231,8 @@ async function loadCrmChat(silent) {
   const sig = r.items.map(m => m.id + (m.deleted ? "d" : "") + m.edits.length).join(",") + "|" + r.window;
   if (sig === crmLastSig) return; crmLastSig = sig;
   const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
-  $("crm-head").innerHTML = `<div class="crm-ava">${esc(crmInit(r.name))}</div><div style="flex:1;min-width:0"><b>${esc(r.name)}</b>
-    <div class="hint" style="font-size:12.5px">${r.username ? "@" + esc(r.username) + " · " : ""}${r.window !== null ? "🟢 " + crmWin(r.window) : "⏳ окно ответа закрыто"}</div></div>`;
+  $("crm-head").innerHTML = `<div class="crm-ava">${esc(crmInit(r.name))}</div><div style="min-width:0"><b>${esc(r.name)}</b>
+    <div class="st ${r.window !== null ? "on" : ""}">${r.window !== null ? crmWin(r.window) : "окно ответа закрыто"}${r.username ? " · @" + esc(r.username) : ""}</div></div>`;
   let day = "";
   $("crm-feed").innerHTML = r.items.map(m => {
     const d = m.at.slice(0, 10), sep = d !== day ? `<div class="crm-day">${d.split("-").reverse().join(".")}</div>` : ""; day = d;
@@ -4272,6 +4315,58 @@ function crmTplEdit(t) {
     if (ok) { await crmLoadTpls({action: "delete", id: t.id}); crmTplSheet(true); } });
 }
 $("crm-tpl").onclick = () => crmTplSheet(false);
+$("crm-back").onclick = () => show("crm");
+/* Заметки и задачи по клиенту */
+let crmInf = {notes: [], tasks: []};
+async function crmInfo(body) {
+  if (!crmChat) return;
+  try { const r = await api("/api/crm/info", Object.assign({}, crmChat, body || {})); crmInf = r; if (r.msg) toast(r.msg); }
+  catch (e) { return toast(e.message); }
+  const open = crmInf.tasks.filter(t => !t.done), n = crmInf.notes[0];
+  $("crm-pin").classList.toggle("hidden", !open.length && !n);
+  if (!open.length && !n) return;
+  $("crm-pin").innerHTML = `<i></i><div>${open.length ? `<b>📌 Задачи: ${open.length}</b><span>${esc(open[0].title)} · ${open[0].due.slice(8, 10)}.${open[0].due.slice(5, 7)} · ${esc(open[0].who)}</span>`
+    : `<b>📝 Заметка</b><span>${esc(n.text)}</span>`}</div>`;
+  $("crm-pin").onclick = () => open.length ? crmTaskSheet() : crmNotesSheet();
+}
+function crmNotesSheet() {
+  invSheet(`<h3>📝 Заметки о клиенте</h3>
+    <textarea id="cn-text" rows="3" maxlength="2000" placeholder="Например: хочет серьги под золото, бюджет 300 тыс."></textarea>
+    <button class="btn btn-main" style="width:100%" id="cn-add">Сохранить заметку</button>
+    <div style="margin-top:12px">${crmInf.notes.length ? crmInf.notes.map(x => `<div class="kpi-row"><div class="tt" style="white-space:pre-wrap">${esc(x.text)}
+      <div class="hint" style="font-size:12px">${esc(x.who)} · ${x.at.slice(8, 10)}.${x.at.slice(5, 7)} ${x.at.slice(11, 16)}</div></div>
+      <button class="btn btn-soft btn-sm" data-cnd="${x.id}">✕</button></div>`).join("") : `<div class="empty">Заметок пока нет</div>`}</div>
+    <button class="btn btn-soft" style="width:100%;margin-top:10px" id="cn-close">Закрыть</button>`);
+  $("cn-close").onclick = invSheetClose;
+  $("cn-add").onclick = async () => { const text = $("cn-text").value.trim(); if (!text) return toast("Напишите заметку");
+    await crmInfo({action: "note", text}); crmNotesSheet(); };
+  document.querySelectorAll("[data-cnd]").forEach(b => b.onclick = () => tg.showConfirm("Удалить заметку?", async ok => {
+    if (ok) { await crmInfo({action: "del_note", id: +b.dataset.cnd}); crmNotesSheet(); } }));
+}
+function crmTaskSheet() {
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const people = [[data.me_id || 0, "Мне"]].concat((data.team || []).map(e => [e.id, e.name]));
+  invSheet(`<h3>📌 Задача по клиенту</h3>
+    <input id="ct-title" maxlength="250" placeholder="Например: перезвонить, отправить каталог">
+    <div class="f-lbl" style="margin-top:0">Когда</div>
+    <div class="kpi-seg" id="ct-day"><button data-d="today" class="on">Сегодня</button><button data-d="tomorrow">Завтра</button>
+      <label class="kpi-other"><span id="ct-other">Дата…</span><input type="date" id="ct-pick" min="${today}"></label></div>
+    <div class="f-lbl">Кому</div>
+    <select id="ct-who">${people.map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join("")}</select>
+    ${sheetBtns("Поставить задачу")}
+    ${crmInf.tasks.length ? `<div class="f-lbl" style="margin-top:14px">Задачи по этому клиенту</div>` + crmInf.tasks.map(t => `<div class="kpi-row ${t.done ? "paid" : ""}">
+      <div class="tt">${t.done ? "✅" : "📌"} ${esc(t.title)}<div class="hint" style="font-size:12px">${t.due.slice(8, 10)}.${t.due.slice(5, 7)} · ${esc(t.who)}</div></div></div>`).join("") : ""}`);
+  let day = "today";
+  const pick = el => document.querySelectorAll("#ct-day > *").forEach(x => x.classList.toggle("on", x === el));
+  document.querySelectorAll("#ct-day [data-d]").forEach(b => b.onclick = () => { day = b.dataset.d; pick(b); $("ct-other").textContent = "Дата…"; });
+  $("ct-pick").onchange = () => { if (!$("ct-pick").value) return; day = $("ct-pick").value; pick($("ct-pick").parentElement);
+    $("ct-other").textContent = day.slice(8, 10) + "." + day.slice(5, 7); };
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = async () => { const title = $("ct-title").value.trim(); if (!title) return toast("Напишите задачу");
+    const assignee = +$("ct-who").value; invSheetClose(); await crmInfo({action: "task", title, day, assignee}); };
+}
+$("crm-notes").onclick = crmNotesSheet;
+$("crm-task").onclick = crmTaskSheet;
 function renderDash() {
   renderBossDay();
   const o = data.projects, cl = data.clients || {}, et = data.earnings_team || [];

@@ -25,6 +25,10 @@ def init() -> None:
         c.execute("CREATE INDEX IF NOT EXISTS biz_msg_chat ON biz_messages(conn_id, chat_id, msg_id)")
         c.execute("CREATE TABLE IF NOT EXISTS crm_templates(id INTEGER PRIMARY KEY, title TEXT, text TEXT, sort INTEGER DEFAULT 0, "
                   "created_at TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS crm_notes(id INTEGER PRIMARY KEY, conn_id TEXT, chat_id INTEGER, uid INTEGER, "
+                  "text TEXT, at TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS crm_tasks(id INTEGER PRIMARY KEY, conn_id TEXT, chat_id INTEGER, kind TEXT, "
+                  "task_id INTEGER, assignee INTEGER, title TEXT, due TEXT, created_by INTEGER, at TEXT)")
         if "sent_by" not in {r[1] for r in c.execute("PRAGMA table_info(biz_messages)")}:
             c.execute("ALTER TABLE biz_messages ADD COLUMN sent_by INTEGER")  # кто из CRM отправил
 
@@ -259,3 +263,90 @@ def delete_template(tid: int):
     with core.db() as c:
         c.execute("DELETE FROM crm_templates WHERE id=?", (tid,))
     return True, "Быстрый ответ удалён."
+
+
+# ---------- заметки и задачи по клиенту (из чата CRM) ----------
+
+def _client_name(c, conn, chat) -> str:
+    r = c.execute("SELECT chat_name FROM biz_messages WHERE conn_id=? AND chat_id=? LIMIT 1", (conn, chat)).fetchone()
+    return (r["chat_name"] if r else "") or str(chat)
+
+
+def info(conn: str, chat: int) -> dict:
+    """Заметки и задачи по этому клиенту (для панели в чате)."""
+    with core.db() as c:
+        notes = [{"id": r["id"], "text": r["text"], "who": core.name(r["uid"]), "at": r["at"][:16]}
+                 for r in c.execute("SELECT * FROM crm_notes WHERE conn_id=? AND chat_id=? ORDER BY id DESC", (conn, chat))]
+        tasks = []
+        for r in c.execute("SELECT * FROM crm_tasks WHERE conn_id=? AND chat_id=? ORDER BY id DESC LIMIT 50", (conn, chat)):
+            if r["kind"] == "project":
+                t = c.execute("SELECT done_at FROM ptasks WHERE id=?", (r["task_id"],)).fetchone()
+                done = bool(t and t["done_at"])
+            else:
+                t = c.execute("SELECT status FROM tasks WHERE id=?", (r["task_id"],)).fetchone()
+                done = bool(t and t["status"] == "done")
+            if not t:
+                continue  # задачу удалили
+            tasks.append({"id": r["id"], "title": r["title"], "due": r["due"], "who": core.name(r["assignee"]), "done": done})
+    return {"notes": notes, "tasks": tasks}
+
+
+def add_note(uid: int, conn: str, chat: int, text: str):
+    text = (text or "").strip()[:2000]
+    if not text:
+        return False, "Напишите заметку."
+    with core.db() as c:
+        c.execute("INSERT INTO crm_notes(conn_id, chat_id, uid, text, at) VALUES(?, ?, ?, ?, ?)",
+                  (conn, chat, uid, text, core.now().strftime(core.FMT)))
+    return True, "📝 Заметка сохранена"
+
+
+def delete_note(nid: int):
+    with core.db() as c:
+        c.execute("DELETE FROM crm_notes WHERE id=?", (nid,))
+    return True, "Заметка удалена"
+
+
+def add_task(uid: int, conn: str, chat: int, title: str, day: str, assignee: int):
+    """Задача по клиенту: себе (руководителю) — в проект «💬 Клиенты (CRM)», видна в «Мои задачи на сегодня»;
+    сотруднику — в его список задач на этот день (как задача от руководителя)."""
+    import projects
+    from datetime import datetime as _dt
+    title = (title or "").strip()[:250]
+    if not title:
+        return False, "Напишите задачу."
+    if day in ("today", "tomorrow", "", None):
+        due = (core.now() + timedelta(days=1 if day == "tomorrow" else 0)).strftime("%Y-%m-%d")
+    else:
+        try:
+            due = _dt.strptime(str(day)[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            return False, "Неверная дата."
+    with core.db() as c:
+        client = _client_name(c, conn, chat)
+    full = f"{title} · 💬 {client}"
+    assignee = assignee or uid
+    if core.employee(assignee) and assignee != uid:
+        with core.db() as c:
+            cur = c.execute("INSERT INTO tasks(user_id, title, created_at, due_date) VALUES(?, ?, ?, ?)",
+                            (assignee, full, core.now().strftime(core.FMT), due))
+            tid, kind = cur.lastrowid, "staff"
+            core.notify(c, assignee, core.st.s(core.staff_lang(assignee), "task_new", t=f"{full} ({due[8:10]}.{due[5:7]})"))
+    else:
+        with core.db() as c:
+            r = c.execute("SELECT id FROM projects WHERE owner_id=? AND title=?", (uid, "💬 Клиенты (CRM)")).fetchone()
+        if not r:
+            projects.add_project(uid, "💬 Клиенты (CRM)")
+            with core.db() as c:
+                r = c.execute("SELECT id FROM projects WHERE owner_id=? AND title=?", (uid, "💬 Клиенты (CRM)")).fetchone()
+        ok, msg = projects.add_task(uid, r["id"], full, due)
+        if not ok:
+            return False, msg
+        with core.db() as c:
+            tid = c.execute("SELECT MAX(id) FROM ptasks WHERE owner_id=?", (uid,)).fetchone()[0]
+        kind = "project"
+    with core.db() as c:
+        c.execute("INSERT INTO crm_tasks(conn_id, chat_id, kind, task_id, assignee, title, due, created_by, at) "
+                  "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", (conn, chat, kind, tid, assignee, title, due, uid,
+                                                        core.now().strftime(core.FMT)))
+    return True, f"📌 Задача на {due[8:10]}.{due[5:7]} — {core.name(assignee)}"
