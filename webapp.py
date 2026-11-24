@@ -19,6 +19,7 @@ import shop
 import appauth
 import invest
 import kpi
+import crm
 import posts
 import projects
 import staff_text as st
@@ -583,6 +584,33 @@ def api_add_task(uid, data):
     for t in targets:
         core.add_task(t, title)
     return jsonify(ok=True, msg="Задача поставлена: " + ", ".join(core.name(t) for t in targets))
+
+
+@app.post("/api/crm/chats")
+@need_user(admin=True)
+def api_crm_chats(uid, data):
+    """CRM: рабочие аккаунты и список чатов (поиск, фильтры: waiting / closing / deleted)."""
+    return jsonify(ok=True, accounts=crm.accounts(),
+                   chats=crm.chats(str(data.get("account") or ""), str(data.get("q") or ""), str(data.get("only") or "")))
+
+
+@app.post("/api/crm/messages")
+@need_user(admin=True)
+def api_crm_messages(uid, data):
+    return jsonify(ok=True, **crm.messages(str(data.get("conn") or ""), int(data.get("chat") or 0), int(data.get("before") or 0)))
+
+
+@app.get("/crm/media/<conn>/<int:chat>/<int:msg>")
+def crm_media(conn, chat, msg):
+    """Фото / видео / голосовые из переписки (ссылка подписана сервером — открывается только из CRM)."""
+    try:
+        path, mime = crm.media_file(conn, chat, msg, request.args.get("s", ""))
+    except Exception as e:  # noqa: BLE001
+        app.logger.warning("CRM медиа %s/%s/%s: %s", conn, chat, msg, e)
+        abort(404)
+    if not path:
+        abort(404)
+    return send_file(path, mimetype=mime, max_age=86400)
 
 
 @app.post("/api/kpi")
@@ -1297,6 +1325,38 @@ PAGE = r"""<!doctype html>
   .rec-hint { color: var(--muted); font-size: 14px; text-align: center; min-height: 20px; }
   .rec-btn { width: min(80vw, 320px); }
   .rec-x { background: none; border: 0; color: var(--muted); font-size: 15px; padding: 8px; }
+  .crm-item { display: flex; gap: 12px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .crm-item:last-child { border-bottom: 0; }
+  .crm-ava { width: 46px; height: 46px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 17px; background: linear-gradient(150deg, #a78bfa, #6d28d9); color: #fff; }
+  .crm-item .mid { flex: 1; min-width: 0; }
+  .crm-item .nm { display: flex; justify-content: space-between; gap: 8px; }
+  .crm-item .nm b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crm-item .nm span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .crm-item .pv { color: var(--muted); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .crm-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .crm-tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.07); color: var(--muted); }
+  .crm-tag.wait { background: rgba(251,191,36,.15); color: #fbbf24; }
+  .crm-tag.del { background: rgba(248,113,113,.15); color: var(--red); }
+  .crm-tag.win { background: rgba(52,211,153,.12); color: var(--green); }
+  .crm-head { display: flex; align-items: center; gap: 12px; position: sticky; top: 8px; z-index: 5; }
+  #crm-feed { display: flex; flex-direction: column; gap: 6px; padding-bottom: 90px; }
+  .crm-day { align-self: center; font-size: 12px; color: var(--muted); background: rgba(255,255,255,.06); padding: 3px 10px;
+    border-radius: 999px; margin: 8px 0 2px; }
+  .crm-msg { max-width: 82%; padding: 8px 12px 6px; border-radius: 16px; font-size: 15px; line-height: 1.35; word-wrap: break-word;
+    background: rgba(255,255,255,.07); border: 1px solid var(--line); align-self: flex-start; }
+  .crm-msg.out { align-self: flex-end; background: linear-gradient(150deg, rgba(167,139,250,.35), rgba(109,40,217,.45)); border-color: rgba(167,139,250,.4); }
+  .crm-msg.del { border: 1.5px dashed var(--red); background: rgba(248,113,113,.08); }
+  .crm-msg .crm-tx { white-space: pre-wrap; }
+  .crm-msg .meta { font-size: 11px; color: var(--muted); text-align: right; margin-top: 3px; white-space: normal; }
+  .crm-msg .who { font-size: 11.5px; font-weight: 700; color: #c4b5fd; margin-bottom: 2px; white-space: normal; }
+  .crm-msg img, .crm-msg video { max-width: 100%; border-radius: 12px; display: block; margin-bottom: 4px; }
+  .crm-msg audio { width: 230px; max-width: 100%; }
+  .crm-msg .old { font-size: 12.5px; color: var(--muted); border-left: 2px solid #fbbf24; padding-left: 6px; margin-top: 4px; white-space: pre-wrap; }
+  .crm-foot { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, transparent, var(--bg) 30%); z-index: 6; }
+  .crm-foot div { max-width: 600px; margin: 0 auto; text-align: center; font-size: 13px; color: var(--muted);
+    background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 14px; padding: 10px; }
   #splash.out { opacity: 0; visibility: hidden; }
   #splash img { width: 70%; max-width: 360px; animation: spIn 1.1s cubic-bezier(.2,.8,.2,1) both, spGlow 2.4s ease-in-out 1.1s infinite; }
   .sp-line { width: 120px; height: 2px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
@@ -1641,6 +1701,22 @@ PAGE = r"""<!doctype html>
   <!-- КАРТОЧКА КЛИЕНТА -->
   <div id="view-ccard" class="hidden"><div id="cc-body"></div></div>
 
+  <!-- CRM: переписки рабочих Telegram-аккаунтов -->
+  <div id="view-crm" class="hidden">
+    <div class="page-title">💬 Чаты · CRM</div>
+    <div class="page-sub">Переписки рабочих Telegram-аккаунтов: удалённые и изменённые сообщения сохраняются.</div>
+    <select id="crm-acc" class="hidden" style="margin-bottom:10px"></select>
+    <input id="crm-q" placeholder="🔎 Поиск: имя, @username или текст" style="margin-bottom:10px">
+    <div class="quick" id="crm-only" style="margin:0 0 12px"><button data-o="" class="on">Все</button><button data-o="waiting">⏳ Ждут ответа</button>
+      <button data-o="closing">⏰ Окно закрывается</button><button data-o="deleted">🗑 Удалённые</button></div>
+    <div class="card" id="crm-list" style="padding:6px 14px"></div>
+  </div>
+  <div id="view-crmchat" class="hidden">
+    <div class="card crm-head" id="crm-head"></div>
+    <div id="crm-feed"></div>
+    <div class="crm-foot" id="crm-foot"></div>
+  </div>
+
   <!-- КАРТОЧКА СОТРУДНИКА -->
   <div id="view-emp" class="hidden"><div id="emp-body"></div></div>
 
@@ -1804,6 +1880,7 @@ PAGE = r"""<!doctype html>
       <button class="card dtile" data-dgo="clients"><div class="f-ic">💎</div><div><b id="d-cl">—</b><span>Клиенты</span></div><i>›</i></button>
       <button class="card dtile" id="d-shop-tile"><div class="f-ic">🧾</div><div><b style="font-size:16px">Продажи</b><span>ERP · касса</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="posting"><div class="f-ic">📣</div><div><b style="font-size:16px">Постинг</b><span id="d-post">посты</span></div><i>›</i></button>
+      <button class="card dtile" data-dgo="crm" style="grid-column:1/-1"><div class="f-ic">💬</div><div><b style="font-size:16px">Чаты · CRM</b><span id="d-crm">переписки рабочих аккаунтов</span></div><i>›</i></button>
     </div>
     <div class="card bday hidden" id="bday">
       <div class="bd-top"><div class="f-ic">🕘</div><div style="flex:1;min-width:0"><span id="bd-lbl">Мой рабочий день</span>
@@ -2074,11 +2151,11 @@ async function action(path, body) {
 }
 
 /* ---------- экраны ---------- */
-const SUBPAGES = {history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff", ccard: "clients",
+const SUBPAGES = {crm: "team", crmchat: "crm", history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff", ccard: "clients",
                   projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -2089,6 +2166,7 @@ function show(v) {
   document.body.classList.toggle("has-tabs", tabs || v === "shop");
   document.querySelectorAll("#tabbar [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === v));
   window.scrollTo(0, 0);
+  crmOnShow(v);
 }
 tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
 
@@ -3996,6 +4074,75 @@ async function openRecorder(r) {
       if (s >= REC_MAX) recRec.stop();
     }, 200);
   };
+}
+/* ---------- CRM: переписки рабочих аккаунтов (этап 1 — просмотр) ---------- */
+let crmOnly = "", crmChat = null, crmTimer = null, crmLastSig = "";
+const crmInit = n => (n || "?").trim().split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+const crmTime = at => { if (!at) return ""; const d = at.slice(0, 10), t = new Date(); const today = t.toISOString().slice(0, 10);
+  return d === today ? at.slice(11, 16) : at.slice(8, 10) + "." + at.slice(5, 7); };
+const crmWin = w => w === null || w === undefined ? "" : w >= 1 ? `можно ответить ещё ${Math.floor(w)} ч` : `ещё ${Math.round(w * 60)} мин`;
+function crmOnShow(v) {
+  clearInterval(crmTimer);
+  $("crm-foot").classList.toggle("hidden", v !== "crmchat");
+  if (v === "crm") { loadCrm(); crmTimer = setInterval(() => loadCrm(true), 7000); }
+  if (v === "crmchat") { crmLastSig = ""; loadCrmChat(); crmTimer = setInterval(() => loadCrmChat(true), 4000); }
+}
+async function loadCrm(silent) {
+  if (!silent && !$("crm-list").innerHTML) $("crm-list").innerHTML = `<div class="empty">⏳</div>`;
+  let r; try { r = await api("/api/crm/chats", {q: $("crm-q").value, only: crmOnly, account: $("crm-acc").value}); }
+  catch (e) { if (!silent) $("crm-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const acc = $("crm-acc"), keep = acc.value;
+  acc.classList.toggle("hidden", r.accounts.length < 2);
+  acc.innerHTML = `<option value="">Все аккаунты</option>` + r.accounts.map(a => `<option value="${a.id}">${a.enabled ? "🟢" : "🔴"} ${esc(a.name)}${a.username ? " @" + esc(a.username) : ""}</option>`).join("");
+  acc.value = keep;
+  $("d-crm").textContent = `чатов: ${r.chats.length}`;
+  $("crm-list").innerHTML = r.chats.length ? r.chats.map(c => `<div class="crm-item" data-crm="${c.conn}|${c.chat}">
+      <div class="crm-ava">${esc(crmInit(c.name))}</div>
+      <div class="mid"><div class="nm"><b>${esc(c.name)}</b><span>${crmTime(c.at)}</span></div>
+        <div class="pv">${c.last_out ? "Вы: " : ""}${esc(c.last)}</div>
+        <div class="crm-tags">${c.waiting ? `<span class="crm-tag wait">⏳ ждёт ответа</span>` : ""}
+          ${c.window !== null ? `<span class="crm-tag win">⏱ ${crmWin(c.window)}</span>` : ""}
+          ${c.deleted ? `<span class="crm-tag del">🗑 ${c.deleted}</span>` : ""}${c.edited ? `<span class="crm-tag">✏️ ${c.edited}</span>` : ""}
+          ${r.accounts.length > 1 ? `<span class="crm-tag">📱 ${esc(c.account)}</span>` : ""}</div></div></div>`).join("")
+    : `<div class="empty">${r.accounts.length ? "Переписок пока нет — они появятся, как только клиенты напишут на рабочий аккаунт." :
+        "Рабочие аккаунты не подключены: Настройки → Telegram для бизнеса → Чат-боты → бот RADI TEAM."}</div>`;
+  document.querySelectorAll("[data-crm]").forEach(el => el.onclick = () => {
+    const [conn, chat] = el.dataset.crm.split("|"); crmChat = {conn, chat: +chat}; show("crmchat"); });
+}
+let crmQT = null;
+$("crm-q").oninput = () => { clearTimeout(crmQT); crmQT = setTimeout(() => loadCrm(), 300); };
+$("crm-acc").onchange = () => loadCrm();
+document.querySelectorAll("#crm-only [data-o]").forEach(b => b.onclick = () => {
+  crmOnly = b.dataset.o; document.querySelectorAll("#crm-only [data-o]").forEach(x => x.classList.toggle("on", x === b)); loadCrm(); });
+function crmBody(m) {
+  const md = m.media;
+  let media = "";
+  if (md) media = m.kind === "photo" || m.kind === "sticker" ? `<img loading="lazy" src="${md}">`
+    : ["video", "video_note", "animation"].includes(m.kind) ? `<video controls playsinline preload="metadata" src="${md}"></video>`
+    : ["voice", "audio"].includes(m.kind) ? `<audio controls preload="none" src="${md}"></audio>`
+    : `<a href="${md}" target="_blank">📎 Открыть файл</a>`;
+  const label = !md && m.kind !== "text" ? `<i>${{contact: "👤 Контакт", location: "📍 Геолокация", other: "Сообщение"}[m.kind] || m.kind}</i> ` : "";
+  return media + (label || m.text ? `<div class="crm-tx">${label}${esc(m.text)}</div>` : "");
+}
+async function loadCrmChat(silent) {
+  if (!crmChat) return;
+  let r; try { r = await api("/api/crm/messages", crmChat); } catch (e) { if (!silent) toast(e.message); return; }
+  const sig = r.items.map(m => m.id + (m.deleted ? "d" : "") + m.edits.length).join(",") + "|" + r.window;
+  if (sig === crmLastSig) return; crmLastSig = sig;
+  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+  $("crm-head").innerHTML = `<div class="crm-ava">${esc(crmInit(r.name))}</div><div style="flex:1;min-width:0"><b>${esc(r.name)}</b>
+    <div class="hint" style="font-size:12.5px">${r.username ? "@" + esc(r.username) + " · " : ""}${r.window !== null ? "🟢 " + crmWin(r.window) : "⏳ окно ответа закрыто"}</div></div>`;
+  let day = "";
+  $("crm-feed").innerHTML = r.items.map(m => {
+    const d = m.at.slice(0, 10), sep = d !== day ? `<div class="crm-day">${d.split("-").reverse().join(".")}</div>` : ""; day = d;
+    return sep + `<div class="crm-msg ${m.out ? "out" : ""} ${m.deleted ? "del" : ""}">
+      <div class="who">${m.out ? "🧑‍💼 " + esc(m.from || "Менеджер") : "👤 Клиент"}</div>${crmBody(m)}
+      ${m.edits.map(e => `<div class="old">✏️ было: ${esc(e.old || "—")}</div>`).join("")}
+      <div class="meta">${m.edited ? "✏️ изменено · " : ""}${m.at.slice(11, 16)}${m.deleted ? ` · <b style="color:var(--red)">🗑 удалено ${m.deleted.slice(8, 10)}.${m.deleted.slice(5, 7)} ${m.deleted.slice(11, 16)}</b>` : ""}</div></div>`;
+  }).join("") || `<div class="empty">Сообщений нет</div>`;
+  $("crm-foot").innerHTML = `<div>${r.window !== null ? `🟢 Клиент на связи — ${crmWin(r.window)}. Ответы прямо из CRM — на следующем этапе.`
+    : "⏳ Окно 24 ч закрыто: клиент давно не писал. Написать первым можно из Telegram."}</div>`;
+  if (!silent || atBottom) window.scrollTo(0, document.body.scrollHeight);
 }
 function renderDash() {
   renderBossDay();
