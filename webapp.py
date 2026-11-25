@@ -419,6 +419,32 @@ def api_client_channel(uid, data):
     return jsonify(ok=True, status="link", link=link, msg=i18n.t(lang, "channel_link"), btn=i18n.t(lang, "channel_btn"))
 
 
+@app.post("/api/direct_message")
+@need_user(admin=True)
+def api_direct_message(uid, data):
+    """Личное сообщение одному человеку в бот: клиенту — через бот клиентов, сотруднику — через бот сотрудников.
+    {name} / {ism} — подставится имя."""
+    to, kind = int(data.get("to") or 0), data.get("kind")
+    text = str(data.get("text") or "").strip()[:4000]
+    if not to or not text:
+        return jsonify(ok=False, msg="Напишите сообщение.")
+    with core.db() as c:
+        if kind == "client":
+            cl = core.get_client(to)
+            if not cl:
+                return jsonify(ok=False, msg="Клиент не найден в боте — написать ему нельзя.")
+            first = core.client_first_name(cl) or ""
+            text = text.replace("{name}", first).replace("{ism}", first).replace("{имя}", first)
+            c.execute("INSERT INTO outbox(chat_id, text, via) VALUES(?, ?, 'client')", (to, text))
+        else:
+            if not core.employee(to):
+                return jsonify(ok=False, msg="Сотрудник не найден.")
+            first = core.name(to).split()[0]
+            text = text.replace("{name}", first).replace("{ism}", first).replace("{имя}", first)
+            core.notify(c, to, text)
+    return jsonify(ok=True, msg="✉️ Сообщение отправлено в бот")
+
+
 @app.post("/api/cancel_late_fines")
 @need_user(admin=True)
 def api_cancel_late_fines(uid, data):
@@ -2756,6 +2782,7 @@ function renderEmp() {
       <button class="card" id="ec-earn"><span>💵</span>Foyda${earn ? `<div class="hint" style="font-size:12px;font-weight:600">${money0(earn.total, "сум")}</div>` : ""}</button></div>
     <div class="card"><div class="head"><h3>🗓 График на неделю</h3><button class="link" id="ec-week2">Изменить</button></div>${weekChips(e.week, data.today_wd)}</div>
     ${kpiCardAdmin(e)}
+    ${dmCard("staff", e.id, "")}
     <div class="card"><div class="head"><h3>📋 Задачи</h3><span class="hint" style="font-size:13px">${e.tasks.length}</span></div>
       ${e.tasks.length ? e.tasks.map(t => `<div class="task"><div class="tt">${t.repeat ? "🔁" : t.self ? "✍️" : "📌"} ${esc(t.title)}${t.self ? ` <span class="hint" style="font-size:11.5px">(сам себе)</span>` : ""}${t.due
           ? `<div style="font-size:12px" class="hint">📅 на ${t.due}</div>`
@@ -2781,6 +2808,7 @@ function renderEmp() {
           ${x.paid ? `<span class="pen-tag">оплачен ${x.paid_at}</span>` : `<span class="pen-tag" style="color:var(--red)">не оплачен</span>`}</div>`).join("")}</details>` : ""}</div>`;
   $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
   bindKpiAdmin(e);
+  bindDm("staff");
   if ($("ec-out")) $("ec-out").onclick = () => {
     const now = new Date(), p2 = n => String(n).padStart(2, "0"), cur = `${p2(now.getHours())}:${p2(now.getMinutes())}`;
     invSheet(`<h3>🚪 Закончить смену — ${esc(e.name)}</h3>
@@ -3752,6 +3780,7 @@ function renderCard() {
       ${k.registered_shop_name ? `<div class="kv"><span>Магазин регистрации</span><b>${esc(k.registered_shop_name)}</b></div>` : ""}
       ${(k.cards || []).length ? `<div class="kv"><span>Карты</span><b>${k.cards.map(esc).join(", ")}</b></div>` : ""}
       ${c.erp_points ? `<div class="kv"><span>🧾 Баллы ERP</span><b>${m(c.erp_points)}</b></div>` : ""}</div>` : ""}
+    ${dmCard(c.bot_id ? "client" : "", c.bot_id, "Клиент ещё не в боте — написать ему нельзя (нужно, чтобы он хоть раз нажал /start).")}
     <div class="card"><b style="font-size:18px">📝 Заметки</b>
       ${(k.notes || []).map(n => `<div class="pen"><div class="tt">${esc(n.text)}<div class="hint" style="font-size:11.5px">BILLZ · ${esc(n.at)}</div></div></div>`).join("")}
       <textarea id="cc-note" rows="3" maxlength="1000" placeholder="Ваша заметка о клиенте…" style="margin-top:10px">${esc(c.note)}</textarea>
@@ -3771,7 +3800,29 @@ function renderCard() {
   $("cc-tier").onchange = e => action("/api/set_tier", c.bot_id ? {user_id: c.bot_id, tier: e.target.value} : {store_id: c.store_id, tier: e.target.value});
   $("cc-note-save").onclick = () => api("/api/client_card", {action: "note", phone: c.phone, name: c.name, note: $("cc-note").value})
     .then(r => toast(r.msg)).catch(e => toast(e.message));
+  bindDm("client");
   $("cc-hist").onclick = () => api("/api/client_card", {action: "history"}).then(r => { toast(r.msg); setTimeout(loadCard, 8000); }).catch(e => toast(e.message));
+}
+/* Личное сообщение в бот (карточка клиента / сотрудника) */
+const dmDraft = {};  // черновик не теряется при автообновлении кабинета
+function dmCard(kind, to, noText) {
+  if (!kind) return noText ? `<div class="card hint" style="font-size:13px">✉️ ${esc(noText)}</div>` : "";
+  return `<div class="card" id="dm-card-${kind}" data-kind="${kind}" data-to="${to}"><b style="font-size:18px">✉️ Сообщение в бот</b>
+    <div class="hint" style="font-size:12.5px;margin:2px 0 8px">Придёт ${kind === "client" ? "клиенту в бот клиентов" : "сотруднику в бот RADI TEAM"} от имени бота. {name} — имя.</div>
+    <textarea id="dm-text-${kind}" rows="3" maxlength="4000" placeholder="Например: {name}, ваш заказ готов — ждём вас в магазине 💎">${esc(dmDraft[kind + to] || "")}</textarea>
+    <button class="btn btn-main" style="width:100%" id="dm-send-${kind}">Отправить</button></div>`;
+}
+function bindDm(kind) {
+  const card = $("dm-card-" + kind); if (!card) return;
+  const key = kind + card.dataset.to, ta = $("dm-text-" + kind), btn = $("dm-send-" + kind);
+  ta.oninput = () => { dmDraft[key] = ta.value; };
+  btn.onclick = async () => {
+    const text = ta.value.trim(); if (!text) return toast("Напишите сообщение");
+    btn.disabled = true;
+    try { const r = await api("/api/direct_message", {to: +card.dataset.to, kind, text});
+      toast(r.msg); if (r.ok) { ta.value = ""; delete dmDraft[key]; } } catch (e) { toast(e.message); }
+    btn.disabled = false;
+  };
 }
 function renderClientsAdmin(user = false) {
   if (!user && bzItems.length) return;  // автообновление кабинета не сбрасывает открытый список
