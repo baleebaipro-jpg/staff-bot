@@ -308,6 +308,34 @@ def api_staff_lang(uid, data):
     return jsonify(ok=True, msg=st.s(L, "lang_set"))
 
 
+# Разделы кабинета, которые руководитель может скрыть в приложении RADI Team (Android / iPhone).
+# В Telegram-боте видно всё. Ключ → название (порядок = порядок в настройке).
+APP_SECTIONS = {
+    "shop": "🧾 Продажи", "clients": "💎 Клиенты", "staff": "👥 Команда", "projects": "📁 Проекты",
+    "crm": "💬 Чаты · CRM", "earn": "💰 Мой доход", "earn-admin": "📈 Foyda сотрудников", "history": "🕘 История посещений",
+    "posting": "📣 Постинг", "invest": "💼 Инвестиции", "msgr": "📱 RADI Chat",
+}
+APP_SECTIONS_DEFAULT = {"hidden": ["posting", "invest", "msgr"], "admin_too": False}
+
+
+def app_sections() -> dict:
+    s = core.flag_json("app_sections") or {}
+    return {"hidden": [k for k in s.get("hidden", APP_SECTIONS_DEFAULT["hidden"]) if k in APP_SECTIONS],
+            "admin_too": bool(s.get("admin_too", APP_SECTIONS_DEFAULT["admin_too"]))}
+
+
+@app.post("/api/app_sections")
+@need_user(admin=True)
+def api_app_sections(uid, data):
+    """Руководитель: какие разделы скрыть в приложении RADI Team (без data.hidden — просто прочитать)."""
+    msg = ""
+    if isinstance(data.get("hidden"), list):
+        core.flag_json("app_sections", {"hidden": [k for k in data["hidden"] if k in APP_SECTIONS],
+                                        "admin_too": bool(data.get("admin_too"))})
+        msg = "✅ Сохранено. В приложении изменения видны после обновления страницы."
+    return jsonify(ok=True, msg=msg, titles=APP_SECTIONS, **app_sections())
+
+
 @app.post("/api/me")
 @need_user()
 def api_me(uid, data):
@@ -318,6 +346,8 @@ def api_me(uid, data):
            "goal": config.GOAL_HOURS,
            "ranks": _ranks(uid),
            "today_wd": core.now().weekday()}
+    sec = app_sections()  # что скрыть, если кабинет открыт в приложении RADI Team (в боте — всё)
+    res["app_hidden"] = sec["hidden"] if (not res["is_admin"] or sec["admin_too"]) else []
     if res["is_employee"]:
         res["profile"] = core.profile(uid)
         res["profile"]["ava_v"] = ava_version(uid)
@@ -1476,6 +1506,7 @@ PAGE = r"""<!doctype html>
                 color: #fff; background: rgba(42,45,77,.92); border: 1px solid rgba(168,140,255,.35);
                 opacity: 0; pointer-events: none; transform: translate(-40px, -50%); transition: background .15s; }
   #swipe-back.ready { background: #7c5cff; }
+  .app-hide { display: none !important; }
 
   /* ===== Тема RADI: чёрный + фиолетовое свечение, стеклянные карточки ===== */
   :root { --bg: #06050c; --card: #15112a; --card2: rgba(255,255,255,.06); --line: rgba(168,140,255,.16);
@@ -2034,6 +2065,17 @@ PAGE = r"""<!doctype html>
   </div>
 
   <!-- ПОСТИНГ -->
+  <div id="view-appsec" class="hidden">
+    <div class="page-title">📲 Разделы в приложении</div>
+    <div class="page-sub">Что видно в приложении RADI Team (Android и iPhone). В Telegram-боте видно всё — редкие разделы можно оставить только там.</div>
+    <div class="card"><div id="as-list"></div>
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 0 2px;border-top:1px solid var(--line);margin-top:6px">
+        <span style="flex:1">👑 Скрывать и у руководителя<div class="hint" style="font-size:12px">выключено — вы видите в приложении всё</div></span>
+        <label class="sw"><input type="checkbox" id="as-admin"><span></span></label></div>
+    </div>
+    <button class="btn btn-main" id="as-save" style="width:100%">💾 Сохранить</button>
+  </div>
+
   <div id="view-msgr" class="hidden">
     <div class="page-title">📱 RADI Chat</div>
     <div class="page-sub">Telegram рабочего аккаунта на телефонах менеджеров</div>
@@ -2215,6 +2257,7 @@ PAGE = r"""<!doctype html>
       <button class="card dtile" data-dgo="posting"><div class="f-ic">📣</div><div><b style="font-size:16px">Постинг</b><span id="d-post">посты</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="crm" style="grid-column:1/-1"><div class="f-ic">💬</div><div><b style="font-size:16px">Чаты · CRM</b><span id="d-crm">переписки рабочих аккаунтов</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="msgr" style="grid-column:1/-1"><div class="f-ic">📱</div><div><b style="font-size:16px">RADI Chat</b><span>телефоны, доступы, белый список</span></div><i>›</i></button>
+      <button class="card dtile" id="go-appsec" style="grid-column:1/-1"><div class="f-ic">📲</div><div><b style="font-size:16px">Разделы в приложении</b><span>что видно сотрудникам в RADI Team</span></div><i>›</i></button>
     </div>
     <div class="card bday hidden" id="bday">
       <div class="bd-top"><div class="f-ic">🕘</div><div style="flex:1;min-width:0"><span id="bd-lbl">Мой рабочий день</span>
@@ -2551,10 +2594,23 @@ async function action(path, body) {
 
 /* ---------- экраны ---------- */
 const SUBPAGES = {crm: "team", crmchat: "crm", history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff", ccard: "clients",
-                  projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team", msgr: "team"};  // страница → куда ведёт «назад»
+                  projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team", msgr: "team", appsec: "team"};  // страница → куда ведёт «назад»
+/* Разделы, скрытые руководителем в приложении RADI Team (в Telegram-боте видно всё) */
+const APP_SEC_OF = {project: "projects", emp: "staff", ccard: "clients", crmchat: "crm", "invest-admin": "invest"};
+const APP_SEC_BTN = {"go-shop": "shop", "d-shop-tile": "shop", "go-clients": "clients", "go-staff": "staff",
+  "go-projects": "projects", "go-posting": "posting", "go-posting-me": "posting", "go-earn": "earn",
+  "go-earn-admin": "earn-admin", "go-inv": "invest", "go-inv-own": "invest", "go-inv-admin": "invest", "all-btn": "history"};
+const appHiddenSec = sec => IS_APP && !!data && (data.app_hidden || []).includes(sec);
+function applyAppSections() {
+  if (!IS_APP) return;
+  document.querySelectorAll("[data-dgo], #tabbar [data-tab]").forEach(b =>
+    b.classList.toggle("app-hide", appHiddenSec(APP_SEC_OF[b.dataset.dgo || b.dataset.tab] || b.dataset.dgo || b.dataset.tab)));
+  Object.entries(APP_SEC_BTN).forEach(([id, sec]) => { const el = $(id); if (el) el.classList.toggle("app-hide", appHiddenSec(sec)); });
+}
 function show(v) {
+  if (appHiddenSec(APP_SEC_OF[v] || v)) { toast("Этот раздел открывается в Telegram-боте\nBu bo'lim Telegram-botda ochiladi"); return; }
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat", "msgr"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat", "msgr", "appsec"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -2568,6 +2624,8 @@ function show(v) {
   window.scrollTo(0, 0);
   crmOnShow(v);
   if (v === "msgr") msgrLoad();
+  if (v === "appsec") appSecLoad();
+  applyAppSections();
 }
 tg.BackButton.onClick(() => { if (!radiBack()) show(SUBPAGES[view] || "me"); });
 
@@ -3660,6 +3718,7 @@ async function load(fresh = false) {
       openedShop = true; view = "shop"; shopTab = data.is_admin ? "home" : "sell"; show(view); loadShop(); return;
     }
     openedShop = true;
+    if (appHiddenSec(APP_SEC_OF[view] || view)) view = data.is_employee ? "me" : "team";  // раздел скрыли в приложении
     show(view);
   } catch (e) {
     hideSplash();
@@ -4530,6 +4589,22 @@ const crmTime = at => { if (!at) return ""; const d = at.slice(0, 10), t = new D
 const crmWin = w => w === null || w === undefined ? "" : w >= 1 ? `можно ответить ещё ${Math.floor(w)} ч` : `ещё ${Math.round(w * 60)} мин`;
 /* Аватар: фото профиля из Telegram, если его нет или оно скрыто — буквы */
 const crmAva = c => `<div class="crm-ava">${esc(crmInit(c.name))}${c.ava ? `<img src="${c.ava}" alt="" loading="lazy" onerror="this.remove()">` : ""}</div>`;
+/* ---------- Разделы в приложении ---------- */
+async function appSecLoad(body) {
+  try {
+    const r = await api("/api/app_sections", body || {});
+    $("as-list").innerHTML = Object.entries(r.titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0">
+        <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-as="${k}" ${r.hidden.includes(k) ? "" : "checked"}><span></span></label></div>`).join("");
+    $("as-admin").checked = !!r.admin_too;
+    if (r.msg) toast(r.msg);
+  } catch (e) { toast(e.message); }
+}
+$("go-appsec").onclick = () => show("appsec");
+$("as-save").onclick = () => {
+  const hidden = []; document.querySelectorAll("[data-as]").forEach(i => { if (!i.checked) hidden.push(i.dataset.as); });
+  appSecLoad({hidden, admin_too: $("as-admin").checked});
+};
+
 /* ---------- RADI Chat: телефоны, доступы, белый список ---------- */
 const MS_KIND = {delete: "удаление", contact: "контакт/ссылка", edit: "редактирование", ttl: "исчезающее", other: "другое"};
 function msgrRender(r) {
