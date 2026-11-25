@@ -17,6 +17,10 @@ BIZ_BOT_TOKEN = os.getenv("BIZ_BOT_TOKEN", "").strip()
 # ID группы (бот должен быть в ней) или None — в личку руководителям. BIZ_NOTIFY_THREAD — тема группы или None.
 BIZ_NOTIFY_CHAT = -1005897595052  # группа «Bot control»
 BIZ_NOTIFY_THREAD = None
+# Отдельная группа/тема для конкретного рабочего аккаунта: {Telegram ID владельца аккаунта: (ID группы, ID темы)}
+BIZ_NOTIFY_ROUTES = {
+    6658459389: (-1005897595052, 2),  # @xupingleader → «Bot control», тема 2
+}
 # Адрес личного кабинета (мини-приложения) — для кнопок «🏠 Личный кабинет / Kabinetim» в обоих ботах.
 # Берётся из WEBAPP_URL в Railway; если там пусто или старый адрес PythonAnywhere — этот:
 WEBAPP_URL_DEFAULT = "https://staff-bot-production-7a47ab13.up.railway.app"
