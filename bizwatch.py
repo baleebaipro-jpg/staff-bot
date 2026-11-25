@@ -121,14 +121,20 @@ def _line(r) -> str:
     return f"[{r['sent_at'][8:10]}.{r['sent_at'][5:7]} {r['sent_at'][11:16]}] писал(а) {who}: {body or '—'}"
 
 
+def _targets() -> list:
+    """Группа «Bot control» (BIZ_NOTIFY_CHAT) или, если не задана, — личка руководителей."""
+    chat = getattr(config, "BIZ_NOTIFY_CHAT", None)
+    return [(chat, getattr(config, "BIZ_NOTIFY_THREAD", None))] if chat else [(a, None) for a in config.ADMINS]
+
+
 async def _to_admins(bot, text: str, document=None) -> None:
-    for a in config.ADMINS:
+    for a, th in _targets():
         try:
             if document:
                 document.seek(0)
-                await bot.send_document(a, document, caption=text[:1024], filename=document.name)
+                await bot.send_document(a, document, caption=text[:1024], filename=document.name, message_thread_id=th)
             else:
-                await bot.send_message(a, text[:4096])
+                await bot.send_message(a, text[:4096], message_thread_id=th)
         except TelegramError as e:
             logging.warning("Контроль бизнес-чатов: не отправлено %s: %s", a, e)
 
@@ -139,13 +145,13 @@ async def _send_media(bot, r, caption: str) -> None:
             "sticker": bot.send_sticker}.get(r["kind"])
     if not send or not r["file_id"]:
         return
-    for a in config.ADMINS:
+    for a, th in _targets():
         try:
             if r["kind"] in ("video_note", "sticker"):
-                await send(a, r["file_id"])
-                await bot.send_message(a, caption[:4096])
+                await send(a, r["file_id"], message_thread_id=th)
+                await bot.send_message(a, caption[:4096], message_thread_id=th)
             else:
-                await send(a, r["file_id"], caption=caption[:1024])
+                await send(a, r["file_id"], caption=caption[:1024], message_thread_id=th)
         except TelegramError as e:
             logging.warning("Контроль бизнес-чатов: медиа не отправлено %s: %s", a, e)
 
