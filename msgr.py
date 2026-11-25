@@ -24,7 +24,14 @@ PERMS = {  # ключ → подпись в кабинете (порядок = �
     "secret_chats": "🔒 Секретные чаты",
     "create_groups": "👥 Создавать группы и каналы",
 }
-DEFAULTS = {"perms": {k: False for k in PERMS}, "whitelist": [], "keepalive": True}
+ASSIGN_MODES = {
+    "first": "Кто первым ответил — тот и ведёт",
+    "round": "Раздаёт бот по очереди (кто на смене)",
+    "manual": "Назначает руководитель",
+}
+TIMEOUT_ACTIONS = {"keep": "остаётся у менеджера", "queue": "уходит в общие «Новые»", "notify": "уведомление руководителю"}
+DEFAULTS = {"perms": {k: False for k in PERMS}, "whitelist": [], "keepalive": True,
+            "assign_mode": "first", "unassigned_visible": True, "timeout_min": 0, "timeout_action": "keep"}
 
 
 def init() -> None:
@@ -36,6 +43,9 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS msgr_codes(code TEXT PRIMARY KEY, name TEXT, created_by INTEGER, expires REAL);
             CREATE TABLE IF NOT EXISTS msgr_links(tg_id INTEGER PRIMARY KEY, billz_id TEXT, by_device TEXT, at TEXT);
             CREATE TABLE IF NOT EXISTS msgr_kv(key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS msgr_assign(peer INTEGER PRIMARY KEY, staff_uid INTEGER, at TEXT, how TEXT);
+            CREATE TABLE IF NOT EXISTS msgr_groups(peer INTEGER PRIMARY KEY, title TEXT, kind TEXT, seen TEXT);
+            CREATE TABLE IF NOT EXISTS msgr_staff(staff_uid INTEGER PRIMARY KEY, perms TEXT, see_others INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS msgr_violations(
                 id INTEGER PRIMARY KEY, device TEXT, kind TEXT, peer INTEGER, detail TEXT, at TEXT);
         """)
@@ -73,10 +83,14 @@ def settings() -> dict:
     out["perms"].update({k: bool(v) for k, v in (s.get("perms") or {}).items() if k in PERMS})
     out["whitelist"] = [str(x).strip() for x in (s.get("whitelist") or []) if str(x).strip()][:200]
     out["keepalive"] = bool(s.get("keepalive", True))
+    out["assign_mode"] = s.get("assign_mode") if s.get("assign_mode") in ASSIGN_MODES else "first"
+    out["unassigned_visible"] = bool(s.get("unassigned_visible", True))
+    out["timeout_min"] = max(0, min(1440, int(s.get("timeout_min") or 0)))
+    out["timeout_action"] = s.get("timeout_action") if s.get("timeout_action") in TIMEOUT_ACTIONS else "keep"
     return out
 
 
-def save_settings(perms: dict = None, whitelist=None, keepalive=None) -> dict:
+def save_settings(perms: dict = None, whitelist=None, keepalive=None, assign: dict = None) -> dict:
     s = settings()
     if perms is not None:
         s["perms"].update({k: bool(v) for k, v in perms.items() if k in PERMS})
@@ -86,6 +100,9 @@ def save_settings(perms: dict = None, whitelist=None, keepalive=None) -> dict:
         s["whitelist"] = [str(x).strip() for x in whitelist if str(x).strip()][:200]
     if keepalive is not None:
         s["keepalive"] = bool(keepalive)
+    for k, v in (assign or {}).items():
+        if k in ("assign_mode", "unassigned_visible", "timeout_min", "timeout_action"):
+            s[k] = v
     with core.db() as c:
         c.execute("INSERT OR REPLACE INTO msgr_kv(key, value) VALUES('settings', ?)", (json.dumps(s, ensure_ascii=False),))
     return s
@@ -280,3 +297,172 @@ def deleted(chat_id: int, limit: int = 100) -> list:
                          "WHERE chat_id=? AND deleted_at IS NOT NULL ORDER BY msg_id DESC LIMIT ?", (chat_id, limit)).fetchall()
     return [{"id": r["msg_id"], "out": bool(r["outgoing"]), "kind": r["kind"] or "text", "text": r["text"] or "",
              "sent": (r["sent_at"] or "")[:16], "deleted": (r["deleted_at"] or "")[:16]} for r in rows]
+
+
+# ---------- назначение чатов сотрудникам ----------
+# peer: id чата в Telegram (личный чат — id человека > 0; группа/канал — отрицательный, как в Telegram Bot API).
+# Личные чаты без назначения видны всем (если unassigned_visible) — это очередь «Новые».
+# Группы и каналы — только назначенным.
+
+def staff_perms(staff_uid: int) -> dict:
+    """Доступы сотрудника: свои (если заданы) поверх общих «по умолчанию»; see_others: 0 — не видит чужие, 1 — только чтение."""
+    base = settings()["perms"]
+    with core.db() as c:
+        r = c.execute("SELECT * FROM msgr_staff WHERE staff_uid=?", (staff_uid or 0,)).fetchone()
+    own = json.loads(r["perms"]) if r and r["perms"] else None
+    out = dict(base)
+    if own is not None:
+        out.update({k: bool(v) for k, v in own.items() if k in PERMS})
+    return {"perms": out, "custom": own is not None, "see_others": int(r["see_others"] or 0) if r else 0}
+
+
+def save_staff(staff_uid: int, perms=None, see_others=None, reset: bool = False) -> None:
+    cur = staff_perms(staff_uid)
+    own = None if reset else ({k: bool(v) for k, v in (perms or {}).items() if k in PERMS} if perms is not None
+                              else (cur["perms"] if cur["custom"] else None))
+    see = int(see_others) if see_others is not None else cur["see_others"]
+    with core.db() as c:
+        c.execute("INSERT OR REPLACE INTO msgr_staff(staff_uid, perms, see_others) VALUES(?, ?, ?)",
+                  (staff_uid, json.dumps(own) if own is not None else None, see))
+
+
+def assign(peer: int, staff_uid: int, how: str = "admin") -> None:
+    with core.db() as c:
+        if staff_uid:
+            c.execute("INSERT OR REPLACE INTO msgr_assign(peer, staff_uid, at, how) VALUES(?, ?, ?, ?)",
+                      (int(peer), int(staff_uid), _now(), how))
+        else:
+            c.execute("DELETE FROM msgr_assign WHERE peer=?", (int(peer),))
+
+
+def owner_of(peer: int):
+    with core.db() as c:
+        r = c.execute("SELECT staff_uid FROM msgr_assign WHERE peer=?", (int(peer),)).fetchone()
+    return r["staff_uid"] if r else None
+
+
+def claim(dev: dict, peer: int) -> dict:
+    """Менеджер пишет клиенту: в режиме «кто первый» свободный чат закрепляется за ним."""
+    me = (dev or {}).get("staff_uid") or 0
+    who = owner_of(peer)
+    if who == me and me:
+        return {"ok": True, "mine": True}
+    if who:
+        return {"ok": False, "taken": True, "by": core.name(who)}
+    if settings()["assign_mode"] == "first" and me and peer > 0:
+        assign(peer, me, "first")
+        return {"ok": True, "mine": True, "claimed": True}
+    return {"ok": False, "error": "Этот чат вам не назначен."}
+
+
+def assignments_for(dev: dict) -> dict:
+    """Для приложения: какие чаты мои, какие чужие и как вести себя со свободными."""
+    me = (dev or {}).get("staff_uid") or 0
+    s = settings()
+    with core.db() as c:
+        rows = c.execute("SELECT peer, staff_uid FROM msgr_assign").fetchall()
+    sp = staff_perms(me)
+    return {"enabled": bool(me), "mode": s["assign_mode"], "unassigned_visible": s["unassigned_visible"],
+            "see_others": sp["see_others"],
+            "mine": [r["peer"] for r in rows if r["staff_uid"] == me],
+            "others": [r["peer"] for r in rows if r["staff_uid"] != me]}
+
+
+def _on_shift(uid: int) -> bool:
+    try:
+        with core.db() as c:
+            return c.execute("SELECT 1 FROM sessions WHERE user_id=? AND check_out IS NULL", (uid,)).fetchone() is not None
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def on_incoming(peer: int) -> None:
+    """Новое сообщение клиента (из бизнес-бота). Режим «по очереди»: свободный личный чат — следующему на смене."""
+    s = settings()
+    if s["assign_mode"] != "round" or peer <= 0 or owner_of(peer):
+        return
+    with core.db() as c:
+        devs = c.execute("SELECT DISTINCT staff_uid FROM msgr_devices WHERE disabled=0 AND staff_uid IS NOT NULL").fetchall()
+        cands = sorted(r["staff_uid"] for r in devs)
+        if not cands:
+            return
+        on = [u for u in cands if _on_shift(u)] or cands
+        r = c.execute("SELECT value FROM msgr_kv WHERE key='round_last'").fetchone()
+        last = int(r["value"]) if r else 0
+        nxt = next((u for u in on if u > last), on[0])
+        c.execute("INSERT OR REPLACE INTO msgr_kv(key, value) VALUES('round_last', ?)", (str(nxt),))
+    assign(peer, nxt, "round")
+
+
+def report_groups(items: list) -> None:
+    """Приложение сообщает группы и каналы рабочего аккаунта (бизнес-бот видит только личные чаты)."""
+    with core.db() as c:
+        for it in (items or [])[:500]:
+            try:
+                peer = int(it.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if peer >= 0:
+                continue
+            c.execute("INSERT OR REPLACE INTO msgr_groups(peer, title, kind, seen) VALUES(?, ?, ?, ?)",
+                      (peer, str(it.get("title") or "")[:120], str(it.get("kind") or "group")[:10], _now()))
+
+
+def chats_admin(q: str = "", limit: int = 100) -> list:
+    """Для кабинета: последние чаты рабочих аккаунтов и кому назначены."""
+    q = (q or "").strip().lower()
+    with core.db() as c:
+        rows = c.execute("SELECT chat_id, MAX(chat_name) AS name, MAX(chat_username) AS un, MAX(sent_at) AS last "
+                         "FROM biz_messages GROUP BY chat_id ORDER BY last DESC LIMIT 500").fetchall()
+        assigned = {r["peer"]: r["staff_uid"] for r in c.execute("SELECT peer, staff_uid FROM msgr_assign")}
+        groups = c.execute("SELECT peer, title, kind, seen FROM msgr_groups ORDER BY title").fetchall()
+    out = []
+    for g in groups:  # группы и каналы — сверху: по умолчанию их не видит никто
+        if q and q not in (g["title"] or "").lower():
+            continue
+        who = assigned.get(g["peer"])
+        out.append({"peer": g["peer"], "name": ("📢 " if g["kind"] == "channel" else "👥 ") + (g["title"] or str(g["peer"])),
+                    "username": "", "last": "", "staff_uid": who or 0, "staff": core.name(who) if who else "", "group": True})
+    for r in rows:
+        name = r["name"] or str(r["chat_id"])
+        if q and q not in f"{name} {r['un'] or ''}".lower():
+            continue
+        who = assigned.get(r["chat_id"])
+        out.append({"peer": r["chat_id"], "name": name, "username": r["un"] or "", "last": (r["last"] or "")[:16],
+                    "staff_uid": who or 0, "staff": core.name(who) if who else ""})
+        if len(out) >= limit:
+            break
+    return out
+
+
+_last_timeout_check = 0.0
+
+
+def check_timeouts() -> None:
+    """Раз в минуту: клиент ждёт ответа дольше N минут → действие из настроек (в «Новые» или уведомление руководителю)."""
+    global _last_timeout_check
+    if time.time() - _last_timeout_check < 60:
+        return
+    _last_timeout_check = time.time()
+    s = settings()
+    if not s["timeout_min"] or s["timeout_action"] == "keep":
+        return
+    limit = (core.now() - timedelta(minutes=s["timeout_min"])).strftime(core.FMT)
+    with core.db() as c:
+        rows = c.execute("SELECT a.peer, a.staff_uid, m.chat_name, m.sent_at FROM msgr_assign a "
+                         "JOIN biz_messages m ON m.chat_id = a.peer "
+                         "WHERE a.peer > 0 AND m.sent_at = (SELECT MAX(sent_at) FROM biz_messages WHERE chat_id = a.peer) "
+                         "AND m.outgoing = 0 AND m.sent_at <= ? GROUP BY a.peer", (limit,)).fetchall()
+        for r in rows:
+            key = f"timeout:{r['peer']}"
+            done = c.execute("SELECT value FROM msgr_kv WHERE key=?", (key,)).fetchone()
+            if done and done["value"] == r["sent_at"]:
+                continue  # по этому сообщению клиента уже сработало
+            c.execute("INSERT OR REPLACE INTO msgr_kv(key, value) VALUES(?, ?)", (key, r["sent_at"]))
+            who = core.name(r["staff_uid"])
+            if s["timeout_action"] == "queue":
+                c.execute("DELETE FROM msgr_assign WHERE peer=?", (r["peer"],))
+                text = f"⏱ RADI Chat: {who} не ответил(а) клиенту {r['chat_name']} {s['timeout_min']} мин — чат возвращён в «Новые»."
+            else:
+                text = f"⏱ RADI Chat: клиент {r['chat_name']} ждёт ответа больше {s['timeout_min']} мин. Менеджер: {who}."
+            core.notify_admins(c, text)
