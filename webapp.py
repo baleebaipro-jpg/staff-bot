@@ -2416,9 +2416,29 @@ function radiBack() {
   document.addEventListener("touchcancel", end, {passive: true});
 })();
 
+/* Старое Android-приложение (до 1.2): камера в кабинете не работает, «Открыть камеру» открывает галерею —
+   просим обновить. */
+const APP_MIN_VERSION = "1.2";
+function appOutdated() {
+  try {
+    const m = navigator.userAgent.match(/RadiTeamApp\/([\d.]+)/);  // версия приложения — в User-Agent (с 1.0)
+    const v = m ? m[1] : "";
+    if (!v) return false;
+    const a = v.split(".").map(Number), b = APP_MIN_VERSION.split(".").map(Number);
+    for (let i = 0; i < 3; i++) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) < (b[i] || 0); }
+  } catch (e) {}
+  return false;
+}
+function appUpdatePrompt() {
+  const url = location.origin + "/app/radi-team.apk";
+  tg.showConfirm("Обновите приложение RADI Team — в старой версии не работает камера.\nIlovani yangilang — eski versiyada kamera ishlamaydi.\n\nСкачать новую версию?",
+    ok => { if (ok) { try { window.RadiApp.openExternal(url); } catch (e) { location.href = url; } } });
+}
+
 if (IS_APP) {
   document.documentElement.classList.add("app");
-  window.appBack = radiBack;  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
+  window.appBack = radiBack;
+  if (appOutdated()) setTimeout(appUpdatePrompt, 1500);  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
   document.addEventListener("contextmenu", e => { if (!/INPUT|TEXTAREA/.test(e.target.tagName)) e.preventDefault(); });
   document.addEventListener("copy", e => { if (!/INPUT|TEXTAREA/.test((e.target || {}).tagName || "")) e.preventDefault(); });
 }
