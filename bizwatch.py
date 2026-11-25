@@ -121,31 +121,41 @@ def _line(r) -> str:
     return f"[{r['sent_at'][8:10]}.{r['sent_at'][5:7]} {r['sent_at'][11:16]}] писал(а) {who}: {body or '—'}"
 
 
-async def _to_admins(bot, text: str, document=None) -> None:
-    for a in config.ADMINS:
+def _targets(owner=None) -> list:
+    """Своя группа/тема рабочего аккаунта (BIZ_NOTIFY_ROUTES), иначе группа «Bot control» (BIZ_NOTIFY_CHAT),
+    иначе — личка руководителей."""
+    route = getattr(config, "BIZ_NOTIFY_ROUTES", {}).get(owner) if owner else None
+    if route:
+        return [route]
+    chat = getattr(config, "BIZ_NOTIFY_CHAT", None)
+    return [(chat, getattr(config, "BIZ_NOTIFY_THREAD", None))] if chat else [(a, None) for a in config.ADMINS]
+
+
+async def _to_admins(bot, text: str, document=None, owner=None) -> None:
+    for a, th in _targets(owner):
         try:
             if document:
                 document.seek(0)
-                await bot.send_document(a, document, caption=text[:1024], filename=document.name)
+                await bot.send_document(a, document, caption=text[:1024], filename=document.name, message_thread_id=th)
             else:
-                await bot.send_message(a, text[:4096])
+                await bot.send_message(a, text[:4096], message_thread_id=th)
         except TelegramError as e:
             logging.warning("Контроль бизнес-чатов: не отправлено %s: %s", a, e)
 
 
-async def _send_media(bot, r, caption: str) -> None:
+async def _send_media(bot, r, caption: str, owner=None) -> None:
     send = {"photo": bot.send_photo, "video": bot.send_video, "voice": bot.send_voice, "audio": bot.send_audio,
             "document": bot.send_document, "animation": bot.send_animation, "video_note": bot.send_video_note,
             "sticker": bot.send_sticker}.get(r["kind"])
     if not send or not r["file_id"]:
         return
-    for a in config.ADMINS:
+    for a, th in _targets(owner):
         try:
             if r["kind"] in ("video_note", "sticker"):
-                await send(a, r["file_id"])
-                await bot.send_message(a, caption[:4096])
+                await send(a, r["file_id"], message_thread_id=th)
+                await bot.send_message(a, caption[:4096], message_thread_id=th)
             else:
-                await send(a, r["file_id"], caption=caption[:1024])
+                await send(a, r["file_id"], caption=caption[:1024], message_thread_id=th)
         except TelegramError as e:
             logging.warning("Контроль бизнес-чатов: медиа не отправлено %s: %s", a, e)
 
@@ -193,11 +203,11 @@ async def _on_connection(bc, bot) -> None:
     if bc.is_enabled:
         if not was or not was["enabled"]:
             _event(bc.id, None, "", "connected", "")
-            await _to_admins(bot, f"🔗 Рабочий аккаунт подключён к контролю: {name}{_at(bc.user)}\n\n"
+            await _to_admins(bot, owner=bc.user.id, text=f"🔗 Рабочий аккаунт подключён к контролю: {name}{_at(bc.user)}\n\n"
                                   "Теперь я сообщу, если в его личных переписках удалят или изменят сообщение.")
     else:
         _event(bc.id, None, "", "disconnected", "")
-        await _to_admins(bot, f"⚠️ Бот ОТКЛЮЧЁН от рабочего аккаунта: {name}{_at(bc.user)}\n"
+        await _to_admins(bot, owner=bc.user.id, text=f"⚠️ Бот ОТКЛЮЧЁН от рабочего аккаунта: {name}{_at(bc.user)}\n"
                               "Контроль переписок по этому аккаунту остановлен.")
 
 
@@ -235,13 +245,14 @@ async def _on_message(m, edited: bool, bot) -> None:
             c.execute("INSERT INTO biz_edits(conn_id, chat_id, msg_id, old, new, at) VALUES(?, ?, ?, ?, ?, ?)",
                       (m.business_connection_id, chat.id, m.message_id, old["text"] or "", text, _now()))
         _event(m.business_connection_id, chat.id, chat_name, "edited", info)
-        await _to_admins(bot, f"✏️ Изменено сообщение\n🧑‍💼 Менеджер (рабочий аккаунт): {_owner_name(row)}\n👤 Клиент: {chat_name}"
+        await _to_admins(bot, owner=owner_id, text=f"✏️ Изменено сообщение\n🧑‍💼 Менеджер (рабочий аккаунт): {_owner_name(row)}\n👤 Клиент: {chat_name}"
                               f"{' (@' + chat.username + ')' if chat.username else ''}\n✍️ Изменил: {who}\n\n"
                               f"Было:\n{old['text'] or '—'}\n\nСтало:\n{text or '—'}")
 
 
 async def _on_deleted(d, bot) -> None:
     row = await _ensure_conn(bot, d.business_connection_id)
+    own = row["user_id"] if row else None
     ids = list(d.message_ids)
     chat = d.chat
     chat_name = " ".join(x for x in [chat.first_name, chat.last_name] if x) or chat.title or str(chat.id)
@@ -271,12 +282,12 @@ async def _on_deleted(d, bot) -> None:
     if len(lines) > LIST_MAX:
         f = io.BytesIO("\n".join(lines).encode("utf-8"))
         f.name = f"udalennaya_perepiska_{core.now():%Y%m%d_%H%M}.txt"
-        await _to_admins(bot, head + "\n\n" + "\n".join(lines[:5]) + "\n…\n📄 Вся удалённая переписка — в файле." + tail)
-        await _to_admins(bot, f"📄 {chat_name} — удалённая переписка", document=f)
+        await _to_admins(bot, head + "\n\n" + "\n".join(lines[:5]) + "\n…\n📄 Вся удалённая переписка — в файле." + tail, owner=own)
+        await _to_admins(bot, f"📄 {chat_name} — удалённая переписка", document=f, owner=own)
     else:
-        await _to_admins(bot, head + ("\n\n" + "\n".join(lines) if lines else "") + tail)
+        await _to_admins(bot, head + ("\n\n" + "\n".join(lines) if lines else "") + tail, owner=own)
     for r in [r for r in rows if r["file_id"]][:MEDIA_MAX]:
-        await _send_media(bot, r, "🗑 Удалено: " + _line(r))
+        await _send_media(bot, r, "🗑 Удалено: " + _line(r), owner=own)
 
 
 def connections() -> list:
