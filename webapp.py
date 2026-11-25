@@ -1354,6 +1354,12 @@ PAGE = r"""<!doctype html>
 
   .toast { position: fixed; left: 14px; right: 14px; bottom: 18px; background: #2a2d4d; border: 1px solid var(--line);
            padding: 13px 15px; border-radius: 14px; white-space: pre-line; display: none; z-index: 9; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+  /* стрелка свайпа «назад» от левого края */
+  #swipe-back { position: fixed; left: 0; top: 50%; width: 40px; height: 40px; border-radius: 50%; z-index: 50;
+                display: flex; align-items: center; justify-content: center; font-size: 26px; line-height: 1;
+                color: #fff; background: rgba(42,45,77,.92); border: 1px solid rgba(168,140,255,.35);
+                opacity: 0; pointer-events: none; transform: translate(-40px, -50%); transition: background .15s; }
+  #swipe-back.ready { background: #7c5cff; }
 
   /* ===== Тема RADI: чёрный + фиолетовое свечение, стеклянные карточки ===== */
   :root { --bg: #06050c; --card: #15112a; --card2: rgba(255,255,255,.06); --line: rgba(168,140,255,.16);
@@ -2206,24 +2212,67 @@ const tg = IS_APP ? {
   HapticFeedback: {notificationOccurred: () => vib(30), selectionChanged: () => vib(8), impactOccurred: () => vib(15)},
   BackButton: {show() { appBackState.on = true; }, hide() { appBackState.on = false; }, onClick(cb) { appBackState.cb = cb; }},
 } : realTg;
+/* «Назад» — одно действие для кнопки Telegram, кнопки Android и свайпа от левого края.
+   true — обработали (закрыли окно / шаг назад / вышли из раздела), false — назад некуда. */
+function radiBack() {
+  try {
+    if (!document.getElementById("rec").classList.contains("hidden")) { recClose(); return true; }
+    const bg = document.getElementById("inv-sheet-bg");
+    if (bg && !bg.classList.contains("hidden")) { invSheetClose(); return true; }
+    const sb = document.getElementById("sheet-bg");
+    if (sb && !sb.classList.contains("hidden")) { sb.classList.add("hidden"); return true; }
+    if (view === "shop") {
+      if (shopTab === "sell" && cart.step !== "amount") { cart.step = cart.step === "pay" ? "details" : "amount"; shopSell(); return true; }
+      if (shopTab === "menu" && shopSub) { shopSub = null; renderShop(); return true; }
+      if (shopTab !== "home" && data && data.is_admin) { shopTab = "home"; shopSub = null; loadShop(); return true; }
+    }
+    if (view in SUBPAGES) { show(SUBPAGES[view] || "me"); return true; }
+  } catch (e) {}
+  return false;
+}
+
+/* Свайп от левого края вправо = «назад» (как в мини-приложении BotFather) */
+(function edgeSwipeBack() {
+  const EDGE = 28, NEED = 70;
+  let sx = 0, sy = 0, active = false, dx = 0;
+  const arrow = document.createElement("div");
+  arrow.id = "swipe-back";
+  arrow.textContent = "‹";
+  if (document.body) document.body.appendChild(arrow);
+  else document.addEventListener("DOMContentLoaded", () => document.body.appendChild(arrow));
+  const paint = () => {
+    const p = Math.min(1, dx / NEED);
+    arrow.style.opacity = String(p);
+    arrow.style.transform = `translate(${Math.min(dx, NEED) * 0.6 - 40}px, -50%) scale(${0.7 + 0.3 * p})`;
+    arrow.classList.toggle("ready", p >= 1);
+  };
+  document.addEventListener("touchstart", e => {
+    const t = e.touches[0];
+    active = e.touches.length === 1 && t.clientX <= EDGE;
+    if (!active) return;
+    sx = t.clientX; sy = t.clientY; dx = 0;
+    arrow.style.top = t.clientY + "px";
+  }, {passive: true});
+  document.addEventListener("touchmove", e => {
+    if (!active) return;
+    const t = e.touches[0];
+    dx = t.clientX - sx;
+    if (Math.abs(t.clientY - sy) > Math.max(40, dx)) { active = false; dx = 0; }  // это вертикальная прокрутка
+    paint();
+  }, {passive: true});
+  const end = () => {
+    if (active && dx >= NEED && radiBack()) {
+      if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    }
+    active = false; dx = 0; paint();
+  };
+  document.addEventListener("touchend", end, {passive: true});
+  document.addEventListener("touchcancel", end, {passive: true});
+})();
+
 if (IS_APP) {
   document.documentElement.classList.add("app");
-  window.appBack = () => {  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
-    try {
-      if (!document.getElementById("rec").classList.contains("hidden")) { recClose(); return true; }
-      const bg = document.getElementById("inv-sheet-bg");
-      if (bg && !bg.classList.contains("hidden")) { invSheetClose(); return true; }
-      const sb = document.getElementById("sheet-bg");
-      if (sb && !sb.classList.contains("hidden")) { sb.classList.add("hidden"); return true; }
-      if (view === "shop") {
-        if (shopTab === "sell" && cart.step !== "amount") { cart.step = cart.step === "pay" ? "details" : "amount"; shopSell(); return true; }
-        if (shopTab === "menu" && shopSub) { shopSub = null; renderShop(); return true; }
-        if (shopTab !== "home" && data && data.is_admin) { shopTab = "home"; shopSub = null; loadShop(); return true; }
-      }
-      if (view in SUBPAGES) { show(SUBPAGES[view] || "me"); return true; }
-    } catch (e) {}
-    return false;
-  };
+  window.appBack = radiBack;  // кнопка «Назад» Android: true — обработали, false — свернуть приложение
   document.addEventListener("contextmenu", e => { if (!/INPUT|TEXTAREA/.test(e.target.tagName)) e.preventDefault(); });
   document.addEventListener("copy", e => { if (!/INPUT|TEXTAREA/.test((e.target || {}).tagName || "")) e.preventDefault(); });
 }
@@ -2353,7 +2402,7 @@ function show(v) {
   window.scrollTo(0, 0);
   crmOnShow(v);
 }
-tg.BackButton.onClick(() => show(SUBPAGES[view] || "me"));
+tg.BackButton.onClick(() => { if (!radiBack()) show(SUBPAGES[view] || "me"); });
 
 /* ---------- тексты кабинета сотрудника (uz / ru) ---------- */
 const SX = {
