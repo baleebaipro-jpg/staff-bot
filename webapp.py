@@ -139,7 +139,7 @@ def api_msgr_pair():
 @need_device
 def api_msgr_config(dev, data):
     s = msgr.settings()
-    return jsonify(ok=True, name=dev["name"], perms=s["perms"], whitelist=s["whitelist"], keepalive=s["keepalive"])
+    return jsonify(ok=True, name=msgr.dev_name(dev), perms=s["perms"], whitelist=s["whitelist"], keepalive=s["keepalive"])
 
 
 @app.post("/api/msgr/client")
@@ -183,7 +183,7 @@ def api_msgr_admin(uid, data):
     """Кабинет руководителя → RADI Chat: код подключения, телефоны, разрешения, белый список, журнал."""
     a, msg = data.get("action"), ""
     if a == "code":
-        return jsonify(ok=True, **msgr.new_code(uid, str(data.get("name") or "")))
+        return jsonify(ok=True, **msgr.new_code(uid, int(data.get("staff_uid") or 0), str(data.get("name") or "")))
     if a in ("disable", "enable"):
         msgr.set_disabled(str(data.get("id") or ""), a == "disable")
         msg = "🚫 Телефон отключён" if a == "disable" else "✅ Телефон снова подключён"
@@ -191,7 +191,7 @@ def api_msgr_admin(uid, data):
         msgr.save_settings(data.get("perms"), data.get("whitelist"), data.get("keepalive"))
         msg = "✅ Сохранено. Телефоны получат настройки в течение 5 минут."
     s = msgr.settings()
-    return jsonify(ok=True, msg=msg, devices=msgr.devices(), perms=s["perms"], perm_titles=msgr.PERMS,
+    return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=msgr.staff(), perms=s["perms"], perm_titles=msgr.PERMS,
                    whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50))
 
 
@@ -2081,8 +2081,8 @@ PAGE = r"""<!doctype html>
     <div class="page-sub">Telegram рабочего аккаунта на телефонах менеджеров</div>
     <div class="card">
       <b>Подключить телефон</b>
-      <div class="hint" style="margin:6px 0 10px">В RADI Chat на телефоне появится окно «Код подключения» — введите код. Код действует 10 минут, один раз.</div>
-      <input id="ms-name" placeholder="Чей телефон? Например: Дилробо" maxlength="60" style="margin-bottom:8px">
+      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите код. В RADI Chat на его телефоне появится окно «Код подключения» — введите код. Код действует 10 минут, один раз; телефон закрепится за этим сотрудником.</div>
+      <select id="ms-staff" style="margin-bottom:8px;width:100%"><option value="">— Чей телефон? Выберите сотрудника —</option></select>
       <button class="btn btn-main" id="ms-code-btn" style="width:100%">🔑 Получить код</button>
       <div id="ms-code" class="hidden" style="text-align:center;margin-top:12px"><b id="ms-code-v" style="font-size:34px;letter-spacing:6px"></b>
         <div class="hint" id="ms-code-h"></div></div>
@@ -4608,6 +4608,10 @@ $("as-save").onclick = () => {
 /* ---------- RADI Chat: телефоны, доступы, белый список ---------- */
 const MS_KIND = {delete: "удаление", contact: "контакт/ссылка", edit: "редактирование", ttl: "исчезающее", other: "другое"};
 function msgrRender(r) {
+  const sel = $("ms-staff"), cur = sel.value;
+  sel.innerHTML = `<option value="">— Чей телефон? Выберите сотрудника —</option>` +
+    (r.staff || []).map(x => `<option value="${x.uid}">${esc(x.name)}</option>`).join("");
+  sel.value = cur;
   $("ms-devs").innerHTML = r.devices.length ? r.devices.map(d => `<div class="row-btn" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
       <span style="font-size:20px">${d.disabled ? "🚫" : "📱"}</span>
       <span style="flex:1;min-width:0"><b>${esc(d.name)}</b><div class="hint" style="font-size:12px">был онлайн ${esc(d.seen)}${d.version ? " · " + esc(d.version) : ""}</div></span>
@@ -4632,8 +4636,9 @@ async function msgrApi(body) {
 function msgrLoad() { $("ms-code").classList.add("hidden"); msgrApi({}); }
 $("ms-code-btn").onclick = async () => {
   try {
-    const r = await api("/api/msgr/admin", {action: "code", name: $("ms-name").value});
-    $("ms-code-v").textContent = r.code; $("ms-code-h").textContent = `Действует ${r.minutes} минут`;
+    if (!$("ms-staff").value) return toast("Выберите сотрудника");
+    const r = await api("/api/msgr/admin", {action: "code", staff_uid: Number($("ms-staff").value)});
+    $("ms-code-v").textContent = r.code; $("ms-code-h").textContent = `Для: ${r.name} · действует ${r.minutes} минут`;
     $("ms-code").classList.remove("hidden");
   } catch (e) { toast(e.message); }
 };

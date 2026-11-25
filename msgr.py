@@ -39,6 +39,20 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS msgr_violations(
                 id INTEGER PRIMARY KEY, device TEXT, kind TEXT, peer INTEGER, detail TEXT, at TEXT);
         """)
+        for table, col in (("msgr_devices", "staff_uid"), ("msgr_codes", "staff_uid")):
+            if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER")
+
+
+def staff() -> list:
+    """Сотрудники и руководители — за кем можно закрепить телефон."""
+    import config
+    seen, out = set(), []
+    for uid in list(getattr(config, "EMPLOYEES", [])) + list(getattr(config, "ADMINS", [])):
+        if uid not in seen:
+            seen.add(uid)
+            out.append({"uid": uid, "name": core.name(uid)})
+    return out
 
 
 def _now() -> str:
@@ -79,13 +93,18 @@ def save_settings(perms: dict = None, whitelist=None, keepalive=None) -> dict:
 
 # ---------- подключение телефонов ----------
 
-def new_code(admin_uid: int, name: str = "") -> dict:
+def new_code(admin_uid: int, staff_uid: int = 0, name: str = "") -> dict:
+    """Код подключения телефона, закреплённого за сотрудником staff_uid (имя берётся из команды)."""
+    staff_uid = int(staff_uid or 0)
+    if staff_uid and staff_uid not in {x["uid"] for x in staff()}:
+        staff_uid = 0
+    name = core.name(staff_uid) if staff_uid else (name or "").strip()[:60]
     code = f"{secrets.randbelow(10 ** 6):06d}"
     with core.db() as c:
         c.execute("DELETE FROM msgr_codes WHERE expires < ?", (time.time(),))
-        c.execute("INSERT OR REPLACE INTO msgr_codes(code, name, created_by, expires) VALUES(?, ?, ?, ?)",
-                  (code, (name or "").strip()[:60], admin_uid, time.time() + CODE_MINUTES * 60))
-    return {"code": code, "minutes": CODE_MINUTES}
+        c.execute("INSERT OR REPLACE INTO msgr_codes(code, name, created_by, expires, staff_uid) VALUES(?, ?, ?, ?, ?)",
+                  (code, name, admin_uid, time.time() + CODE_MINUTES * 60, staff_uid or None))
+    return {"code": code, "minutes": CODE_MINUTES, "name": name}
 
 
 _pair_fails = {}
@@ -106,8 +125,8 @@ def pair(code: str, device_name: str = "", ip: str = "") -> dict:
         c.execute("DELETE FROM msgr_codes WHERE code=?", (code,))
         token = secrets.token_urlsafe(32)
         name = r["name"] or (device_name or "").strip()[:60] or "Телефон"
-        c.execute("INSERT INTO msgr_devices(token_hash, name, created_at, created_by, last_seen) VALUES(?, ?, ?, ?, ?)",
-                  (_hash(token), name, _now(), r["created_by"], _now()))
+        c.execute("INSERT INTO msgr_devices(token_hash, name, created_at, created_by, last_seen, staff_uid) "
+                  "VALUES(?, ?, ?, ?, ?, ?)", (_hash(token), name, _now(), r["created_by"], _now(), r["staff_uid"]))
     return {"ok": True, "token": token, "name": name}
 
 
@@ -128,7 +147,8 @@ def device(token: str, version: str = ""):
 def devices() -> list:
     with core.db() as c:
         rows = c.execute("SELECT * FROM msgr_devices ORDER BY disabled, created_at DESC").fetchall()
-    return [{"id": r["token_hash"][:12], "name": r["name"], "since": (r["created_at"] or "")[:16],
+    return [{"id": r["token_hash"][:12], "name": core.name(r["staff_uid"]) if r["staff_uid"] else r["name"],
+             "staff_uid": r["staff_uid"] or 0, "since": (r["created_at"] or "")[:16],
              "seen": (r["last_seen"] or "")[:16], "version": r["app_version"] or "", "disabled": bool(r["disabled"])}
             for r in rows]
 
@@ -222,17 +242,22 @@ def link(tg_id: int, billz_id: str, dev: dict) -> None:
     with core.db() as c:
         if billz_id:
             c.execute("INSERT OR REPLACE INTO msgr_links(tg_id, billz_id, by_device, at) VALUES(?, ?, ?, ?)",
-                      (tg_id, billz_id, (dev or {}).get("name", ""), _now()))
+                      (tg_id, billz_id, dev_name(dev), _now()))
         else:
             c.execute("DELETE FROM msgr_links WHERE tg_id=?", (tg_id,))
 
 
 # ---------- журнал нарушений ----------
 
+def dev_name(dev: dict) -> str:
+    dev = dev or {}
+    return core.name(dev["staff_uid"]) if dev.get("staff_uid") else dev.get("name", "")
+
+
 def violation(dev: dict, kind: str, peer: int = 0, detail: str = "") -> None:
     with core.db() as c:
         c.execute("INSERT INTO msgr_violations(device, kind, peer, detail, at) VALUES(?, ?, ?, ?, ?)",
-                  ((dev or {}).get("name", ""), str(kind)[:40], int(peer or 0), str(detail)[:300], _now()))
+                  (dev_name(dev), str(kind)[:40], int(peer or 0), str(detail)[:300], _now()))
         c.execute("DELETE FROM msgr_violations WHERE at < ?",
                   ((core.now() - timedelta(days=90)).strftime(core.FMT),))
 
