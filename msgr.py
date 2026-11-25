@@ -110,41 +110,97 @@ def save_settings(perms: dict = None, whitelist=None, keepalive=None, assign: di
 
 # ---------- подключение телефонов ----------
 
-def new_code(admin_uid: int, staff_uid: int = 0, name: str = "") -> dict:
-    """Код подключения телефона, закреплённого за сотрудником staff_uid (имя берётся из команды)."""
-    staff_uid = int(staff_uid or 0)
+KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # без похожих 0/O, 1/I
+
+
+def _norm_code(s) -> str:
+    return "".join(ch for ch in str(s or "").upper() if ch.isalnum())
+
+
+def fmt_key(code: str) -> str:
+    return f"{code[:4]}-{code[4:]}" if len(code) == 8 else code
+
+
+def staff_number(staff_uid: int):
+    """На каком рабочем номере сейчас работает сотрудник (по включённым телефонам)."""
+    with core.db() as c:
+        r = c.execute("SELECT number_id FROM msgr_devices WHERE staff_uid=? AND disabled=0 AND number_id IS NOT NULL "
+                      "LIMIT 1", (staff_uid,)).fetchone()
+    return r["number_id"] if r else None
+
+
+def new_code(admin_uid: int, staff_uid: int = 0, name: str = "", number_id: int = 0) -> dict:
+    """Ключ доступа для сотрудника staff_uid на рабочем номере number_id (8 символов, 10 минут, один раз).
+    Один сотрудник — один номер: пока у него включён телефон на другом номере, ключ не выдаётся."""
+    staff_uid, number_id = int(staff_uid or 0), int(number_id or 0)
     if staff_uid and staff_uid not in {x["uid"] for x in staff()}:
         staff_uid = 0
+    if number_id:
+        busy = staff_number(staff_uid) if staff_uid else None
+        if busy and busy != number_id:
+            return {"ok": False, "error": f"{core.name(staff_uid)} уже работает на другом рабочем номере. "
+                                          "Сначала отключите его телефон там."}
     name = core.name(staff_uid) if staff_uid else (name or "").strip()[:60]
-    code = f"{secrets.randbelow(10 ** 6):06d}"
+    code = "".join(secrets.choice(KEY_ALPHABET) for _ in range(8))
     with core.db() as c:
         c.execute("DELETE FROM msgr_codes WHERE expires < ?", (time.time(),))
-        c.execute("INSERT OR REPLACE INTO msgr_codes(code, name, created_by, expires, staff_uid) VALUES(?, ?, ?, ?, ?)",
-                  (code, name, admin_uid, time.time() + CODE_MINUTES * 60, staff_uid or None))
-    return {"code": code, "minutes": CODE_MINUTES, "name": name}
+        c.execute("INSERT OR REPLACE INTO msgr_codes(code, name, created_by, expires, staff_uid, number_id) "
+                  "VALUES(?, ?, ?, ?, ?, ?)",
+                  (code, name, admin_uid, time.time() + CODE_MINUTES * 60, staff_uid or None, number_id or None))
+    return {"ok": True, "code": fmt_key(code), "minutes": CODE_MINUTES, "name": name}
 
 
 _pair_fails = {}
+_all_fails = []
+
+
+def _code_row(code: str, ip: str):
+    """Строка ключа или (None, ошибка). Не больше 10 ошибок в час с адреса и 60 в час всего."""
+    now = time.time()
+    fails = [t for t in _pair_fails.get(ip, []) if now - t < 3600]
+    _all_fails[:] = [t for t in _all_fails if now - t < 3600]
+    if len(fails) >= 10 or len(_all_fails) >= 60:
+        return None, "Слишком много попыток. Попробуйте через час."
+    with core.db() as c:
+        r = c.execute("SELECT * FROM msgr_codes WHERE code=? AND expires >= ?", (_norm_code(code), now)).fetchone()
+    if not r:
+        _pair_fails[ip] = fails + [now]
+        _all_fails.append(now)
+        return None, "Ключ неверный или устарел. Получите новый у руководителя."
+    return dict(r), ""
+
+
+def _new_device(r: dict, device_name: str, auth_hash: str = None) -> dict:
+    token = secrets.token_urlsafe(32)
+    name = r["name"] or (device_name or "").strip()[:60] or "Телефон"
+    with core.db() as c:
+        c.execute("DELETE FROM msgr_codes WHERE code=?", (r["code"],))
+        c.execute("INSERT INTO msgr_devices(token_hash, name, created_at, created_by, last_seen, staff_uid, number_id, auth_hash) "
+                  "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", (_hash(token), name, _now(), r["created_by"], _now(), r["staff_uid"],
+                                                     r.get("number_id"), auth_hash))
+    return {"ok": True, "token": token, "name": name}
 
 
 def pair(code: str, device_name: str = "", ip: str = "") -> dict:
-    """Код из кабинета → токен телефона. Не больше 10 неверных попыток в час с одного адреса."""
-    now = time.time()
-    fails = [t for t in _pair_fails.get(ip, []) if now - t < 3600]
-    if len(fails) >= 10:
-        return {"ok": False, "error": "Слишком много попыток. Попробуйте через час."}
-    code = "".join(ch for ch in str(code or "") if ch.isdigit())
-    with core.db() as c:
-        r = c.execute("SELECT * FROM msgr_codes WHERE code=? AND expires >= ?", (code, now)).fetchone()
-        if not r:
-            _pair_fails[ip] = fails + [now]
-            return {"ok": False, "error": "Код неверный или устарел. Получите новый в кабинете."}
-        c.execute("DELETE FROM msgr_codes WHERE code=?", (code,))
-        token = secrets.token_urlsafe(32)
-        name = r["name"] or (device_name or "").strip()[:60] or "Телефон"
-        c.execute("INSERT INTO msgr_devices(token_hash, name, created_at, created_by, last_seen, staff_uid) "
-                  "VALUES(?, ?, ?, ?, ?, ?)", (_hash(token), name, _now(), r["created_by"], _now(), r["staff_uid"]))
-    return {"ok": True, "token": token, "name": name}
+    """Ключ → токен телефона (телефон уже вошёл в рабочий аккаунт сам)."""
+    r, err = _code_row(code, ip)
+    return _new_device(r, device_name) if r else {"ok": False, "error": err}
+
+
+def keylogin(code: str, login_token: str, device_name: str = "", ip: str = "") -> dict:
+    """Вход телефона в рабочий аккаунт только по ключу: сервер подтверждает токен входа от имени рабочего номера."""
+    r, err = _code_row(code, ip)
+    if not r:
+        return {"ok": False, "error": err}
+    if not r.get("number_id"):
+        return {"ok": False, "error": "Ключ выдан без рабочего номера. Получите новый ключ в кабинете."}
+    import tgnumbers
+    acc = tgnumbers.accept_login_token(r["number_id"], login_token)
+    if not acc.get("ok"):
+        return acc
+    out = _new_device(r, device_name, acc["auth_hash"])
+    out["number_id"] = r["number_id"]
+    return out
 
 
 def device(token: str, version: str = ""):
@@ -165,18 +221,27 @@ def devices() -> list:
     with core.db() as c:
         rows = c.execute("SELECT * FROM msgr_devices ORDER BY disabled, created_at DESC").fetchall()
     return [{"id": r["token_hash"][:12], "name": core.name(r["staff_uid"]) if r["staff_uid"] else r["name"],
-             "staff_uid": r["staff_uid"] or 0, "since": (r["created_at"] or "")[:16],
+             "staff_uid": r["staff_uid"] or 0, "number_id": r["number_id"] if "number_id" in r.keys() else None,
+             "since": (r["created_at"] or "")[:16],
              "seen": (r["last_seen"] or "")[:16], "version": r["app_version"] or "", "disabled": bool(r["disabled"])}
             for r in rows]
 
 
 def set_disabled(dev_id: str, disabled: bool) -> bool:
+    """Отключить телефон: RADI перестаёт работать, а если вход был по ключу — завершается и сеанс Telegram."""
     dev_id = "".join(ch for ch in str(dev_id) if ch in "0123456789abcdef")[:12]
     if len(dev_id) < 12:
         return False
     with core.db() as c:
-        return c.execute("UPDATE msgr_devices SET disabled=? WHERE substr(token_hash, 1, 12)=?",
-                         (1 if disabled else 0, dev_id)).rowcount > 0
+        r = c.execute("SELECT number_id, auth_hash FROM msgr_devices WHERE substr(token_hash, 1, 12)=?", (dev_id,)).fetchone()
+        ok = c.execute("UPDATE msgr_devices SET disabled=? WHERE substr(token_hash, 1, 12)=?",
+                       (1 if disabled else 0, dev_id)).rowcount > 0
+    if ok and disabled and r and r["number_id"] and r["auth_hash"]:
+        import tgnumbers
+        if tgnumbers.reset_authorization(r["number_id"], r["auth_hash"]):
+            with core.db() as c:  # сеанс Telegram завершён — включить обратно можно только новым ключом
+                c.execute("UPDATE msgr_devices SET auth_hash=NULL WHERE substr(token_hash, 1, 12)=?", (dev_id,))
+    return ok
 
 
 # ---------- 💎 карточка клиента ----------
