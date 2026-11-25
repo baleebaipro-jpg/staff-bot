@@ -20,6 +20,7 @@ import appauth
 import invest
 import kpi
 import crm
+import msgr
 import posts
 import projects
 import staff_text as st
@@ -111,6 +112,87 @@ def api_app_login_start():
 def api_app_login_check():
     d = request.get_json(silent=True) or {}
     return jsonify(appauth.check_login(d.get("code"), d.get("platform")))
+
+
+# ---------- RADI Chat (приложение Telegram для рабочих аккаунтов) ----------
+
+def need_device(fn):
+    """Запрос от подключённого телефона RADI Chat: заголовок X-Radi-Token."""
+    @wraps(fn)
+    def wrapper():
+        dev = msgr.device(request.headers.get("X-Radi-Token", ""), request.headers.get("X-Radi-Version", ""))
+        if not dev:
+            return jsonify(ok=False, error="Телефон не подключён или отключён руководителем.", unpaired=True), 401
+        return fn(dev, request.get_json(silent=True) or {})
+    return wrapper
+
+
+@app.post("/api/msgr/pair")
+def api_msgr_pair():
+    d = request.get_json(silent=True) or {}
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    r = msgr.pair(str(d.get("code") or ""), str(d.get("device") or ""), ip)
+    return jsonify(r), (200 if r.get("ok") else 400)
+
+
+@app.post("/api/msgr/config")
+@need_device
+def api_msgr_config(dev, data):
+    s = msgr.settings()
+    return jsonify(ok=True, name=dev["name"], perms=s["perms"], whitelist=s["whitelist"], keepalive=s["keepalive"])
+
+
+@app.post("/api/msgr/client")
+@need_device
+def api_msgr_client(dev, data):
+    return jsonify(ok=True, **msgr.card(int(data.get("tg_id") or 0), str(data.get("phone") or "")))
+
+
+@app.post("/api/msgr/search")
+@need_device
+def api_msgr_search(dev, data):
+    return jsonify(ok=True, items=msgr.search(str(data.get("q") or "")))
+
+
+@app.post("/api/msgr/link")
+@need_device
+def api_msgr_link(dev, data):
+    tg_id = int(data.get("tg_id") or 0)
+    if not tg_id:
+        return jsonify(ok=False, error="Нет клиента."), 400
+    msgr.link(tg_id, str(data.get("billz_id") or ""), dev)
+    return jsonify(ok=True, **msgr.card(tg_id))
+
+
+@app.post("/api/msgr/violation")
+@need_device
+def api_msgr_violation(dev, data):
+    msgr.violation(dev, str(data.get("kind") or ""), int(data.get("peer") or 0), str(data.get("detail") or ""))
+    return jsonify(ok=True)
+
+
+@app.post("/api/msgr/deleted")
+@need_device
+def api_msgr_deleted(dev, data):
+    return jsonify(ok=True, items=msgr.deleted(int(data.get("chat_id") or 0)))
+
+
+@app.post("/api/msgr/admin")
+@need_user(admin=True)
+def api_msgr_admin(uid, data):
+    """Кабинет руководителя → RADI Chat: код подключения, телефоны, разрешения, белый список, журнал."""
+    a, msg = data.get("action"), ""
+    if a == "code":
+        return jsonify(ok=True, **msgr.new_code(uid, str(data.get("name") or "")))
+    if a in ("disable", "enable"):
+        msgr.set_disabled(str(data.get("id") or ""), a == "disable")
+        msg = "🚫 Телефон отключён" if a == "disable" else "✅ Телефон снова подключён"
+    if a == "save":
+        msgr.save_settings(data.get("perms"), data.get("whitelist"), data.get("keepalive"))
+        msg = "✅ Сохранено. Телефоны получат настройки в течение 5 минут."
+    s = msgr.settings()
+    return jsonify(ok=True, msg=msg, devices=msgr.devices(), perms=s["perms"], perm_titles=msgr.PERMS,
+                   whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50))
 
 
 @app.post("/api/app/logout")
@@ -1952,6 +2034,33 @@ PAGE = r"""<!doctype html>
   </div>
 
   <!-- ПОСТИНГ -->
+  <div id="view-msgr" class="hidden">
+    <div class="page-title">📱 RADI Chat</div>
+    <div class="page-sub">Telegram рабочего аккаунта на телефонах менеджеров</div>
+    <div class="card">
+      <b>Подключить телефон</b>
+      <div class="hint" style="margin:6px 0 10px">В RADI Chat на телефоне появится окно «Код подключения» — введите код. Код действует 10 минут, один раз.</div>
+      <input id="ms-name" placeholder="Чей телефон? Например: Дилробо" maxlength="60" style="margin-bottom:8px">
+      <button class="btn btn-main" id="ms-code-btn" style="width:100%">🔑 Получить код</button>
+      <div id="ms-code" class="hidden" style="text-align:center;margin-top:12px"><b id="ms-code-v" style="font-size:34px;letter-spacing:6px"></b>
+        <div class="hint" id="ms-code-h"></div></div>
+    </div>
+    <div class="card"><b>Телефоны</b><div id="ms-devs" style="margin-top:8px"></div></div>
+    <div class="card"><b>Доступы для всех менеджеров</b>
+      <div class="hint" style="margin:6px 0 4px">Удалять сообщения и чаты, выходить из аккаунта, менять номер и отключать бизнес-бота нельзя никогда.</div>
+      <div id="ms-perms"></div>
+      <div class="card row-btn" style="cursor:default;margin:8px 0 0;padding-left:0;padding-right:0;background:none;border:none">
+        <span class="ri">🟢</span><span class="rt"><b>Постоянное подключение</b><span style="color:var(--hint);font-weight:500">всегда онлайн — ловит сообщения до удаления</span></span>
+        <label class="sw"><input type="checkbox" id="ms-keep"><span></span></label></div>
+    </div>
+    <div class="card"><b>Белый список</b>
+      <div class="hint" style="margin:6px 0 8px">Номера, @юзернеймы и ссылки компании, которые менеджерам можно отправлять клиентам. По одному в строке.</div>
+      <textarea id="ms-wl" rows="5" placeholder="+998 71 200 00 00&#10;@radi_shop&#10;t.me/xuping_uz"></textarea>
+    </div>
+    <button class="btn btn-main" id="ms-save" style="width:100%;margin-bottom:12px">💾 Сохранить доступы и белый список</button>
+    <div class="card"><b>Журнал нарушений</b><div class="hint" style="margin:4px 0 8px">Попытки удалить, отправить номер или ссылку (за 90 дней)</div><div id="ms-viol"></div></div>
+  </div>
+
   <div id="view-posting" class="hidden">
     <div class="page-title">📣 Постинг</div>
     <div class="page-sub">Один пост — всем в боте XUPING Bonus, а также в группы и каналы</div>
@@ -2105,6 +2214,7 @@ PAGE = r"""<!doctype html>
       <button class="card dtile" id="d-shop-tile"><div class="f-ic">🧾</div><div><b style="font-size:16px">Продажи</b><span>ERP · касса</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="posting"><div class="f-ic">📣</div><div><b style="font-size:16px">Постинг</b><span id="d-post">посты</span></div><i>›</i></button>
       <button class="card dtile" data-dgo="crm" style="grid-column:1/-1"><div class="f-ic">💬</div><div><b style="font-size:16px">Чаты · CRM</b><span id="d-crm">переписки рабочих аккаунтов</span></div><i>›</i></button>
+      <button class="card dtile" data-dgo="msgr" style="grid-column:1/-1"><div class="f-ic">📱</div><div><b style="font-size:16px">RADI Chat</b><span>телефоны, доступы, белый список</span></div><i>›</i></button>
     </div>
     <div class="card bday hidden" id="bday">
       <div class="bd-top"><div class="f-ic">🕘</div><div style="flex:1;min-width:0"><span id="bd-lbl">Мой рабочий день</span>
@@ -2421,10 +2531,10 @@ async function action(path, body) {
 
 /* ---------- экраны ---------- */
 const SUBPAGES = {crm: "team", crmchat: "crm", history: "me", invest: "me", "invest-admin": "team", clients: "team", staff: "team", shop: "team", emp: "staff", ccard: "clients",
-                  projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team"};  // страница → куда ведёт «назад»
+                  projects: "team", project: "projects", posting: "team", earn: "me", "earn-admin": "team", msgr: "team"};  // страница → куда ведёт «назад»
 function show(v) {
   view = v;
-  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
+  ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat", "msgr"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
   document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
   if (v in SUBPAGES) tg.BackButton.show(); else tg.BackButton.hide();
@@ -2437,6 +2547,7 @@ function show(v) {
   document.querySelectorAll("#tabbar [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === v));
   window.scrollTo(0, 0);
   crmOnShow(v);
+  if (v === "msgr") msgrLoad();
 }
 tg.BackButton.onClick(() => { if (!radiBack()) show(SUBPAGES[view] || "me"); });
 
@@ -4399,6 +4510,43 @@ const crmTime = at => { if (!at) return ""; const d = at.slice(0, 10), t = new D
 const crmWin = w => w === null || w === undefined ? "" : w >= 1 ? `можно ответить ещё ${Math.floor(w)} ч` : `ещё ${Math.round(w * 60)} мин`;
 /* Аватар: фото профиля из Telegram, если его нет или оно скрыто — буквы */
 const crmAva = c => `<div class="crm-ava">${esc(crmInit(c.name))}${c.ava ? `<img src="${c.ava}" alt="" loading="lazy" onerror="this.remove()">` : ""}</div>`;
+/* ---------- RADI Chat: телефоны, доступы, белый список ---------- */
+const MS_KIND = {delete: "удаление", contact: "контакт/ссылка", edit: "редактирование", ttl: "исчезающее", other: "другое"};
+function msgrRender(r) {
+  $("ms-devs").innerHTML = r.devices.length ? r.devices.map(d => `<div class="row-btn" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span style="font-size:20px">${d.disabled ? "🚫" : "📱"}</span>
+      <span style="flex:1;min-width:0"><b>${esc(d.name)}</b><div class="hint" style="font-size:12px">был онлайн ${esc(d.seen)}${d.version ? " · " + esc(d.version) : ""}</div></span>
+      <button class="btn btn-soft" data-ms-dev="${esc(d.id)}" data-ms-act="${d.disabled ? "enable" : "disable"}" style="padding:8px 12px">${d.disabled ? "Включить" : "Отключить"}</button></div>`).join("")
+    : `<div class="hint">Пока ни одного телефона</div>`;
+  document.querySelectorAll("[data-ms-dev]").forEach(b => b.onclick = async () => {
+    if (b.dataset.msAct === "disable" && !await new Promise(ok => tg.showConfirm("Отключить этот телефон? RADI Chat на нём перестанет работать.", ok))) return;
+    msgrApi({action: b.dataset.msAct, id: b.dataset.msDev});
+  });
+  $("ms-perms").innerHTML = Object.entries(r.perm_titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0">
+      <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-ms-perm="${k}" ${r.perms[k] ? "checked" : ""}><span></span></label></div>`).join("");
+  $("ms-keep").checked = !!r.keepalive;
+  $("ms-wl").value = r.whitelist || "";
+  $("ms-viol").innerHTML = r.violations.length ? r.violations.map(x => `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <b>${esc(x.device)}</b> · ${esc(MS_KIND[x.kind] || x.kind)}${x.peer ? " · " + esc(x.peer) : ""}
+      <div class="hint" style="font-size:12px">${esc(x.at)}${x.detail ? " · «" + esc(x.detail) + "»" : ""}</div></div>`).join("")
+    : `<div class="hint">Нарушений нет 👍</div>`;
+}
+async function msgrApi(body) {
+  try { const r = await api("/api/msgr/admin", body); msgrRender(r); if (r.msg) toast(r.msg); return r; } catch (e) { toast(e.message); }
+}
+function msgrLoad() { $("ms-code").classList.add("hidden"); msgrApi({}); }
+$("ms-code-btn").onclick = async () => {
+  try {
+    const r = await api("/api/msgr/admin", {action: "code", name: $("ms-name").value});
+    $("ms-code-v").textContent = r.code; $("ms-code-h").textContent = `Действует ${r.minutes} минут`;
+    $("ms-code").classList.remove("hidden");
+  } catch (e) { toast(e.message); }
+};
+$("ms-save").onclick = () => {
+  const perms = {}; document.querySelectorAll("[data-ms-perm]").forEach(i => perms[i.dataset.msPerm] = i.checked);
+  msgrApi({action: "save", perms, whitelist: $("ms-wl").value, keepalive: $("ms-keep").checked});
+};
+
 function crmOnShow(v) {
   clearInterval(crmTimer);
   if (v !== "crmchat") { crmVoiceStop(false); if (vpAudio) vpAudio.pause(); }

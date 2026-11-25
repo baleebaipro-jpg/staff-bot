@@ -386,6 +386,8 @@ def init_db():
     bizwatch.init()
     import crm  # CRM-мессенджер (просмотр переписок рабочих аккаунтов)
     crm.init()
+    import msgr  # RADI Chat (приложение Telegram для рабочих аккаунтов)
+    msgr.init()
     split_late_penalties()
     cancel_configured_late_days()
     import kpi  # касса сотрудника и KPI
