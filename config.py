@@ -13,6 +13,10 @@ CLIENT_BOT_TOKEN = os.getenv("CLIENT_BOT_TOKEN", "").strip()
 # Отдельный бот для контроля рабочих Telegram-аккаунтов (Telegram Business, необязательно).
 # Задан BIZ_BOT_TOKEN — рабочие аккаунты подключают ЕГО («RADI Control»), иначе — бота сотрудников.
 BIZ_BOT_TOKEN = os.getenv("BIZ_BOT_TOKEN", "").strip()
+# Куда слать уведомления контроля рабочих аккаунтов (удалённые / изменённые сообщения, подключение бота):
+# ID группы (бот должен быть в ней) или None — в личку руководителям. BIZ_NOTIFY_THREAD — тема группы или None.
+BIZ_NOTIFY_CHAT = -1005897595052  # группа «Bot control»
+BIZ_NOTIFY_THREAD = None
 # Адрес личного кабинета (мини-приложения) — для кнопок «🏠 Личный кабинет / Kabinetim» в обоих ботах.
 # Берётся из WEBAPP_URL в Railway; если там пусто или старый адрес PythonAnywhere — этот:
 WEBAPP_URL_DEFAULT = "https://staff-bot-production-7a47ab13.up.railway.app"
