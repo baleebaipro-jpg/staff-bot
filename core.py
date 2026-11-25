@@ -388,6 +388,8 @@ def init_db():
     crm.init()
     import msgr  # RADI Chat (приложение Telegram для рабочих аккаунтов)
     msgr.init()
+    import tgnumbers  # RADI Chat: рабочие номера на сервере, вход сотрудников по ключу
+    tgnumbers.init()
     split_late_penalties()
     cancel_configured_late_days()
     import kpi  # касса сотрудника и KPI

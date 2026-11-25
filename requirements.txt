@@ -2,3 +2,5 @@ python-telegram-bot==21.6
 Flask==3.0.3
 waitress==3.0.0
 imageio-ffmpeg==0.5.1
+Telethon==1.46.0
+cryptography>=42

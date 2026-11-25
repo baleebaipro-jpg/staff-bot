@@ -1,5 +1,6 @@
 """Мини-апп: личный кабинет сотрудника и панель руководителя."""
 import base64
+from datetime import timedelta
 import hashlib
 import hmac
 import json
@@ -21,6 +22,7 @@ import invest
 import kpi
 import crm
 import msgr
+import tgnumbers
 import posts
 import projects
 import staff_text as st
@@ -135,6 +137,24 @@ def api_msgr_pair():
     return jsonify(r), (200 if r.get("ok") else 400)
 
 
+@app.post("/api/msgr/keylogin")
+def api_msgr_keylogin():
+    """RADI Chat: вход в рабочий аккаунт только по ключу (login_token — из auth.exportLoginToken телефона)."""
+    d = request.get_json(silent=True) or {}
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    r = msgr.keylogin(str(d.get("key") or ""), str(d.get("login_token") or ""), str(d.get("device") or ""), ip)
+    return jsonify(r), (200 if r.get("ok") else 400)
+
+
+@app.post("/api/msgr/srp")
+@need_device
+def api_msgr_srp(dev, data):
+    """Облачный пароль рабочего аккаунта — только в первые 15 минут после входа по ключу; пароль телефону не отдаётся."""
+    if not dev.get("number_id") or core.now() - core.parse(dev["created_at"]) > timedelta(minutes=15):
+        return jsonify(ok=False, error="Время входа истекло. Получите новый ключ."), 403
+    return jsonify(tgnumbers.srp_check(dev["number_id"], data.get("params") or {}))
+
+
 @app.post("/api/msgr/config")
 @need_device
 def api_msgr_config(dev, data):
@@ -192,7 +212,18 @@ def api_msgr_admin(uid, data):
     """Кабинет руководителя → RADI Chat: код подключения, телефоны, разрешения, белый список, журнал."""
     a, msg = data.get("action"), ""
     if a == "code":
-        return jsonify(ok=True, **msgr.new_code(uid, int(data.get("staff_uid") or 0), str(data.get("name") or "")))
+        r = msgr.new_code(uid, int(data.get("staff_uid") or 0), str(data.get("name") or ""), int(data.get("number_id") or 0))
+        return jsonify(r), (200 if r.get("ok") else 400)
+    if a in ("num_add", "num_code", "num_password"):  # подключение рабочего номера: номер → код → облачный пароль
+        nid = int(data.get("number_id") or 0)
+        r = (tgnumbers.add_start(str(data.get("phone") or ""), str(data.get("title") or "")) if a == "num_add" else
+             tgnumbers.add_code(nid, str(data.get("code") or "")) if a == "num_code" else
+             tgnumbers.add_password(nid, str(data.get("password") or "")))
+        r["numbers"] = tgnumbers.numbers()
+        return jsonify(r), (200 if r.get("ok") else 400)
+    if a == "num_remove":
+        tgnumbers.remove(int(data.get("number_id") or 0))
+        msg = "Рабочий номер удалён с сервера"
     if a in ("disable", "enable"):
         msgr.set_disabled(str(data.get("id") or ""), a == "disable")
         msg = "🚫 Телефон отключён" if a == "disable" else "✅ Телефон снова подключён"
@@ -211,7 +242,8 @@ def api_msgr_admin(uid, data):
                    whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50),
                    assign={k: s[k] for k in ("assign_mode", "unassigned_visible", "timeout_min", "timeout_action")},
                    assign_modes=msgr.ASSIGN_MODES, timeout_actions=msgr.TIMEOUT_ACTIONS,
-                   chats=msgr.chats_admin(str(data.get("q") or "")))
+                   chats=msgr.chats_admin(str(data.get("q") or "")), numbers=tgnumbers.numbers(),
+                   numbers_enabled=tgnumbers.enabled())
 
 
 @app.post("/api/app/logout")
@@ -2098,11 +2130,23 @@ PAGE = r"""<!doctype html>
   <div id="view-msgr" class="hidden">
     <div class="page-title">📱 RADI Chat</div>
     <div class="page-sub">Telegram рабочего аккаунта на телефонах менеджеров</div>
+    <div class="card"><b>Рабочие номера</b>
+      <div class="hint" style="margin:6px 0 8px">Главные профили компании (SIM). Подключите номер один раз — сотрудники входят в него только по ключу.</div>
+      <div id="ms-nums"></div>
+      <div id="ms-num-add" style="margin-top:8px">
+        <input id="ms-num-phone" placeholder="+998 90 123 45 67" inputmode="tel" style="margin-bottom:8px">
+        <button class="btn btn-soft" id="ms-num-go" style="width:100%">➕ Подключить номер</button></div>
+      <div id="ms-num-step" class="hidden" style="margin-top:8px">
+        <div class="hint" id="ms-num-hint" style="margin-bottom:6px"></div>
+        <input id="ms-num-val" style="margin-bottom:8px">
+        <button class="btn btn-main" id="ms-num-next" style="width:100%">Дальше</button></div>
+    </div>
     <div class="card">
-      <b>Подключить телефон</b>
-      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите код. В RADI Chat на его телефоне появится окно «Код подключения» — введите код. Код действует 10 минут, один раз; телефон закрепится за этим сотрудником.</div>
+      <b>Ключ доступа сотрудника</b>
+      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите ключ (8 символов, 10 минут, один раз). Сотрудник вводит его в RADI Chat и сразу входит в рабочий аккаунт — номер, код и облачный пароль ему не нужны. Один сотрудник — один рабочий номер.</div>
       <select id="ms-staff" style="margin-bottom:8px;width:100%"><option value="">— Чей телефон? Выберите сотрудника —</option></select>
-      <button class="btn btn-main" id="ms-code-btn" style="width:100%">🔑 Получить код</button>
+      <select id="ms-number" class="hidden" style="margin-bottom:8px;width:100%"></select>
+      <button class="btn btn-main" id="ms-code-btn" style="width:100%">🔑 Получить ключ</button>
       <div id="ms-code" class="hidden" style="text-align:center;margin-top:12px"><b id="ms-code-v" style="font-size:34px;letter-spacing:6px"></b>
         <div class="hint" id="ms-code-h"></div></div>
     </div>
@@ -4644,7 +4688,24 @@ $("as-save").onclick = () => {
 
 /* ---------- RADI Chat: телефоны, доступы, белый список ---------- */
 const MS_KIND = {delete: "удаление", contact: "контакт/ссылка", edit: "редактирование", ttl: "исчезающее", other: "другое"};
+let msNum = null;  // подключение номера: {id, step}
 function msgrRender(r) {
+  window._msNumbers = r.numbers || [];
+  if (r.numbers) {
+    $("ms-nums").innerHTML = r.numbers.length ? r.numbers.map(n => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span style="font-size:20px">${n.ready ? "📞" : "⏳"}</span>
+        <span style="flex:1;min-width:0"><b>${esc(n.title)}</b><div class="hint" style="font-size:12px">${esc(n.phone)} · ${n.ready ? "подключён" : "не завершено"} · телефонов: ${n.devices}</div></span>
+        <button class="btn btn-soft" data-num-rm="${n.id}" style="padding:8px 12px">Удалить</button></div>`).join("")
+      : `<div class="hint">${r.numbers_enabled ? "Пока ни одного номера" : "⚠️ На сервере нет TG_API_ID / TG_API_HASH — добавьте их в Railway → Variables"}</div>`;
+    document.querySelectorAll("[data-num-rm]").forEach(b => b.onclick = async () => {
+      if (!await new Promise(ok => tg.showConfirm("Удалить рабочий номер с сервера? Новые ключи на него выдать будет нельзя.", ok))) return;
+      msgrApi({action: "num_remove", number_id: Number(b.dataset.numRm)});
+    });
+    const ready = r.numbers.filter(n => n.ready), ns = $("ms-number"), curN = ns.value;
+    ns.innerHTML = ready.map(n => `<option value="${n.id}">📞 ${esc(n.title)}</option>`).join("");
+    ns.classList.toggle("hidden", ready.length < 2);  // один номер — выбирать нечего
+    if (curN) ns.value = curN;
+  }
   const sel = $("ms-staff"), cur = sel.value;
   sel.innerHTML = `<option value="">— Чей телефон? Выберите сотрудника —</option>` +
     (r.staff || []).map(x => `<option value="${x.uid}">${esc(x.name)}</option>`).join("");
@@ -4705,10 +4766,37 @@ function msgrLoad() { $("ms-code").classList.add("hidden"); msgrApi({}); }
 $("ms-code-btn").onclick = async () => {
   try {
     if (!$("ms-staff").value) return toast("Выберите сотрудника");
-    const r = await api("/api/msgr/admin", {action: "code", staff_uid: Number($("ms-staff").value)});
-    $("ms-code-v").textContent = r.code; $("ms-code-h").textContent = `Для: ${r.name} · действует ${r.minutes} минут`;
+    const ready = (window._msNumbers || []).filter(n => n.ready);
+    const number_id = ready.length ? Number($("ms-number").value || ready[0].id) : 0;
+    const r = await api("/api/msgr/admin", {action: "code", staff_uid: Number($("ms-staff").value), number_id});
+    $("ms-code-v").textContent = r.code;
+    $("ms-code-h").textContent = `Для: ${r.name}${number_id ? " · " + (ready.find(n => n.id === number_id) || {}).title : ""} · действует ${r.minutes} минут, один раз`;
     $("ms-code").classList.remove("hidden");
   } catch (e) { toast(e.message); }
+};
+/* подключение рабочего номера: номер → код из Telegram → облачный пароль */
+function msNumStep(step, hint, type) {
+  $("ms-num-step").classList.toggle("hidden", !step);
+  $("ms-num-add").classList.toggle("hidden", !!step);
+  if (!step) return;
+  $("ms-num-hint").textContent = hint; $("ms-num-val").value = ""; $("ms-num-val").type = type;
+  $("ms-num-val").focus();
+}
+async function msNumApi(body) {
+  try {
+    const r = await api("/api/msgr/admin", body);
+    msgrRender(Object.assign(await api("/api/msgr/admin", {}), {}));
+    if (r.step === "code") { msNum = {id: r.number_id}; msNumStep("code", "Введите код, который пришёл в Telegram этого номера (или SMS)", "text"); }
+    else if (r.step === "password") { msNumStep("password", "Введите облачный пароль этого аккаунта. Он хранится на сервере зашифрованным и не передаётся на телефоны", "password"); }
+    else if (r.step === "ready") { msNum = null; msNumStep(null); toast(`✅ Номер подключён: ${r.title}`); }
+  } catch (e) { toast(e.message); }
+}
+$("ms-num-go").onclick = () => msNumApi({action: "num_add", phone: $("ms-num-phone").value});
+$("ms-num-next").onclick = () => {
+  if (!msNum) return msNumStep(null);
+  const v = $("ms-num-val").value;
+  msNumApi($("ms-num-val").type === "password" ? {action: "num_password", number_id: msNum.id, password: v}
+                                               : {action: "num_code", number_id: msNum.id, code: v});
 };
 $("ms-save").onclick = () => {
   const perms = {}; document.querySelectorAll("[data-ms-perm]").forEach(i => perms[i.dataset.msPerm] = i.checked);
