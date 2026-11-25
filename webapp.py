@@ -139,7 +139,16 @@ def api_msgr_pair():
 @need_device
 def api_msgr_config(dev, data):
     s = msgr.settings()
-    return jsonify(ok=True, name=msgr.dev_name(dev), perms=s["perms"], whitelist=s["whitelist"], keepalive=s["keepalive"])
+    if isinstance(data.get("groups"), list):
+        msgr.report_groups(data["groups"])
+    return jsonify(ok=True, name=msgr.dev_name(dev), perms=msgr.staff_perms(dev.get("staff_uid") or 0)["perms"],
+                   whitelist=s["whitelist"], keepalive=s["keepalive"], assign=msgr.assignments_for(dev))
+
+
+@app.post("/api/msgr/claim")
+@need_device
+def api_msgr_claim(dev, data):
+    return jsonify(msgr.claim(dev, int(data.get("peer") or 0)))
 
 
 @app.post("/api/msgr/client")
@@ -188,11 +197,21 @@ def api_msgr_admin(uid, data):
         msgr.set_disabled(str(data.get("id") or ""), a == "disable")
         msg = "🚫 Телефон отключён" if a == "disable" else "✅ Телефон снова подключён"
     if a == "save":
-        msgr.save_settings(data.get("perms"), data.get("whitelist"), data.get("keepalive"))
+        msgr.save_settings(data.get("perms"), data.get("whitelist"), data.get("keepalive"), data.get("assign"))
         msg = "✅ Сохранено. Телефоны получат настройки в течение 5 минут."
+    if a == "assign":
+        msgr.assign(int(data.get("peer") or 0), int(data.get("staff_uid") or 0))
+        msg = "✅ Назначено" if data.get("staff_uid") else "Чат снова свободный"
+    if a == "staff":
+        msgr.save_staff(int(data.get("staff_uid") or 0), data.get("perms"), data.get("see_others"), bool(data.get("reset")))
+        msg = "✅ Доступы сотрудника сохранены"
     s = msgr.settings()
-    return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=msgr.staff(), perms=s["perms"], perm_titles=msgr.PERMS,
-                   whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50))
+    staff = [dict(x, **msgr.staff_perms(x["uid"])) for x in msgr.staff()]
+    return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=staff, perms=s["perms"], perm_titles=msgr.PERMS,
+                   whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50),
+                   assign={k: s[k] for k in ("assign_mode", "unassigned_visible", "timeout_min", "timeout_action")},
+                   assign_modes=msgr.ASSIGN_MODES, timeout_actions=msgr.TIMEOUT_ACTIONS,
+                   chats=msgr.chats_admin(str(data.get("q") or "")))
 
 
 @app.post("/api/app/logout")
@@ -2088,18 +2107,36 @@ PAGE = r"""<!doctype html>
         <div class="hint" id="ms-code-h"></div></div>
     </div>
     <div class="card"><b>Телефоны</b><div id="ms-devs" style="margin-top:8px"></div></div>
-    <div class="card"><b>Доступы для всех менеджеров</b>
+    <div class="card"><b>Доступы для всех (по умолчанию)</b>
       <div class="hint" style="margin:6px 0 4px">Удалять сообщения и чаты, выходить из аккаунта, менять номер и отключать бизнес-бота нельзя никогда.</div>
       <div id="ms-perms"></div>
       <div class="card row-btn" style="cursor:default;margin:8px 0 0;padding-left:0;padding-right:0;background:none;border:none">
         <span class="ri">🟢</span><span class="rt"><b>Постоянное подключение</b><span style="color:var(--hint);font-weight:500">всегда онлайн — ловит сообщения до удаления</span></span>
         <label class="sw"><input type="checkbox" id="ms-keep"><span></span></label></div>
     </div>
+    <div class="card"><b>Назначение чатов</b>
+      <div class="hint" style="margin:6px 0 8px">Как новый клиент закрепляется за менеджером. Телефон должен быть закреплён за сотрудником.</div>
+      <select id="ms-mode" style="width:100%;margin-bottom:8px"></select>
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
+        <span style="flex:1">👀 Свободные чаты видны всем<div class="hint" style="font-size:12px">выключено — свободных видит только руководитель</div></span>
+        <label class="sw"><input type="checkbox" id="ms-unass"><span></span></label></div>
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;flex-wrap:wrap">
+        <span style="flex:1;min-width:150px">⏱ Нет ответа клиенту, мин<div class="hint" style="font-size:12px">0 — не следить</div></span>
+        <input id="ms-tmin" type="number" min="0" max="1440" style="width:80px">
+        <select id="ms-tact" style="width:100%"></select></div>
+      <div class="hint" style="font-size:12px">Группы и каналы по умолчанию не видит никто — назначьте их ниже.</div>
+    </div>
+    <div class="card"><b>Сотрудники</b>
+      <div class="hint" style="margin:6px 0 4px">Свои доступы для каждого; без своих — как «для всех» выше. «Чужие чаты» — например, стажёрам для обучения.</div>
+      <div id="ms-staff-list"></div></div>
+    <div class="card"><b>Чаты</b>
+      <input id="ms-q" placeholder="Поиск клиента или группы" style="margin:8px 0">
+      <div id="ms-chats"></div></div>
     <div class="card"><b>Белый список</b>
       <div class="hint" style="margin:6px 0 8px">Номера, @юзернеймы и ссылки компании, которые менеджерам можно отправлять клиентам. По одному в строке.</div>
       <textarea id="ms-wl" rows="5" placeholder="+998 71 200 00 00&#10;@radi_shop&#10;t.me/xuping_uz"></textarea>
     </div>
-    <button class="btn btn-main" id="ms-save" style="width:100%;margin-bottom:12px">💾 Сохранить доступы и белый список</button>
+    <button class="btn btn-main" id="ms-save" style="width:100%;margin-bottom:12px">💾 Сохранить настройки, доступы и белый список</button>
     <div class="card"><b>Журнал нарушений</b><div class="hint" style="margin:4px 0 8px">Попытки удалить, отправить номер или ссылку (за 90 дней)</div><div id="ms-viol"></div></div>
   </div>
 
@@ -4624,6 +4661,37 @@ function msgrRender(r) {
   $("ms-perms").innerHTML = Object.entries(r.perm_titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0">
       <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-ms-perm="${k}" ${r.perms[k] ? "checked" : ""}><span></span></label></div>`).join("");
   $("ms-keep").checked = !!r.keepalive;
+  $("ms-mode").innerHTML = Object.entries(r.assign_modes).map(([k, t]) => `<option value="${k}">${esc(t)}</option>`).join("");
+  $("ms-mode").value = r.assign.assign_mode;
+  $("ms-unass").checked = !!r.assign.unassigned_visible;
+  $("ms-tmin").value = r.assign.timeout_min || 0;
+  $("ms-tact").innerHTML = Object.entries(r.timeout_actions).map(([k, t]) => `<option value="${k}">затем: ${esc(t)}</option>`).join("");
+  $("ms-tact").value = r.assign.timeout_action;
+  const SEE = ["не видит чужие чаты", "видит чужие чаты (только чтение)"];
+  $("ms-staff-list").innerHTML = r.staff.map(x => `<details style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <summary><b>${esc(x.name)}</b> <span class="hint" style="font-size:12px">${x.custom ? "свои доступы" : "как у всех"}${x.see_others ? " · видит чужие" : ""}</span></summary>
+      <div style="padding:6px 0">${Object.entries(r.perm_titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0">
+        <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-sp="${x.uid}" data-k="${k}" ${x.perms[k] ? "checked" : ""}><span></span></label></div>`).join("")}
+        <select data-see="${x.uid}" style="width:100%;margin:6px 0">${SEE.map((t, i) => `<option value="${i}" ${x.see_others === i ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <div style="display:flex;gap:8px"><button class="btn btn-main" data-sp-save="${x.uid}" style="flex:1">💾 Сохранить</button>
+        <button class="btn btn-soft" data-sp-reset="${x.uid}" style="flex:1">↩️ Как у всех</button></div></div></details>`).join("");
+  document.querySelectorAll("[data-sp-save]").forEach(b => b.onclick = () => {
+    const uid = b.dataset.spSave, perms = {};
+    document.querySelectorAll(`[data-sp="${uid}"]`).forEach(i => perms[i.dataset.k] = i.checked);
+    msgrApi({action: "staff", staff_uid: Number(uid), perms, see_others: Number(document.querySelector(`[data-see="${uid}"]`).value)});
+  });
+  document.querySelectorAll("[data-sp-reset]").forEach(b => b.onclick = () =>
+    msgrApi({action: "staff", staff_uid: Number(b.dataset.spReset), reset: true,
+             see_others: Number(document.querySelector(`[data-see="${b.dataset.spReset}"]`).value)}));
+  const opts = `<option value="0">— свободный —</option>` + r.staff.map(x => `<option value="${x.uid}">${esc(x.name)}</option>`).join("");
+  $("ms-chats").innerHTML = r.chats.length ? r.chats.map(c => `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)">
+      <span style="flex:1;min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</b>
+        <span class="hint" style="font-size:12px">${c.username ? "@" + esc(c.username) + " · " : ""}${esc(c.last)}</span></span>
+      <select data-as-peer="${c.peer}" style="width:46%">${opts}</select></div>`).join("") : `<div class="hint">Чатов пока нет</div>`;
+  document.querySelectorAll("[data-as-peer]").forEach(sel => {
+    const c = r.chats.find(x => String(x.peer) === sel.dataset.asPeer); sel.value = String(c ? c.staff_uid : 0);
+    sel.onchange = () => msgrApi({action: "assign", peer: Number(sel.dataset.asPeer), staff_uid: Number(sel.value), q: $("ms-q").value});
+  });
   $("ms-wl").value = r.whitelist || "";
   $("ms-viol").innerHTML = r.violations.length ? r.violations.map(x => `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
       <b>${esc(x.device)}</b> · ${esc(MS_KIND[x.kind] || x.kind)}${x.peer ? " · " + esc(x.peer) : ""}
@@ -4644,8 +4712,12 @@ $("ms-code-btn").onclick = async () => {
 };
 $("ms-save").onclick = () => {
   const perms = {}; document.querySelectorAll("[data-ms-perm]").forEach(i => perms[i.dataset.msPerm] = i.checked);
-  msgrApi({action: "save", perms, whitelist: $("ms-wl").value, keepalive: $("ms-keep").checked});
+  msgrApi({action: "save", perms, whitelist: $("ms-wl").value, keepalive: $("ms-keep").checked,
+           assign: {assign_mode: $("ms-mode").value, unassigned_visible: $("ms-unass").checked,
+                    timeout_min: Number($("ms-tmin").value) || 0, timeout_action: $("ms-tact").value}});
 };
+let msQTimer = null;
+$("ms-q").oninput = () => { clearTimeout(msQTimer); msQTimer = setTimeout(() => msgrApi({q: $("ms-q").value}), 400); };
 
 function crmOnShow(v) {
   clearInterval(crmTimer);

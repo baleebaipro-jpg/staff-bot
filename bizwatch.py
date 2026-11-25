@@ -232,6 +232,12 @@ async def _on_message(m, edited: bool, bot) -> None:
                   (m.business_connection_id, chat.id, m.message_id, chat_name, chat.username or "",
                    frm.id if frm else None, from_name, outgoing, kind, text,
                    file_id, (old["sent_at"] if old else _local(m.date)), int(edited)))
+    if not outgoing and not old and not edited:
+        try:  # RADI Chat: раздача новых клиентов менеджерам «по очереди»
+            import msgr
+            msgr.on_incoming(chat.id)
+        except Exception as e:  # noqa: BLE001
+            print("msgr.on_incoming:", e)
     dur = next((getattr(getattr(m, k, None), "duration", None) for k in ("voice", "audio", "video", "video_note")
                 if getattr(m, k, None)), None)
     if dur:

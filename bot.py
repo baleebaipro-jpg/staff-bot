@@ -959,6 +959,11 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         except Exception:
             logging.exception("Ошибка утреннего списка задач")
         try:
+            import msgr
+            msgr.check_timeouts()  # RADI Chat: клиент долго ждёт ответа
+        except Exception:
+            logging.exception("Ошибка проверки ответов RADI Chat")
+        try:
             if invest_mod.ENABLED:
                 invest_mod.check_rating_day()
                 invest_mod.check_matured()
