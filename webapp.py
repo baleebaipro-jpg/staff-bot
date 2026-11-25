@@ -419,6 +419,14 @@ def api_client_channel(uid, data):
     return jsonify(ok=True, status="link", link=link, msg=i18n.t(lang, "channel_link"), btn=i18n.t(lang, "channel_btn"))
 
 
+@app.post("/api/cancel_late_fines")
+@need_user(admin=True)
+def api_cancel_late_fines(uid, data):
+    """Отменить штрафы за опоздание за сегодня (например, бот не работал) и не выписывать новые сегодня."""
+    ok, msg = core.cancel_late_fines()
+    return jsonify(ok=ok, msg=msg)
+
+
 @app.post("/api/admin_checkout")
 @need_user(admin=True)
 def api_admin_checkout(uid, data):
@@ -2137,6 +2145,8 @@ PAGE = r"""<!doctype html>
     <div class="page-title">👥 Команда</div>
     <div class="page-sub" id="staff-page-sub"></div>
     <div class="staff-actions">
+      <button class="card" id="cancel-late" style="width:100%;text-align:left;font-size:14.5px">🚫 Отменить сегодняшние штрафы за опоздание
+        <div class="hint" style="font-size:12.5px;margin-top:2px">Если бот не работал — отменит выписанные и не даст выписать новые до конца дня</div></button>
       <details class="card staff-act">
         <summary><b>📌 Новая задача</b><span class="hint">›</span></summary>
         <div style="margin-top:12px">
@@ -4659,6 +4669,8 @@ document.querySelectorAll(".page-title").forEach(t => {
   hero.lastElementChild.append(t, sub);
 });
 $("go-staff").onclick = () => show("staff");
+$("cancel-late").onclick = () => tg.showConfirm("Отменить все штрафы за опоздание за сегодня и не выписывать новые до конца дня?",
+  ok => ok && action("/api/cancel_late_fines"));
 $("go-projects").onclick = () => show("projects");
 $("go-posting").onclick = () => show("posting");
 $("go-posting-me").onclick = () => show("posting");

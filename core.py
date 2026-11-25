@@ -387,6 +387,7 @@ def init_db():
     import crm  # CRM-мессенджер (просмотр переписок рабочих аккаунтов)
     crm.init()
     split_late_penalties()
+    cancel_configured_late_days()
     import kpi  # касса сотрудника и KPI
     kpi.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
@@ -739,6 +740,34 @@ def _late_key(n: int) -> str:
     return "late" if n == 1 else f"late{n}"
 
 
+def late_fines_off(day: str) -> bool:
+    """День без штрафов за опоздание: в config.NO_LATE_FINE_DAYS или отключён кнопкой руководителя."""
+    if day in getattr(config, "NO_LATE_FINE_DAYS", []):
+        return True
+    with db() as c:
+        return bool(c.execute("SELECT 1 FROM flags WHERE name=?", (f"no_late_fines:{day}",)).fetchone())
+
+
+def cancel_late_fines(day: str = "") -> tuple:
+    """Отменить все штрафы за опоздание за день (по умолчанию — сегодня) и не выписывать новые в этот день.
+    Сотрудникам и в группы — «✅ Штраф отменён». Оплаченные не трогаем."""
+    day = day or now().strftime("%Y-%m-%d")
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO flags(name, value) VALUES(?, ?)", (f"no_late_fines:{day}", now().strftime(FMT)))
+        ids = [r["id"] for r in c.execute("SELECT id FROM penalties WHERE day=? AND reason LIKE 'late%' AND paid_at IS NULL",
+                                          (day,))]
+    for pid in ids:
+        delete_penalty(pid)
+    return True, f"Отменено штрафов за опоздание за {day[8:10]}.{day[5:7]}: {len(ids)}. Новые за этот день не выписываются."
+
+
+def cancel_configured_late_days() -> None:
+    """При запуске: один раз отменить штрафы за опоздание за дни из NO_LATE_FINE_DAYS."""
+    for day in getattr(config, "NO_LATE_FINE_DAYS", []):
+        if flag_once(f"late_cancel_done:{day}"):
+            cancel_late_fines(day)
+
+
 def _late_fine(c, uid: int, diff: int, t, start: str, arrived: bool) -> None:
     """Штраф за опоздание — ОТДЕЛЬНЫЙ штраф 50 000 за каждый час: с 9:16 — №1, с 10:00 — №2, с 11:00 — №3…
     Каждый можно отдельно оплатить или отменить (отменённый заново не выписывается)."""
@@ -746,6 +775,9 @@ def _late_fine(c, uid: int, diff: int, t, start: str, arrived: bool) -> None:
     if not hours:
         return
     today = t.strftime("%Y-%m-%d")
+    if today in getattr(config, "NO_LATE_FINE_DAYS", []) or c.execute(
+            "SELECT 1 FROM flags WHERE name=?", (f"no_late_fines:{today}",)).fetchone():
+        return  # день без штрафов за опоздание
     L = staff_lang(uid)
     base = at(t, start)
     for n in range(1, hours + 1):
