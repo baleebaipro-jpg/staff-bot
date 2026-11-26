@@ -126,6 +126,31 @@ def refresh_week():
     return True, f"📥 Загружено строк продаж за неделю: {n}"
 
 
+def by_employee() -> list:
+    """Сотрудники команды и как каждый записан в BILLZ (без продаж — руководитель вписывает сам)."""
+    saved = links()
+    return [{"id": uid, "name": e["name"], "billz": [n for n, u in saved.items() if u == uid]}
+            for uid, e in config.EMPLOYEES.items()]
+
+
+def save_by_employee(mapping: dict):
+    """mapping: {ID сотрудника: "Махира, Махира И."} — имена в BILLZ через запятую (пусто — убрать связь)."""
+    t = core.now().strftime(core.FMT)
+    n = 0
+    with core.db() as c:
+        for uid, names in (mapping or {}).items():
+            uid = int(uid)
+            if not core.employee(uid):
+                continue
+            c.execute("DELETE FROM seller_links WHERE uid=?", (uid,))
+            for name in [x.strip()[:100] for x in str(names or "").split(",") if x.strip()]:
+                c.execute("INSERT INTO seller_links(billz_name, uid, updated_at) VALUES(?, ?, ?) "
+                          "ON CONFLICT(billz_name) DO UPDATE SET uid=excluded.uid, updated_at=excluded.updated_at",
+                          (name, uid, t))
+                n += 1
+    return True, f"🔗 Сохранено: {n} имён BILLZ"
+
+
 def employee_of(billz_name: str):
     """ID сотрудника для продавца BILLZ (только подтверждённые связи)."""
     uid = links().get((billz_name or "").strip())

@@ -611,6 +611,10 @@ def api_sellers(uid, data):
         ok, msg = sellers.save(data.get("links") or {})
     elif data.get("action") == "refresh":
         ok, msg = sellers.refresh_week()
+    elif data.get("action") == "save_emp":
+        ok, msg = sellers.save_by_employee(data.get("links") or {})
+    if data.get("view") == "emp":  # связь без продаж: сотрудник → как записан в BILLZ
+        return jsonify(ok=ok, msg=msg, emps=sellers.by_employee())
     return jsonify(ok=ok, msg=msg, items=sellers.overview(), diag=sellers.diagnose(),
                    team=[{"id": e, "name": core.name(e)} for e in config.EMPLOYEES],
                    mirror=(core.flag_json("billz_mirror") or {}).get("at", ""))
@@ -5256,6 +5260,25 @@ document.querySelectorAll(".page-title").forEach(t => {
 });
 $("go-staff").onclick = () => show("staff");
 /* Связь продавцов BILLZ с сотрудниками */
+/* Связь сотрудников с BILLZ без продаж: у каждого сотрудника — как он записан продавцом в BILLZ */
+async function sellersEmpSheet() {
+  invSheet(`<h3>🔗 Сотрудники ↔ BILLZ</h3><div class="empty">⏳</div>`);
+  let r; try { r = await api("/api/sellers", {view: "emp"}); } catch (e) { return toast(e.message); }
+  invSheet(`<h3>🔗 Сотрудники ↔ BILLZ</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Впишите, как каждый сотрудник записан продавцом в BILLZ — точно как в BILLZ
+      (например «Махира»). Несколько вариантов — через запятую. Пусто — не связан.</div>
+    ${r.emps.map(e => `<div class="kpi-row" style="flex-wrap:wrap"><div class="tt" style="flex:1 1 100%"><b>${esc(e.name)}</b></div>
+      <input data-se="${e.id}" maxlength="200" placeholder="Имя в BILLZ" value="${esc(e.billz.join(", "))}" style="margin:6px 0 0"></div>`).join("")}
+    ${sheetBtns("Сохранить")}
+    <button class="link" id="sl-from-sales" style="display:block;margin:12px auto 0;font-size:13px">📥 Подобрать по продажам BILLZ</button>`);
+  $("is-cancel").onclick = invSheetClose;
+  $("sl-from-sales").onclick = sellersSheet;
+  $("is-ok").onclick = async () => {
+    const links = {}; document.querySelectorAll("[data-se]").forEach(i => { links[i.dataset.se] = i.value; });
+    try { const x = await api("/api/sellers", {action: "save_emp", view: "emp", links}); toast(x.msg); invSheetClose(); load(); }
+    catch (e) { toast(e.message); }
+  };
+}
 async function sellersSheet() {
   invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">⏳</div>`);
   let r; try { r = await api("/api/sellers"); } catch (e) { return invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">${esc(e.message)}</div>`); }
@@ -5289,7 +5312,7 @@ async function sellersSheet() {
     try { const x = await api("/api/sellers", {action: "save", links}); toast(x.msg); invSheetClose(); load(); } catch (e) { toast(e.message); }
   };
 }
-$("go-sellers").onclick = sellersSheet;
+$("go-sellers").onclick = sellersEmpSheet;
 $("cancel-late").onclick = () => tg.showConfirm("Отменить все штрафы за опоздание за сегодня и не выписывать новые до конца дня?",
   ok => ok && action("/api/cancel_late_fines"));
 $("go-projects").onclick = () => show("projects");
