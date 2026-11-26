@@ -632,6 +632,8 @@ def api_followup(uid, data):
         ok, msg = followup.set_mode(str(data.get("mode") or "test"))
     elif a == "preview":
         text = followup.preview_now()
+    elif a == "now":
+        ok, msg = followup.run_now()
     return jsonify(ok=ok, msg=msg, text=text, **followup.status())
 
 
@@ -5376,10 +5378,13 @@ async function followupSheet(body) {
       <div><b>${live ? r.tasks : r.test}</b><span>${live ? "задач поставлено" : "в тесте"}</span></div><div><b>${r.unlinked + r.noclient}</b><span>пропущено</span></div></div>
     ${r.text ? `<div class="hint" style="font-size:13px;white-space:pre-wrap;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;max-height:40vh;overflow:auto">${esc(r.text)}</div>` : ""}
     <button class="btn btn-soft" style="width:100%" id="fu-prev">👁 Проверить сейчас</button>
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-now">📌 Поставить задачи сейчас (не ждать утра)</button>
     <button class="btn ${live ? "btn-soft" : "btn-main"}" style="width:100%;margin-top:8px" id="fu-mode">${live ? "🧪 Вернуть тестовый режим" : "✅ Включить для менеджеров"}</button>
     <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-close">Закрыть</button>`);
   $("fu-close").onclick = invSheetClose;
   $("fu-prev").onclick = () => followupSheet({action: "preview"});
+  $("fu-now").onclick = () => tg.showConfirm("Поставить задачи «обратная связь» прямо сейчас по всем ожидающим продажам?",
+    ok => ok && followupSheet({action: "now"}));
   $("fu-mode").onclick = () => tg.showConfirm(live ? "Вернуть тестовый режим? Задачи перестанут ставиться." :
     "Включить? Менеджеры начнут получать задачи «обратная связь» по новым продажам.", ok => ok && followupSheet({action: "mode", mode: live ? "test" : "live"}));
 }
