@@ -613,6 +613,8 @@ def api_sellers(uid, data):
         ok, msg = sellers.refresh_week()
     elif data.get("action") == "save_emp":
         ok, msg = sellers.save_by_employee(data.get("links") or {})
+    if data.get("view") == "billz":  # список реальных продавцов BILLZ для кнопки выбора
+        return jsonify(ok=True, emps=sellers.by_employee(), **sellers.billz_names())
     if data.get("view") == "emp":  # связь без продаж: сотрудник → как записан в BILLZ
         return jsonify(ok=ok, msg=msg, emps=sellers.by_employee())
     return jsonify(ok=ok, msg=msg, items=sellers.overview(), diag=sellers.diagnose(),
@@ -3132,7 +3134,7 @@ function renderEmp() {
     <div class="card"><div class="member"><div class="ava" style="width:72px;height:72px">${avatar(e.id, e.name, e.ava_v)}</div>
       <div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:20px">${esc(e.name)}</b><span style="font-size:20px">${e.icon}</span></div>
         <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
-        ${(e.billz || []).length ? `<div class="hint" style="font-size:12.5px">🔗 В BILLZ: ${e.billz.map(esc).join(", ")}</div>` : ""}
+        <button class="link" id="ec-billz" style="font-size:12.5px;padding:2px 0">🔗 ${(e.billz || []).length ? "В BILLZ: " + e.billz.map(esc).join(", ") + " ✏️" : "Связать с продавцом BILLZ"}</button>
         <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div></div></div>
       ${e.on_site_since ? `<button class="btn btn-soft" style="width:100%;margin-top:12px" id="ec-out">🚪 Закончить смену за сотрудника</button>` : ""}
       <div class="bar mini-bar" style="margin-top:12px"><div style="width:${pct}%"></div></div>
@@ -3170,6 +3172,7 @@ function renderEmp() {
           ${x.paid ? `<span class="pen-tag">оплачен ${x.paid_at}</span>` : `<span class="pen-tag" style="color:var(--red)">не оплачен</span>`}</div>`).join("")}</details>` : ""}</div>`;
   $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
   bindKpiAdmin(e);
+  $("ec-billz").onclick = () => billzPick(e.id, e.name);
   bindDm("staff");
   if ($("ec-out")) $("ec-out").onclick = () => {
     const now = new Date(), p2 = n => String(n).padStart(2, "0"), cur = `${p2(now.getHours())}:${p2(now.getMinutes())}`;
@@ -5260,6 +5263,35 @@ document.querySelectorAll(".page-title").forEach(t => {
 });
 $("go-staff").onclick = () => show("staff");
 /* Связь продавцов BILLZ с сотрудниками */
+/* Кнопка «Связать с продавцом BILLZ»: список реальных продавцов из BILLZ, выбор касанием */
+async function billzPick(uid, name, onDone) {
+  invSheet(`<h3>🔗 ${esc(name)} — продавец BILLZ</h3><div class="empty">⏳ Загружаю продавцов из BILLZ…</div>`);
+  let r; try { r = await api("/api/sellers", {view: "billz"}); } catch (e) { return invSheet(`<h3>🔗 Продавец BILLZ</h3><div class="empty">${esc(e.message)}</div>`); }
+  const me = (r.emps.find(e => e.id === uid) || {}).billz || [];
+  const taken = {}; r.emps.forEach(e => e.billz.forEach(n => { if (e.id !== uid) taken[n] = e.name; }));
+  const sel = new Set(me);
+  const draw = () => {
+    const q = ($("bp-q") && $("bp-q").value || "").toLowerCase();
+    $("bp-list").innerHTML = r.names.filter(n => !q || n.toLowerCase().includes(q)).map(n =>
+      `<button data-bp="${esc(n)}" class="${sel.has(n) ? "on" : ""}">${sel.has(n) ? "✅ " : ""}${esc(n)}${taken[n] ? ` <span class="hint" style="font-size:11px">· ${esc(taken[n])}</span>` : ""}</button>`).join("")
+      || `<div class="hint" style="font-size:13px">${r.names.length ? "Никого не нашлось" : "BILLZ не отдал список продавцов — впишите имя вручную ниже."}</div>`;
+    document.querySelectorAll("[data-bp]").forEach(b => b.onclick = () => { const n = b.dataset.bp; sel.has(n) ? sel.delete(n) : sel.add(n); draw(); });
+  };
+  invSheet(`<h3>🔗 ${esc(name)} — продавец BILLZ</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 8px">Нажмите на продавца из BILLZ (можно несколько).${r.source ? " Источник: " + (r.source.startsWith("/") ? "сотрудники в BILLZ" : "продажи BILLZ") + "." : ""}</div>
+    ${r.names.length > 8 ? `<input id="bp-q" placeholder="🔎 Поиск">` : ""}
+    <div class="quick" id="bp-list" style="margin:0 0 10px;max-height:45vh;overflow:auto"></div>
+    <input id="bp-manual" placeholder="или вписать вручную, как в BILLZ" maxlength="100">
+    ${r.error && !r.names.length ? `<div class="hint" style="font-size:11.5px;margin:-4px 0 8px">BILLZ: ${esc(r.error)}</div>` : ""}
+    ${sheetBtns("Сохранить")}`);
+  draw(); if ($("bp-q")) $("bp-q").oninput = draw;
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = async () => {
+    const extra = $("bp-manual").value.trim(); if (extra) sel.add(extra);
+    try { const x = await api("/api/sellers", {action: "save_emp", view: "emp", links: {[uid]: [...sel].join(", ")}}); toast(x.msg); invSheetClose();
+      if (onDone) onDone(); else load(); } catch (e) { toast(e.message); }
+  };
+}
 /* Связь сотрудников с BILLZ без продаж: у каждого сотрудника — как он записан продавцом в BILLZ */
 async function sellersEmpSheet() {
   invSheet(`<h3>🔗 Сотрудники ↔ BILLZ</h3><div class="empty">⏳</div>`);
@@ -5268,11 +5300,13 @@ async function sellersEmpSheet() {
     <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Впишите, как каждый сотрудник записан продавцом в BILLZ — точно как в BILLZ
       (например «Махира»). Несколько вариантов — через запятую. Пусто — не связан.</div>
     ${r.emps.map(e => `<div class="kpi-row" style="flex-wrap:wrap"><div class="tt" style="flex:1 1 100%"><b>${esc(e.name)}</b></div>
-      <input data-se="${e.id}" maxlength="200" placeholder="Имя в BILLZ" value="${esc(e.billz.join(", "))}" style="margin:6px 0 0"></div>`).join("")}
+      <input data-se="${e.id}" maxlength="200" placeholder="Имя в BILLZ" value="${esc(e.billz.join(", "))}" style="margin:6px 0 0">
+      <button class="btn btn-soft btn-sm" style="width:100%;margin-top:6px" data-sep="${e.id}" data-sen="${esc(e.name)}">🔗 Выбрать продавца из BILLZ</button></div>`).join("")}
     ${sheetBtns("Сохранить")}
     <button class="link" id="sl-from-sales" style="display:block;margin:12px auto 0;font-size:13px">📥 Подобрать по продажам BILLZ</button>`);
   $("is-cancel").onclick = invSheetClose;
   $("sl-from-sales").onclick = sellersSheet;
+  document.querySelectorAll("[data-sep]").forEach(b => b.onclick = () => billzPick(+b.dataset.sep, b.dataset.sen, sellersEmpSheet));
   $("is-ok").onclick = async () => {
     const links = {}; document.querySelectorAll("[data-se]").forEach(i => { links[i.dataset.se] = i.value; });
     try { const x = await api("/api/sellers", {action: "save_emp", view: "emp", links}); toast(x.msg); invSheetClose(); load(); }

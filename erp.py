@@ -118,6 +118,43 @@ def _api(method: str, path: str, params: dict = None, body: dict = None, timeout
     return res
 
 
+# ---------- сотрудники (продавцы) BILLZ ----------
+
+_users_cache = {"at": 0, "names": [], "source": ""}
+USER_PATHS = ["/v1/user", "/v2/user", "/v1/users", "/v2/users", "/v1/employee", "/v2/employee", "/v1/company/user",
+              "/v1/seller", "/v2/seller"]
+
+
+def billz_users(force: bool = False) -> dict:
+    """Список продавцов/сотрудников BILLZ. Путь API у BILLZ точно не задокументирован — пробуем известные варианты,
+    рабочий запоминаем. Кэш на час. Возвращает {names, source, error}."""
+    if not force and _users_cache["names"] and time.time() - _users_cache["at"] < 3600:
+        return dict(_users_cache, error="")
+    known = (core.flag_json("billz_users_path") or {}).get("path")
+    errors = []
+    for path in ([known] if known else []) + [p for p in USER_PATHS if p != known]:
+        try:
+            res = _api("GET", path, params={"page": 1, "limit": 200}, timeout=20)
+        except BillzError as e:
+            errors.append(f"{path}: {e.code or ''}")
+            continue
+        items = res if isinstance(res, list) else next(
+            (res.get(k) for k in ("users", "employees", "sellers", "items", "data", "rows", "result") if isinstance(res.get(k), list)), [])
+        names = []
+        for x in items or []:
+            if not isinstance(x, dict):
+                continue
+            n = x.get("name") or x.get("full_name") or " ".join(str(v) for v in (x.get("first_name"), x.get("last_name")) if v)
+            n = (n or "").strip()
+            if n and n not in names:
+                names.append(n)
+        if names:
+            core.flag_json("billz_users_path", {"path": path})
+            _users_cache.update(at=time.time(), names=sorted(names), source=path)
+            return dict(_users_cache, error="")
+    return {"names": [], "source": "", "error": "; ".join(errors)[:300]}
+
+
 # ---------- клиенты ----------
 
 def _phone_variants(phone: str) -> list:

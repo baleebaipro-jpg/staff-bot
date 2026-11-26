@@ -126,6 +126,22 @@ def refresh_week():
     return True, f"📥 Загружено строк продаж за неделю: {n}"
 
 
+def billz_names() -> dict:
+    """Имена продавцов для выбора: из BILLZ (список сотрудников) + из продаж; {names, source, error}."""
+    import erp
+    res = {"names": [], "source": "", "error": ""}
+    if erp.enabled():
+        try:
+            res = erp.billz_users()
+        except Exception as e:  # noqa: BLE001
+            res["error"] = str(e)[:200]
+    names = list(res.get("names") or [])
+    for s in billz_sellers():
+        if s["name"] not in names:
+            names.append(s["name"])
+    return {"names": sorted(names), "source": res.get("source") or ("продажи" if names else ""), "error": res.get("error", "")}
+
+
 def by_employee() -> list:
     """Сотрудники команды и как каждый записан в BILLZ (без продаж — руководитель вписывает сам)."""
     saved = links()
