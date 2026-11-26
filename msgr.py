@@ -110,11 +110,11 @@ def save_settings(perms: dict = None, whitelist=None, keepalive=None, assign: di
 
 # ---------- подключение телефонов ----------
 
-KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # без похожих 0/O, 1/I
+KEY_DIGITS = 8  # ключ — только цифры, удобно вводить на телефоне
 
 
 def _norm_code(s) -> str:
-    return "".join(ch for ch in str(s or "").upper() if ch.isalnum())
+    return "".join(ch for ch in str(s or "") if ch.isdigit())
 
 
 def fmt_key(code: str) -> str:
@@ -141,13 +141,28 @@ def new_code(admin_uid: int, staff_uid: int = 0, name: str = "", number_id: int 
             return {"ok": False, "error": f"{core.name(staff_uid)} уже работает на другом рабочем номере. "
                                           "Сначала отключите его телефон там."}
     name = core.name(staff_uid) if staff_uid else (name or "").strip()[:60]
-    code = "".join(secrets.choice(KEY_ALPHABET) for _ in range(8))
+    code = "".join(secrets.choice("0123456789") for _ in range(KEY_DIGITS))
     with core.db() as c:
         c.execute("DELETE FROM msgr_codes WHERE expires < ?", (time.time(),))
         c.execute("INSERT OR REPLACE INTO msgr_codes(code, name, created_by, expires, staff_uid, number_id) "
                   "VALUES(?, ?, ?, ?, ?, ?)",
                   (code, name, admin_uid, time.time() + CODE_MINUTES * 60, staff_uid or None, number_id or None))
-    return {"ok": True, "code": fmt_key(code), "minutes": CODE_MINUTES, "name": name}
+    out = {"ok": True, "code": fmt_key(code), "minutes": CODE_MINUTES, "name": name, "can_send": bool(staff_uid)}
+    return out
+
+
+def send_key_to_staff(staff_uid: int, code: str, number_title: str = "") -> dict:
+    """Отправить ключ сотруднику разовым сообщением в бот сотрудников."""
+    staff_uid = int(staff_uid or 0)
+    if not staff_uid:
+        return {"ok": False, "error": "Не выбран сотрудник."}
+    text = ("🔑 Ваш ключ для входа в RADI Chat:\n\n" + fmt_key(_norm_code(code)) +
+            "\n\nДействует 10 минут, вводится один раз." +
+            (f"\nРабочий номер: {number_title}" if number_title else "") +
+            "\n\nRADI Chat kirish kaliti — 10 daqiqa, bir marta.")
+    with core.db() as c:
+        core.notify(c, staff_uid, text)
+    return {"ok": True}
 
 
 _pair_fails = {}
