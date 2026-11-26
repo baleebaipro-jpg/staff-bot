@@ -161,9 +161,37 @@ def status() -> dict:
             "unlinked": cnt.get("skip_unlinked", 0), "hour": HOUR}
 
 
+def fetch_today() -> str:
+    """Загрузить сегодняшние продажи из BILLZ прямо сейчас и вернуть строку-диагностику."""
+    import erp
+    if not erp.enabled():
+        return "⚠️ BILLZ не подключён (нет BILLZ_SECRET_TOKEN в Railway)."
+    today = core.now().strftime("%Y-%m-%d")
+    try:
+        n = erp.mirror_sales(today)
+    except Exception as e:  # noqa: BLE001
+        return f"⚠️ BILLZ не отдал продажи за сегодня: {str(e)[:200]}"
+    with core.db() as c:
+        sales = c.execute("SELECT COUNT(*) FROM billz_sales WHERE date >= ? AND order_type='SALE'", (today,)).fetchone()[0]
+        withs = c.execute("SELECT COUNT(*) FROM billz_sales WHERE date >= ? AND order_type='SALE' AND sellers != ''",
+                          (today,)).fetchone()[0]
+        withc = c.execute("SELECT COUNT(*) FROM billz_sales WHERE date >= ? AND order_type='SALE' AND customer_id IS NOT NULL "
+                          "AND customer_id != ''", (today,)).fetchone()[0]
+        last = c.execute("SELECT date, sellers, customer_name FROM billz_sales WHERE date >= ? ORDER BY date DESC LIMIT 1",
+                         (today,)).fetchone()
+    keys = (core.flag_json("billz_mirror_keys") or {}).get("seller_fields")
+    out = f"📥 BILLZ сегодня: строк {n}, продаж {sales} (с продавцом {withs}, с клиентом {withc})."
+    if last:
+        out += f"\nПоследняя: {last['date'][11:16]} · продавец «{last['sellers'] or '—'}» · клиент «{last['customer_name'] or '—'}»"
+    if n and not withs:
+        out += f"\n⚠️ Продавец не найден в данных BILLZ. Поля: {str(keys)[:200]}"
+    return out
+
+
 def preview_now() -> str:
-    """Кнопка «👁 Проверить сейчас»: что получили бы менеджеры по всем ожидающим продажам (включая завтрашние)."""
+    """Кнопка «👁 Проверить сейчас»: сначала свежие продажи из BILLZ, затем — что получили бы менеджеры."""
+    diag = fetch_today()
     scan()
     with core.db() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM fu_sales WHERE status IN ('pending', 'test') ORDER BY sale_at")]
-    return preview_text(rows, "👁 Предпросмотр · обратная связь после покупки (никому не отправлено)")
+    return diag + "\n\n" + preview_text(rows, "👁 Предпросмотр · обратная связь после покупки (никому не отправлено)")
