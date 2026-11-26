@@ -609,7 +609,9 @@ def api_sellers(uid, data):
     ok, msg = True, ""
     if data.get("action") == "save":
         ok, msg = sellers.save(data.get("links") or {})
-    return jsonify(ok=ok, msg=msg, items=sellers.overview(),
+    elif data.get("action") == "refresh":
+        ok, msg = sellers.refresh_week()
+    return jsonify(ok=ok, msg=msg, items=sellers.overview(), diag=sellers.diagnose(),
                    team=[{"id": e, "name": core.name(e)} for e in config.EMPLOYEES],
                    mirror=(core.flag_json("billz_mirror") or {}).get("at", ""))
 
@@ -5259,18 +5261,29 @@ async function sellersSheet() {
   let r; try { r = await api("/api/sellers"); } catch (e) { return invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">${esc(e.message)}</div>`); }
   const opt = (sel) => `<option value="0">— не сотрудник / не связывать —</option>` +
     r.team.map(t => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${esc(t.name)}</option>`).join("");
-  const sug = r.items.filter(x => !x.saved && x.suggested).length;
+  const sug = r.items.filter(x => !x.saved && x.suggested).length, d = r.diag || {};
+  const diag = `<div class="hint" style="font-size:12px;margin:0 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:12px">
+    📊 Продаж в копии BILLZ: ${d.total || 0} · за неделю: ${d.week || 0} (с продавцом: ${d.week_sellers || 0})
+    ${d.last_sale ? " · последняя: " + esc(d.last_sale) : ""}${d.mirror_at ? "<br>🔄 Обновлено: " + esc(d.mirror_at) + " (" + esc(d.mirror_last || "") + ")" : ""}
+    ${d.billz_on === false ? "<br>⚠️ BILLZ не подключён" : d.report_on === false ? "<br>⚠️ BILLZ не даёт отчёт продаж — копия не обновляется сама" : ""}
+    ${d.keys && d.keys.seller_fields ? "<br>🔎 Поля продавца в BILLZ: " + esc(JSON.stringify(d.keys.seller_fields).slice(0, 200)) : ""}
+    <button class="btn btn-soft btn-sm" style="width:100%;margin-top:8px" id="sl-refresh">🔄 Загрузить продажи за неделю из BILLZ</button></div>`;
   invSheet(`<h3>🔗 Продавцы BILLZ ↔ сотрудники</h3>
     <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Продавцы из продаж BILLZ за полгода. Система предложила совпадения по имени —
-      проверьте и нажмите «Сохранить». ${r.mirror ? "Продажи из BILLZ обновлены " + esc(r.mirror) + "." : ""}</div>
+      проверьте и нажмите «Сохранить».</div>${diag}
     ${r.items.length ? r.items.map((x, i) => `<div class="kpi-row" style="flex-wrap:wrap">
       <div class="tt" style="flex:1 1 100%"><b>${esc(x.name)}</b> <span class="hint" style="font-size:12px">· продаж: ${x.sales} · посл. ${x.last.slice(8, 10)}.${x.last.slice(5, 7)}</span>
         ${x.saved ? (x.uid ? ' <span class="pen-tag">✅ связан</span>' : ' <span class="hint" style="font-size:12px">не связан</span>')
           : x.suggested ? ' <span class="pen-tag" style="color:#fbbf24">💡 предложение</span>' : ""}</div>
       <select data-sl="${i}" style="margin:6px 0 0">${opt(x.saved ? x.uid : x.suggested)}</select></div>`).join("")
-      : `<div class="empty">Продаж из BILLZ пока нет. Они появятся после загрузки истории (Клиенты → карточка → «Загрузить за год»).</div>`}
+      : `<div class="empty">Продавцов пока нет — нажмите «Загрузить продажи за неделю».</div>`}
     ${r.items.length ? sheetBtns(sug ? `Сохранить (предложений: ${sug})` : "Сохранить") : `<button class="btn btn-soft" style="width:100%" id="is-cancel">Закрыть</button>`}`);
   $("is-cancel").onclick = invSheetClose;
+  $("sl-refresh").onclick = async () => {
+    $("sl-refresh").disabled = true; $("sl-refresh").textContent = "⏳ Загружаю из BILLZ…";
+    try { const x = await api("/api/sellers", {action: "refresh"}); toast(x.msg); } catch (e) { toast(e.message); }
+    sellersSheet();
+  };
   if ($("is-ok")) $("is-ok").onclick = async () => {
     const links = {}; document.querySelectorAll("[data-sl]").forEach(s => { links[r.items[+s.dataset.sl].name] = +s.value; });
     try { const x = await api("/api/sellers", {action: "save", links}); toast(x.msg); invSheetClose(); load(); } catch (e) { toast(e.message); }

@@ -471,6 +471,27 @@ def _sales_rows() -> list:
 
 # ---------- копия продаж BILLZ (для ERP: транзакции и сверка) ----------
 
+def _seller_names(r: dict) -> list:
+    """Продавцы строки отчёта BILLZ — поле называется по-разному: seller_names / sellers / seller_name / seller …"""
+    out = []
+    for key in ("seller_names", "sellers", "seller_name", "seller", "sellers_names", "employee_name", "employees"):
+        v = r.get(key)
+        if not v:
+            continue
+        for x in (v if isinstance(v, list) else [v]):
+            if isinstance(x, dict):
+                n = x.get("name") or x.get("full_name") or " ".join(
+                    str(p) for p in (x.get("first_name"), x.get("last_name")) if p)
+            else:
+                n = str(x)
+            n = (n or "").strip()
+            if n and n not in out:
+                out.append(n)
+        if out:
+            break
+    return out
+
+
 def mirror_sales(day_from: str, day_to: str = None) -> int:
     """Скопировать транзакции BILLZ (продажи, возвраты, обмены) за период в таблицу billz_sales."""
     day_to = day_to or day_from
@@ -484,6 +505,10 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
             break
         page += 1
     now = core.now().strftime(core.FMT)
+    if rows:  # для диагностики: какие поля приходят из BILLZ (только названия + поля продавца)
+        r0 = rows[0]
+        core.flag_json("billz_mirror_keys", {"keys": sorted(r0.keys())[:80], "seller_fields": {
+            k: r0.get(k) for k in r0 if "sell" in k.lower() or "employee" in k.lower() or "cashier" in k.lower()}})
     with core.db() as c:
         for r in rows:
             oid = r.get("order_id") or r.get("row_id")
@@ -494,7 +519,7 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
                       "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (oid, str(r.get("external_id") or ""), str(r.get("date") or "")[:19].replace("T", " "), r.get("shop_id"),
                        r.get("shop_name"), r.get("customer_name"), r.get("customer_id"),
-                       ", ".join(r.get("seller_names") or []), r.get("cashier_name"), (r.get("order_type") or "SALE").upper(),
+                       ", ".join(_seller_names(r)), r.get("cashier_name"), (r.get("order_type") or "SALE").upper(),
                        float(r.get("total_price") or 0), float(r.get("gross_sales") or 0), float(r.get("discount_percent") or 0),
                        float(r.get("sold_measurement_value") or 0) - float(r.get("returned_measurement_value") or 0),
                        json.dumps([{"name": p.get("payment_type_name"), "sum": float(p.get("sum") or 0)}
