@@ -227,6 +227,41 @@ def devices() -> list:
             for r in rows]
 
 
+def owner_code_set() -> bool:
+    with core.db() as c:
+        r = c.execute("SELECT value FROM msgr_kv WHERE key='owner_code'").fetchone()
+    return bool(r and r["value"])
+
+
+def set_owner_code(code: str) -> None:
+    """Код владельца для входа по номеру в приложении. Пустая строка — снять код (вход по номеру открыт)."""
+    code = (code or "").strip()
+    with core.db() as c:
+        if code:
+            c.execute("INSERT OR REPLACE INTO msgr_kv(key, value) VALUES('owner_code', ?)", (_hash(code),))
+        else:
+            c.execute("DELETE FROM msgr_kv WHERE key='owner_code'")
+
+
+_gate_fails = []
+
+
+def check_owner_code(code: str) -> dict:
+    """Проверка кода владельца перед входом по номеру. Нет кода на сервере — вход по номеру открыт (первая настройка)."""
+    now = time.time()
+    _gate_fails[:] = [t for t in _gate_fails if now - t < 3600]
+    if len(_gate_fails) >= 20:
+        return {"ok": False, "error": "Слишком много попыток. Попробуйте позже."}
+    with core.db() as c:
+        r = c.execute("SELECT value FROM msgr_kv WHERE key='owner_code'").fetchone()
+    if not (r and r["value"]):
+        return {"ok": True, "open": True}  # код не задан — вход по номеру разрешён
+    if _hash((code or "").strip()) == r["value"]:
+        return {"ok": True}
+    _gate_fails.append(now)
+    return {"ok": False, "error": "Неверный код."}
+
+
 def sessions_by_staff() -> list:
     """Активные сессии (включённые телефоны), сгруппированные по менеджеру. У каждого — его воронки (номер + ключ)."""
     import tgnumbers

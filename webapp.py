@@ -137,6 +137,13 @@ def api_msgr_pair():
     return jsonify(r), (200 if r.get("ok") else 400)
 
 
+@app.post("/api/msgr/gate")
+def api_msgr_gate():
+    """Проверка кода владельца перед входом по номеру в приложении (без токена — это шлагбаум)."""
+    d = request.get_json(silent=True) or {}
+    return jsonify(msgr.check_owner_code(str(d.get("code") or "")))
+
+
 @app.post("/api/msgr/keylogin")
 def api_msgr_keylogin():
     """RADI Chat: вход в рабочий аккаунт только по ключу (login_token — из auth.exportLoginToken телефона)."""
@@ -224,6 +231,9 @@ def api_msgr_admin(uid, data):
     if a == "num_remove":
         tgnumbers.remove(int(data.get("number_id") or 0))
         msg = "Рабочий номер удалён с сервера"
+    if a == "owner_code":
+        msgr.set_owner_code(str(data.get("code") or ""))
+        msg = "✅ Код входа по номеру сохранён" if (data.get("code") or "").strip() else "Код снят — вход по номеру открыт"
     if a in ("disable", "enable", "kick"):
         msgr.set_disabled(str(data.get("id") or ""), a != "enable")
         msg = {"disable": "🚫 Телефон отключён", "enable": "✅ Телефон снова подключён",
@@ -241,7 +251,7 @@ def api_msgr_admin(uid, data):
     staff = [dict(x, **msgr.staff_perms(x["uid"])) for x in msgr.staff()]
     return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=staff, perms=s["perms"], perm_titles=msgr.PERMS,
                    whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50),
-                   sessions=msgr.sessions_by_staff(),
+                   sessions=msgr.sessions_by_staff(), owner_code_set=msgr.owner_code_set(),
                    assign={k: s[k] for k in ("assign_mode", "unassigned_visible", "timeout_min", "timeout_action")},
                    assign_modes=msgr.ASSIGN_MODES, timeout_actions=msgr.TIMEOUT_ACTIONS,
                    chats=msgr.chats_admin(str(data.get("q") or "")), numbers=tgnumbers.numbers(),
@@ -2161,6 +2171,13 @@ PAGE = r"""<!doctype html>
         <div class="hint" id="ms-num-hint" style="margin-bottom:6px"></div>
         <input id="ms-num-val" style="margin-bottom:8px">
         <button class="btn btn-main" id="ms-num-next" style="width:100%">Дальше</button></div>
+      <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+        <b style="font-size:14px">🔒 Код входа по номеру</b>
+        <div class="hint" style="font-size:12px;margin:4px 0 8px">В приложении перед входом по номеру спросит этот код. Сотрудники входят по ключу и код не видят. Пусто — вход по номеру без кода.</div>
+        <div style="display:flex;gap:8px"><input id="ms-owner-code" placeholder="Придумайте код" style="flex:1">
+          <button class="btn btn-soft" id="ms-owner-save" style="padding:10px 14px">Сохранить</button></div>
+        <div class="hint" id="ms-owner-state" style="font-size:12px;margin-top:6px"></div>
+      </div>
     </div>
     <div class="card">
       <b>Ключ доступа сотрудника</b>
@@ -4768,6 +4785,10 @@ function msgrRender(r) {
   });
   $("ms-perms").innerHTML = Object.entries(r.perm_titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0">
       <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-ms-perm="${k}" ${r.perms[k] ? "checked" : ""}><span></span></label></div>`).join("");
+  if ("owner_code_set" in r) {
+    $("ms-owner-state").textContent = r.owner_code_set ? "🔒 Код установлен — вход по номеру защищён" : "⚠️ Код не задан — вход по номеру открыт";
+    if (r.owner_code_set) $("ms-owner-code").placeholder = "Изменить код (или пусто — снять)";
+  }
   if (r.sessions) {
     $("ms-sessions").innerHTML = r.sessions.length ? r.sessions.map(g => `<details style="padding:8px 0;border-bottom:1px solid var(--line)">
         <summary><b>${esc(g.name)}</b> <span class="hint" style="font-size:12px">воронок: ${g.count}</span></summary>
@@ -4857,6 +4878,13 @@ $("ms-num-next").onclick = () => {
   const v = $("ms-num-val").value;
   msNumApi($("ms-num-val").type === "password" ? {action: "num_password", number_id: msNum.id, password: v}
                                                : {action: "num_code", number_id: msNum.id, code: v});
+};
+$("ms-owner-save").onclick = () => {
+  const v = $("ms-owner-code").value;
+  if ($("ms-owner-state").textContent.includes("установлен") || v.trim())
+    tg.showConfirm(v.trim() ? "Сохранить код входа по номеру?" : "Снять код? Вход по номеру станет без кода.",
+      ok => { if (ok) { msgrApi({action: "owner_code", code: v}); $("ms-owner-code").value = ""; } });
+  else msgrApi({action: "owner_code", code: v});
 };
 $("ms-save").onclick = () => {
   const perms = {}; document.querySelectorAll("[data-ms-perm]").forEach(i => perms[i.dataset.msPerm] = i.checked);
