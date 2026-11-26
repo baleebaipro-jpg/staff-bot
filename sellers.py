@@ -96,6 +96,36 @@ def save(mapping: dict):
     return True, f"🔗 Сохранено связей: {n}"
 
 
+def diagnose() -> dict:
+    """Что лежит в копии продаж BILLZ: всего строк, за неделю, сколько с продавцом, когда обновлялось."""
+    import erp
+    week = (core.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    with core.db() as c:
+        total = c.execute("SELECT COUNT(*) FROM billz_sales").fetchone()[0]
+        w = c.execute("SELECT COUNT(*) FROM billz_sales WHERE date >= ?", (week,)).fetchone()[0]
+        ws = c.execute("SELECT COUNT(*) FROM billz_sales WHERE date >= ? AND sellers != ''", (week,)).fetchone()[0]
+        last = c.execute("SELECT MAX(date) FROM billz_sales").fetchone()[0] or ""
+    m = core.flag_json("billz_mirror") or {}
+    return {"total": total, "week": w, "week_sellers": ws, "last_sale": last[:16], "mirror_at": m.get("at", ""),
+            "mirror_last": m.get("last", ""), "report_on": bool(erp._watch.get("report", True)),
+            "billz_on": erp.enabled(), "keys": core.flag_json("billz_mirror_keys") or {}}
+
+
+def refresh_week():
+    """Загрузить из BILLZ продажи за последние 7 дней (старые не берём)."""
+    import erp
+    if not erp.enabled():
+        return False, "BILLZ не подключён (нет ключа BILLZ_SECRET_TOKEN в Railway)."
+    d1 = (core.now() - timedelta(days=6)).strftime("%Y-%m-%d")
+    try:
+        n = erp.mirror_sales(d1, core.now().strftime("%Y-%m-%d"))
+    except erp.BillzError as e:
+        return False, f"BILLZ не отдал продажи: {e}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"Ошибка загрузки: {e}"
+    return True, f"📥 Загружено строк продаж за неделю: {n}"
+
+
 def employee_of(billz_name: str):
     """ID сотрудника для продавца BILLZ (только подтверждённые связи)."""
     uid = links().get((billz_name or "").strip())
