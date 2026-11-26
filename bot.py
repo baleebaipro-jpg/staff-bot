@@ -945,6 +945,8 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         try:
             posts.dispatch_due()
             erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
+            import followup
+            followup.tick()  # обратная связь с клиентом на следующий день после покупки
             shop.daily()  # ERP: напоминания о разморозке бонусов, сгорание баллов
             erp.start_purchase_watch()  # «спасибо за покупку» — проверка продаж каждые 30 с (запускается один раз)
         except Exception:
