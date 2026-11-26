@@ -21,6 +21,7 @@ import appauth
 import invest
 import kpi
 import sellers
+import followup
 import crm
 import msgr
 import tgnumbers
@@ -620,6 +621,18 @@ def api_sellers(uid, data):
     return jsonify(ok=ok, msg=msg, items=sellers.overview(), diag=sellers.diagnose(),
                    team=[{"id": e, "name": core.name(e)} for e in config.EMPLOYEES],
                    mirror=(core.flag_json("billz_mirror") or {}).get("at", ""))
+
+
+@app.post("/api/followup")
+@need_user(admin=True)
+def api_followup(uid, data):
+    """Обратная связь после покупки: статус, предпросмотр (preview), режим (mode = test / live)."""
+    a, ok, msg, text = data.get("action"), True, "", ""
+    if a == "mode":
+        ok, msg = followup.set_mode(str(data.get("mode") or "test"))
+    elif a == "preview":
+        text = followup.preview_now()
+    return jsonify(ok=ok, msg=msg, text=text, **followup.status())
 
 
 @app.post("/api/direct_message")
@@ -2473,6 +2486,8 @@ PAGE = r"""<!doctype html>
     <div class="page-title">👥 Команда</div>
     <div class="page-sub" id="staff-page-sub"></div>
     <div class="staff-actions">
+      <button class="card" id="go-followup" style="width:100%;text-align:left;font-size:14.5px">📞 Обратная связь после покупки
+        <div class="hint" style="font-size:12.5px;margin-top:2px" id="fu-sub">На следующий день — задача продавцу связаться с клиентом</div></button>
       <button class="card" id="go-sellers" style="width:100%;text-align:left;font-size:14.5px">🔗 Продавцы BILLZ ↔ сотрудники
         <div class="hint" style="font-size:12.5px;margin-top:2px">Махира в BILLZ = Moxira в команде — для отчётов и задач по клиентам</div></button>
       <button class="card" id="cancel-late" style="width:100%;text-align:left;font-size:14.5px">🚫 Отменить сегодняшние штрафы за опоздание
@@ -5347,6 +5362,28 @@ async function sellersSheet() {
   };
 }
 $("go-sellers").onclick = sellersEmpSheet;
+/* Обратная связь после покупки: тест / включено, предпросмотр */
+async function followupSheet(body) {
+  let r; try { r = await api("/api/followup", body || {}); } catch (e) { return toast(e.message); }
+  if (r.msg) toast(r.msg);
+  const live = r.mode === "live";
+  invSheet(`<h3>📞 Обратная связь после покупки</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">По каждой новой продаже BILLZ (с ${esc(r.since)}) на следующий день в ${r.hour}:00
+      продавцу — задача связаться с клиентом. Продавец определяется по связи «Продавцы BILLZ ↔ сотрудники». Задача не мешает отметить уход.</div>
+    <div class="kpi-res" style="margin:0 0 10px">${live ? "✅ <b style='font-size:15px'>Включено</b> — задачи ставятся менеджерам"
+      : "🧪 <b style='font-size:15px;color:#fbbf24'>Тест</b> — менеджерам ничего не отправляется, предпросмотр утром только вам"}</div>
+    <div class="pen-stats three" style="margin-bottom:10px"><div><b>${r.pending}</b><span>ждут</span></div>
+      <div><b>${live ? r.tasks : r.test}</b><span>${live ? "задач поставлено" : "в тесте"}</span></div><div><b>${r.unlinked + r.noclient}</b><span>пропущено</span></div></div>
+    ${r.text ? `<div class="hint" style="font-size:13px;white-space:pre-wrap;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;max-height:40vh;overflow:auto">${esc(r.text)}</div>` : ""}
+    <button class="btn btn-soft" style="width:100%" id="fu-prev">👁 Проверить сейчас</button>
+    <button class="btn ${live ? "btn-soft" : "btn-main"}" style="width:100%;margin-top:8px" id="fu-mode">${live ? "🧪 Вернуть тестовый режим" : "✅ Включить для менеджеров"}</button>
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-close">Закрыть</button>`);
+  $("fu-close").onclick = invSheetClose;
+  $("fu-prev").onclick = () => followupSheet({action: "preview"});
+  $("fu-mode").onclick = () => tg.showConfirm(live ? "Вернуть тестовый режим? Задачи перестанут ставиться." :
+    "Включить? Менеджеры начнут получать задачи «обратная связь» по новым продажам.", ok => ok && followupSheet({action: "mode", mode: live ? "test" : "live"}));
+}
+$("go-followup").onclick = () => followupSheet();
 $("cancel-late").onclick = () => tg.showConfirm("Отменить все штрафы за опоздание за сегодня и не выписывать новые до конца дня?",
   ok => ok && action("/api/cancel_late_fines"));
 $("go-projects").onclick = () => show("projects");

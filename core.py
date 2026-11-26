@@ -396,6 +396,8 @@ def init_db():
     kpi.init()
     import sellers  # связь продавцов BILLZ с сотрудниками
     sellers.init()
+    import followup  # обратная связь с клиентом на следующий день после покупки
+    followup.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")
@@ -1257,7 +1259,8 @@ def _unfinished(c, uid) -> list:
     """Незакрытые задачи на сегодня — от руководителя и свои (перенесённые на будущее не считаются).
     Пока они не закрыты, уход отметить нельзя."""
     return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
-                     "AND (due_date IS NULL OR due_date <= ?) ORDER BY id", (uid, now().strftime("%Y-%m-%d"))).fetchall()
+                     "AND (due_date IS NULL OR due_date <= ?) AND COALESCE(soft, 0)=0 ORDER BY id",  # soft — напоминание, уход не блокирует
+                     (uid, now().strftime("%Y-%m-%d"))).fetchall()
 
 
 def _all_open(c, uid) -> list:
