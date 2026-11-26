@@ -394,6 +394,8 @@ def init_db():
     cancel_configured_late_days()
     import kpi  # касса сотрудника и KPI
     kpi.init()
+    import sellers  # связь продавцов BILLZ с сотрудниками
+    sellers.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")

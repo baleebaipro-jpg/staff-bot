@@ -20,6 +20,7 @@ import shop
 import appauth
 import invest
 import kpi
+import sellers
 import crm
 import msgr
 import tgnumbers
@@ -472,8 +473,10 @@ def api_me(uid, data):
         res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
         res["shifts"][core.OFF] = "Выходной"
         res["team"] = core.team()
+        bl = sellers.links()
         for e in res["team"]:
             e["ava_v"] = ava_version(e["id"])
+            e["billz"] = [n for n, u in bl.items() if u == e["id"]]  # как он записан продавцом в BILLZ
     return jsonify(res)
 
 
@@ -597,6 +600,18 @@ def api_client_channel(uid, data):
         link = inv["invite_link"]
         core.channel_link_add(link, uid, chat, core.now() + _td(hours=hours))
     return jsonify(ok=True, status="link", link=link, msg=i18n.t(lang, "channel_link"), btn=i18n.t(lang, "channel_btn"))
+
+
+@app.post("/api/sellers")
+@need_user(admin=True)
+def api_sellers(uid, data):
+    """Продавцы BILLZ ↔ сотрудники: список с предложениями системы; action=save {links: {имя BILLZ: ID}}."""
+    ok, msg = True, ""
+    if data.get("action") == "save":
+        ok, msg = sellers.save(data.get("links") or {})
+    return jsonify(ok=ok, msg=msg, items=sellers.overview(),
+                   team=[{"id": e, "name": core.name(e)} for e in config.EMPLOYEES],
+                   mirror=(core.flag_json("billz_mirror") or {}).get("at", ""))
 
 
 @app.post("/api/direct_message")
@@ -2450,6 +2465,8 @@ PAGE = r"""<!doctype html>
     <div class="page-title">👥 Команда</div>
     <div class="page-sub" id="staff-page-sub"></div>
     <div class="staff-actions">
+      <button class="card" id="go-sellers" style="width:100%;text-align:left;font-size:14.5px">🔗 Продавцы BILLZ ↔ сотрудники
+        <div class="hint" style="font-size:12.5px;margin-top:2px">Махира в BILLZ = Moxira в команде — для отчётов и задач по клиентам</div></button>
       <button class="card" id="cancel-late" style="width:100%;text-align:left;font-size:14.5px">🚫 Отменить сегодняшние штрафы за опоздание
         <div class="hint" style="font-size:12.5px;margin-top:2px">Если бот не работал — отменит выписанные и не даст выписать новые до конца дня</div></button>
       <details class="card staff-act">
@@ -3109,6 +3126,7 @@ function renderEmp() {
     <div class="card"><div class="member"><div class="ava" style="width:72px;height:72px">${avatar(e.id, e.name, e.ava_v)}</div>
       <div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:20px">${esc(e.name)}</b><span style="font-size:20px">${e.icon}</span></div>
         <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
+        ${(e.billz || []).length ? `<div class="hint" style="font-size:12.5px">🔗 В BILLZ: ${e.billz.map(esc).join(", ")}</div>` : ""}
         <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div></div></div>
       ${e.on_site_since ? `<button class="btn btn-soft" style="width:100%;margin-top:12px" id="ec-out">🚪 Закончить смену за сотрудника</button>` : ""}
       <div class="bar mini-bar" style="margin-top:12px"><div style="width:${pct}%"></div></div>
@@ -5235,6 +5253,30 @@ document.querySelectorAll(".page-title").forEach(t => {
   hero.lastElementChild.append(t, sub);
 });
 $("go-staff").onclick = () => show("staff");
+/* Связь продавцов BILLZ с сотрудниками */
+async function sellersSheet() {
+  invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">⏳</div>`);
+  let r; try { r = await api("/api/sellers"); } catch (e) { return invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">${esc(e.message)}</div>`); }
+  const opt = (sel) => `<option value="0">— не сотрудник / не связывать —</option>` +
+    r.team.map(t => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+  const sug = r.items.filter(x => !x.saved && x.suggested).length;
+  invSheet(`<h3>🔗 Продавцы BILLZ ↔ сотрудники</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Продавцы из продаж BILLZ за полгода. Система предложила совпадения по имени —
+      проверьте и нажмите «Сохранить». ${r.mirror ? "Продажи из BILLZ обновлены " + esc(r.mirror) + "." : ""}</div>
+    ${r.items.length ? r.items.map((x, i) => `<div class="kpi-row" style="flex-wrap:wrap">
+      <div class="tt" style="flex:1 1 100%"><b>${esc(x.name)}</b> <span class="hint" style="font-size:12px">· продаж: ${x.sales} · посл. ${x.last.slice(8, 10)}.${x.last.slice(5, 7)}</span>
+        ${x.saved ? (x.uid ? ' <span class="pen-tag">✅ связан</span>' : ' <span class="hint" style="font-size:12px">не связан</span>')
+          : x.suggested ? ' <span class="pen-tag" style="color:#fbbf24">💡 предложение</span>' : ""}</div>
+      <select data-sl="${i}" style="margin:6px 0 0">${opt(x.saved ? x.uid : x.suggested)}</select></div>`).join("")
+      : `<div class="empty">Продаж из BILLZ пока нет. Они появятся после загрузки истории (Клиенты → карточка → «Загрузить за год»).</div>`}
+    ${r.items.length ? sheetBtns(sug ? `Сохранить (предложений: ${sug})` : "Сохранить") : `<button class="btn btn-soft" style="width:100%" id="is-cancel">Закрыть</button>`}`);
+  $("is-cancel").onclick = invSheetClose;
+  if ($("is-ok")) $("is-ok").onclick = async () => {
+    const links = {}; document.querySelectorAll("[data-sl]").forEach(s => { links[r.items[+s.dataset.sl].name] = +s.value; });
+    try { const x = await api("/api/sellers", {action: "save", links}); toast(x.msg); invSheetClose(); load(); } catch (e) { toast(e.message); }
+  };
+}
+$("go-sellers").onclick = sellersSheet;
 $("cancel-late").onclick = () => tg.showConfirm("Отменить все штрафы за опоздание за сегодня и не выписывать новые до конца дня?",
   ok => ok && action("/api/cancel_late_fines"));
 $("go-projects").onclick = () => show("projects");
