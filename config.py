@@ -129,6 +129,8 @@ THANK_AFTER_PURCHASE = True
 
 # Сотрудники, которым открыт раздел «📣 Постинг» (без начисления бонусов — это только руководитель)
 POSTERS = [6658459389]  # Omina Sadikova
+# Сотрудники, которые могут ставить задачи всем (как руководитель): в кабинете у них блок «Поставить задачу».
+TASK_ASSIGNERS = [6834141071]  # Aziza Tursunbaeva
 
 POST_CHATS = [
     {"title": "Xuping silver group", "chat_id": -1003935684670, "thread_id": None, "lang": "uz"},
