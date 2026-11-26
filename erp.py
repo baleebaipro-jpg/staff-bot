@@ -134,7 +134,7 @@ def billz_users(force: bool = False) -> dict:
     errors = []
     for path in ([known] if known else []) + [p for p in USER_PATHS if p != known]:
         try:
-            res = _api("GET", path, params={"page": 1, "limit": 200}, timeout=20)
+            res = _api("GET", path, params={"page": 1, "limit": 100}, timeout=20)
         except BillzError as e:
             errors.append(f"{path}: {e.code or ''}")
             continue
@@ -495,7 +495,7 @@ def _sales_rows() -> list:
     today = core.now().date()
     rows, page = [], 1
     while page <= 20:
-        res = _api("GET", "/v1/transaction_report_table", params={
+        res = _api("GET", "/v1/transaction-report-table", params={
             "start_date": (today - timedelta(days=1)).strftime("%Y-%m-%d"), "end_date": today.strftime("%Y-%m-%d"),
             "order_types": "SALE", "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
         batch = res.get("rows") or []
@@ -534,7 +534,7 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
     day_to = day_to or day_from
     rows, page = [], 1
     while page <= 50:
-        res = _api("GET", "/v1/transaction_report_table", params={
+        res = _api("GET", "/v1/transaction-report-table", params={
             "start_date": day_from, "end_date": day_to, "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
         batch = res.get("rows") or []
         rows += batch
