@@ -162,6 +162,8 @@ S = {
 
     # ---------- задачи ----------
     "task_new": {"ru": "📌 Новая задача:\n{t}", "uz": "📌 Yangi vazifa:\n{t}"},
+    "task_from": {"ru": "\n👤 Поставил(а): {n}", "uz": "\n👤 Qo'ydi: {n}"},
+    "as_title": {"ru": "📌 Поставить задачу сотрудникам", "uz": "📌 Xodimlarga vazifa berish"},
     "task_not_found": {"ru": "Задача не найдена.", "uz": "Vazifa topilmadi."},
     "task_already_done": {"ru": "Задача уже принята.", "uz": "Vazifa allaqachon qabul qilingan."},
     "task_already_review": {"ru": "Задача уже на проверке ⏳", "uz": "Vazifa allaqachon tekshiruvda ⏳"},
