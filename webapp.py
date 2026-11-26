@@ -220,6 +220,9 @@ def api_msgr_admin(uid, data):
     a, msg = data.get("action"), ""
     if a == "code":
         r = msgr.new_code(uid, int(data.get("staff_uid") or 0), str(data.get("name") or ""), int(data.get("number_id") or 0))
+        if r.get("ok") and data.get("send") and data.get("staff_uid"):
+            snd = msgr.send_key_to_staff(int(data["staff_uid"]), r["code"], str(data.get("number_title") or ""))
+            r["sent"] = snd.get("ok")
         return jsonify(r), (200 if r.get("ok") else 400)
     if a in ("num_add", "num_code", "num_password"):  # подключение рабочего номера: номер → код → облачный пароль
         nid = int(data.get("number_id") or 0)
@@ -2181,12 +2184,13 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="card">
       <b>Ключ доступа сотрудника</b>
-      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите ключ (8 символов, 10 минут, один раз). Сотрудник вводит его в RADI Chat и сразу входит в рабочий аккаунт — номер, код и облачный пароль ему не нужны. Один сотрудник — один рабочий номер.</div>
+      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите ключ (8 цифр, 10 минут, один раз). Сотрудник вводит его в RADI Chat и сразу входит в рабочий аккаунт — номер, код и облачный пароль ему не нужны. Один сотрудник — один рабочий номер.</div>
       <select id="ms-staff" style="margin-bottom:8px;width:100%"><option value="">— Чей телефон? Выберите сотрудника —</option></select>
       <select id="ms-number" class="hidden" style="margin-bottom:8px;width:100%"></select>
       <button class="btn btn-main" id="ms-code-btn" style="width:100%">🔑 Получить ключ</button>
       <div id="ms-code" class="hidden" style="text-align:center;margin-top:12px"><b id="ms-code-v" style="font-size:34px;letter-spacing:6px"></b>
-        <div class="hint" id="ms-code-h"></div></div>
+        <div class="hint" id="ms-code-h"></div>
+        <button class="btn btn-soft" id="ms-code-send" style="width:100%;margin-top:10px">📩 Отправить сотруднику в бот</button></div>
     </div>
     <div class="card"><b>Активные сессии</b>
       <div class="hint" style="margin:6px 0 8px">Менеджеры в приложении сейчас. Внутри — их воронки (рабочий номер + ключ). «Выкинуть» завершает сессию: сотрудник выходит из аккаунта.</div>
@@ -4850,8 +4854,11 @@ $("ms-code-btn").onclick = async () => {
     const ready = (window._msNumbers || []).filter(n => n.ready);
     const number_id = ready.length ? Number($("ms-number").value || ready[0].id) : 0;
     const r = await api("/api/msgr/admin", {action: "code", staff_uid: Number($("ms-staff").value), number_id});
+    const numTitle = number_id ? (ready.find(n => n.id === number_id) || {}).title : "";
+    window._msLastKey = {staff_uid: Number($("ms-staff").value), number_title: numTitle || ""};
     $("ms-code-v").textContent = r.code;
-    $("ms-code-h").textContent = `Для: ${r.name}${number_id ? " · " + (ready.find(n => n.id === number_id) || {}).title : ""} · действует ${r.minutes} минут, один раз`;
+    $("ms-code-h").textContent = `Для: ${r.name}${numTitle ? " · " + numTitle : ""} · действует ${r.minutes} минут, один раз`;
+    $("ms-code-send").classList.toggle("hidden", !$("ms-staff").value);
     $("ms-code").classList.remove("hidden");
   } catch (e) { toast(e.message); }
 };
@@ -4885,6 +4892,18 @@ $("ms-owner-save").onclick = () => {
     tg.showConfirm(v.trim() ? "Сохранить код входа по номеру?" : "Снять код? Вход по номеру станет без кода.",
       ok => { if (ok) { msgrApi({action: "owner_code", code: v}); $("ms-owner-code").value = ""; } });
   else msgrApi({action: "owner_code", code: v});
+};
+$("ms-code-send").onclick = async () => {
+  const k = window._msLastKey; if (!k || !k.staff_uid) return;
+  try {
+    const r = await api("/api/msgr/admin", {action: "code", staff_uid: k.staff_uid,
+      number_id: (window._msNumbers || []).filter(n => n.ready).find(n => n.title === k.number_title)?.id || 0,
+      send: true, number_title: k.number_title});
+    $("ms-code-v").textContent = r.code;
+    $("ms-code-h").textContent = `Новый ключ отправлен в бот сотруднику. Старый больше не действует.`;
+    window._msLastKey = {staff_uid: k.staff_uid, number_title: k.number_title};
+    toast(r.sent ? "📩 Ключ отправлен сотруднику в бот" : "Ключ обновлён, но отправить не удалось");
+  } catch (e) { toast(e.message); }
 };
 $("ms-save").onclick = () => {
   const perms = {}; document.querySelectorAll("[data-ms-perm]").forEach(i => perms[i.dataset.msPerm] = i.checked);
