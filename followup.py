@@ -96,6 +96,32 @@ def preview_text(rows: list, title: str) -> str:
     return "\n".join(lines)[:4000]
 
 
+def run_now():
+    """Кнопка «📌 Поставить задачи сейчас»: по всем ожидающим продажам — задачи продавцам сразу (для проверки)."""
+    scan()
+    with core.db() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM fu_sales WHERE status IN ('pending', 'test') ORDER BY sale_at")]
+    n = _create_tasks(rows)
+    return True, f"📌 Поставлено задач: {n}" + ("" if n else " — нет продаж с продавцом, связанным с сотрудником")
+
+
+def _create_tasks(rows: list) -> int:
+    import sellers
+    n = 0
+    with core.db() as c:
+        for r in rows:
+            uid = r["uid"] or sellers.employee_of(r["seller"])
+            if not uid or not core.employee(uid):
+                c.execute("UPDATE fu_sales SET status='skip_unlinked' WHERE order_id=?", (r["order_id"],))
+                continue
+            cur = c.execute("INSERT INTO tasks(user_id, title, created_at, due_date, soft) VALUES(?, ?, ?, ?, 1)",
+                            (uid, _title(r), core.now().strftime(core.FMT), core.now().strftime("%Y-%m-%d")))
+            c.execute("UPDATE fu_sales SET status='task', task_id=?, uid=? WHERE order_id=?", (cur.lastrowid, uid, r["order_id"]))
+            core.notify(c, uid, core.st.s(core.staff_lang(uid), "task_new", t=_title(r)))
+            n += 1
+    return n
+
+
 def run_due(force_preview: bool = False):
     """Утром: продажи вчерашнего дня (и раньше, если пропущены) → задачи (live) или предпросмотр руководителю (test)."""
     import sellers
@@ -110,19 +136,7 @@ def run_due(force_preview: bool = False):
                 if mode == "test":
                     c.executemany("UPDATE fu_sales SET status='test' WHERE order_id=?", [(r["order_id"],) for r in rows])
         return len(rows)
-    n = 0
-    with core.db() as c:
-        for r in rows:
-            uid = r["uid"] or sellers.employee_of(r["seller"])
-            if not uid or not core.employee(uid):
-                c.execute("UPDATE fu_sales SET status='skip_unlinked' WHERE order_id=?", (r["order_id"],))
-                continue
-            cur = c.execute("INSERT INTO tasks(user_id, title, created_at, due_date, soft) VALUES(?, ?, ?, ?, 1)",
-                            (uid, _title(r), core.now().strftime(core.FMT), core.now().strftime("%Y-%m-%d")))
-            c.execute("UPDATE fu_sales SET status='task', task_id=?, uid=? WHERE order_id=?", (cur.lastrowid, uid, r["order_id"]))
-            core.notify(c, uid, core.st.s(core.staff_lang(uid), "task_new", t=_title(r)))
-            n += 1
-    return n
+    return _create_tasks(rows)
 
 
 def tick() -> None:
@@ -151,5 +165,5 @@ def preview_now() -> str:
     """Кнопка «👁 Проверить сейчас»: что получили бы менеджеры по всем ожидающим продажам (включая завтрашние)."""
     scan()
     with core.db() as c:
-        rows = [dict(r) for r in c.execute("SELECT * FROM fu_sales WHERE status='pending' ORDER BY sale_at")]
+        rows = [dict(r) for r in c.execute("SELECT * FROM fu_sales WHERE status IN ('pending', 'test') ORDER BY sale_at")]
     return preview_text(rows, "👁 Предпросмотр · обратная связь после покупки (никому не отправлено)")
