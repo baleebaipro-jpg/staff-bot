@@ -224,9 +224,10 @@ def api_msgr_admin(uid, data):
     if a == "num_remove":
         tgnumbers.remove(int(data.get("number_id") or 0))
         msg = "Рабочий номер удалён с сервера"
-    if a in ("disable", "enable"):
-        msgr.set_disabled(str(data.get("id") or ""), a == "disable")
-        msg = "🚫 Телефон отключён" if a == "disable" else "✅ Телефон снова подключён"
+    if a in ("disable", "enable", "kick"):
+        msgr.set_disabled(str(data.get("id") or ""), a != "enable")
+        msg = {"disable": "🚫 Телефон отключён", "enable": "✅ Телефон снова подключён",
+               "kick": "🚪 Сессия закрыта — сотрудник вышел из аккаунта"}[a]
     if a == "save":
         msgr.save_settings(data.get("perms"), data.get("whitelist"), data.get("keepalive"), data.get("assign"))
         msg = "✅ Сохранено. Телефоны получат настройки в течение 5 минут."
@@ -240,6 +241,7 @@ def api_msgr_admin(uid, data):
     staff = [dict(x, **msgr.staff_perms(x["uid"])) for x in msgr.staff()]
     return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=staff, perms=s["perms"], perm_titles=msgr.PERMS,
                    whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50),
+                   sessions=msgr.sessions_by_staff(),
                    assign={k: s[k] for k in ("assign_mode", "unassigned_visible", "timeout_min", "timeout_action")},
                    assign_modes=msgr.ASSIGN_MODES, timeout_actions=msgr.TIMEOUT_ACTIONS,
                    chats=msgr.chats_admin(str(data.get("q") or "")), numbers=tgnumbers.numbers(),
@@ -2169,7 +2171,10 @@ PAGE = r"""<!doctype html>
       <div id="ms-code" class="hidden" style="text-align:center;margin-top:12px"><b id="ms-code-v" style="font-size:34px;letter-spacing:6px"></b>
         <div class="hint" id="ms-code-h"></div></div>
     </div>
-    <div class="card"><b>Телефоны</b><div id="ms-devs" style="margin-top:8px"></div></div>
+    <div class="card"><b>Активные сессии</b>
+      <div class="hint" style="margin:6px 0 8px">Менеджеры в приложении сейчас. Внутри — их воронки (рабочий номер + ключ). «Выкинуть» завершает сессию: сотрудник выходит из аккаунта.</div>
+      <div id="ms-sessions"></div></div>
+    <div class="card"><b>Все телефоны</b><div class="hint" style="font-size:12px;margin:4px 0 8px">включая отключённые</div><div id="ms-devs" style="margin-top:4px"></div></div>
     <div class="card"><b>Доступы для всех (по умолчанию)</b>
       <div class="hint" style="margin:6px 0 4px">Удалять сообщения и чаты, выходить из аккаунта, менять номер и отключать бизнес-бота нельзя никогда.</div>
       <div id="ms-perms"></div>
@@ -4763,6 +4768,19 @@ function msgrRender(r) {
   });
   $("ms-perms").innerHTML = Object.entries(r.perm_titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0">
       <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-ms-perm="${k}" ${r.perms[k] ? "checked" : ""}><span></span></label></div>`).join("");
+  if (r.sessions) {
+    $("ms-sessions").innerHTML = r.sessions.length ? r.sessions.map(g => `<details style="padding:8px 0;border-bottom:1px solid var(--line)">
+        <summary><b>${esc(g.name)}</b> <span class="hint" style="font-size:12px">воронок: ${g.count}</span></summary>
+        <div style="padding:6px 0 2px">${g.funnels.map(f => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0">
+          <span style="flex:1;min-width:0"><b style="font-weight:600">${esc(f.number)}</b>
+            <div class="hint" style="font-size:12px">${f.key_login ? "вход по ключу · " : ""}онлайн ${esc(f.seen)}${f.version ? " · " + esc(f.version) : ""}</div></span>
+          <button class="btn btn-soft" data-kick="${esc(f.id)}" style="padding:8px 12px">🚪 Выкинуть</button></div>`).join("")}</div></details>`).join("")
+      : `<div class="hint">Активных сессий нет</div>`;
+    document.querySelectorAll("[data-kick]").forEach(b => b.onclick = async () => {
+      if (!await new Promise(ok => tg.showConfirm("Выкинуть эту сессию? Сотрудник выйдет из аккаунта на этом телефоне.", ok))) return;
+      msgrApi({action: "kick", id: b.dataset.kick});
+    });
+  }
   $("ms-keep").checked = !!r.keepalive;
   $("ms-mode").innerHTML = Object.entries(r.assign_modes).map(([k, t]) => `<option value="${k}">${esc(t)}</option>`).join("");
   $("ms-mode").value = r.assign.assign_mode;

@@ -227,6 +227,27 @@ def devices() -> list:
             for r in rows]
 
 
+def sessions_by_staff() -> list:
+    """Активные сессии (включённые телефоны), сгруппированные по менеджеру. У каждого — его воронки (номер + ключ)."""
+    import tgnumbers
+    nums = {n["id"]: n["title"] for n in tgnumbers.numbers()}
+    with core.db() as c:
+        rows = c.execute("SELECT * FROM msgr_devices WHERE disabled=0 ORDER BY last_seen DESC").fetchall()
+    by = {}
+    for r in rows:
+        uid = r["staff_uid"] or 0
+        g = by.setdefault(uid, {"staff_uid": uid, "name": core.name(uid) if uid else (r["name"] or "Без имени"), "funnels": []})
+        nid = r["number_id"] if "number_id" in r.keys() else None
+        g["funnels"].append({"id": r["token_hash"][:12], "number_id": nid, "number": nums.get(nid, "— без номера —"),
+                             "seen": (r["last_seen"] or "")[:16], "version": r["app_version"] or "",
+                             "key_login": bool(r["auth_hash"] if "auth_hash" in r.keys() else None)})
+    out = list(by.values())
+    out.sort(key=lambda g: g["name"].lower())
+    for g in out:
+        g["count"] = len(g["funnels"])
+    return out
+
+
 def set_disabled(dev_id: str, disabled: bool) -> bool:
     """Отключить телефон: RADI перестаёт работать, а если вход был по ключу — завершается и сеанс Telegram."""
     dev_id = "".join(ch for ch in str(dev_id) if ch in "0123456789abcdef")[:12]
