@@ -405,6 +405,8 @@ def api_me(uid, data):
         res["tasks"] = core.tasks(uid)
         res["history"] = core.history(uid)
         res["earnings"] = core.earnings_of(uid, core.staff_lang(uid))
+        if can_assign(uid) and not core.is_admin(uid):  # может ставить задачи всем
+            res["assign_team"] = [{"id": e, "name": core.name(e)} for e in config.EMPLOYEES if e != uid]
         res["kpi_me"] = kpi.summary_for_employee(uid)  # без выручки
     res["invest_enabled"] = invest.ENABLED
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
@@ -760,10 +762,17 @@ def api_my_task(uid, data):
     return jsonify(ok=ok, msg=msg)
 
 
+def can_assign(uid) -> bool:
+    return core.is_admin(uid) or uid in getattr(config, "TASK_ASSIGNERS", [])
+
+
 @app.post("/api/add_task")
-@need_user(admin=True)
+@need_user(staff=True)
 def api_add_task(uid, data):
-    """Задача одному или сразу нескольким сотрудникам (user_ids) — каждому своя."""
+    """Задача одному или сразу нескольким сотрудникам (user_ids) — каждому своя.
+    Ставят руководитель и сотрудники из TASK_ASSIGNERS."""
+    if not can_assign(uid):
+        return jsonify(ok=False, msg="Нет доступа: ставить задачи может руководитель."), 403
     raw = data.get("user_ids") or ([data.get("user_id")] if data.get("user_id") else [])
     targets = []
     for t in raw:
@@ -787,8 +796,12 @@ def api_add_task(uid, data):
         return jsonify(ok=True, msg=f"🔁 Задача {when} поставлена {len(targets)} сотрудникам: " +
                                     ", ".join(core.name(t) for t in targets))
     for t in targets:
-        core.add_task(t, title)
-    return jsonify(ok=True, msg="Задача поставлена: " + ", ".join(core.name(t) for t in targets))
+        core.add_task(t, title, by=uid)
+    who = ", ".join(core.name(t) for t in targets)
+    if not core.is_admin(uid):  # руководителю — кто кому что поставил
+        with core.db() as c:
+            core.notify_admins(c, f"📌 {core.name(uid)} поставил(а) задачу «{title}»: {who}")
+    return jsonify(ok=True, msg="Задача поставлена: " + who)
 
 
 @app.post("/api/crm/chats")
@@ -1992,6 +2005,12 @@ PAGE = r"""<!doctype html>
       <div class="levels" id="levels"></div>
     </div>
 
+    <div class="card hidden" id="assign-card">
+      <div class="head"><h3 id="as-title"></h3></div>
+      <div class="quick" id="as-users" style="margin:0 0 10px"></div>
+      <div class="add-row"><input id="as-text" maxlength="500" placeholder="…">
+        <button class="btn btn-main" id="as-add">＋</button></div>
+    </div>
     <div class="card" id="my-tasks-card">
       <div class="head"><h3 data-sx="my_tasks"></h3></div>
       <div class="add-row" style="margin-bottom:6px"><input id="mt-title" maxlength="300" data-sxp="mt_ph">
@@ -3032,6 +3051,29 @@ function renderKpiMe() {
     ${k.expected ? `<div class="hint" style="font-size:13px;margin:-2px 0 8px">${sx("kpi_soon")}</div>` : ""}
     ${kpiRowsHtml(k, false, T)}`;
 }
+/* Сотрудник с правом ставить задачи всем (TASK_ASSIGNERS) */
+let asSel = new Set();
+function renderAssign() {
+  const list = data.assign_team, box = $("assign-card");
+  box.classList.toggle("hidden", !list); if (!list) return;
+  const uz = meLang() === "uz";
+  $("as-title").textContent = uz ? "📌 Xodimlarga vazifa berish" : "📌 Поставить задачу сотрудникам";
+  $("as-text").placeholder = uz ? "Vazifa matni…" : "Что нужно сделать?";
+  const all = list.length && list.every(e => asSel.has(e.id));
+  $("as-users").innerHTML = `<button data-asu="all" class="${all ? "on" : ""}">${uz ? "Hammaga" : "Всем"}</button>` +
+    list.map(e => `<button data-asu="${e.id}" class="${asSel.has(e.id) ? "on" : ""}">${esc(e.name)}</button>`).join("");
+  document.querySelectorAll("[data-asu]").forEach(b => b.onclick = () => {
+    if (b.dataset.asu === "all") { if (all) asSel.clear(); else list.forEach(e => asSel.add(e.id)); }
+    else { const id = +b.dataset.asu; asSel.has(id) ? asSel.delete(id) : asSel.add(id); }
+    renderAssign();
+  });
+}
+$("as-add").onclick = () => {
+  const title = $("as-text").value.trim(), uz = meLang() === "uz";
+  if (!asSel.size) return toast(uz ? "Kimga — xodimni tanlang" : "Выберите, кому");
+  if (!title) return toast(uz ? "Vazifani yozing" : "Напишите задачу");
+  action("/api/add_task", {user_ids: [...asSel], title}).then(() => { $("as-text").value = ""; asSel.clear(); renderAssign(); });
+};
 function renderEmp() {
   const e = data.team.find(x => x.id === empId);
   if (!e) { $("emp-body").innerHTML = `<div class="card empty">Сотрудник не найден</div>`; return; }
@@ -3779,7 +3821,7 @@ async function load(fresh = false) {
     $("error").classList.add("hidden");  // прошлая ошибка больше не актуальна
     if (data.is_client) { renderClient(); show("client"); hideSplash(true); return; }
     applyBranding(); hideSplash();
-    if (data.is_employee) { renderMe(); renderEarn(); renderKpiMe(); }
+    if (data.is_employee) { renderMe(); renderEarn(); renderKpiMe(); renderAssign(); }
     $("go-shop-me").classList.toggle("hidden", !(data.shop_access && data.is_employee));
     $("go-shop").classList.toggle("hidden", !data.is_admin);
     SUBPAGES.shop = data.is_admin && !data.is_employee ? "team" : (view === "shop" && SUBPAGES.shop) || (data.is_employee ? "me" : "team");

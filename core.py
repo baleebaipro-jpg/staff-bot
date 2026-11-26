@@ -1162,14 +1162,17 @@ def penalties_month(c, uid) -> int:
 
 # ---------- задачи ----------
 
-def add_task(uid: int, title: str, template_id: int = None) -> int:
+def add_task(uid: int, title: str, template_id: int = None, by: int = None) -> int:
+    """by — кто поставил (если не руководитель — подпись «Поставил(а): …» в уведомлении)."""
     title = title.strip()[:500]
     with db() as c:
         cur = c.execute(
             "INSERT INTO tasks(user_id, title, created_at, template_id) VALUES(?, ?, ?, ?)",
             (uid, title, now().strftime(FMT), template_id)
         )
-        notify(c, uid, st.s(staff_lang(uid), "task_new", t=("🔁 " if template_id else "") + title))
+        L = staff_lang(uid)
+        notify(c, uid, st.s(L, "task_new", t=("🔁 " if template_id else "") + title)
+               + (st.s(L, "task_from", n=name(by)) if by and not is_admin(by) else ""))
         return cur.lastrowid
 
 
