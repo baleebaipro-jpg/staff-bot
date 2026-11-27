@@ -168,9 +168,24 @@ def save_by_employee(mapping: dict):
 
 
 def employee_of(billz_name: str):
-    """ID сотрудника для продавца BILLZ (только подтверждённые связи)."""
-    uid = links().get((billz_name or "").strip())
-    return uid or None
+    """ID сотрудника для продавца BILLZ по сохранённым связям. Сравнение без учёта регистра и написания:
+    «ABDULLOH TURSUNBOEV» = «Abdullokh Tursunboev», «Махира» = «Moxira» (kh/h/x, о/а, кириллица/латиница)."""
+    name = (billz_name or "").strip()
+    if not name:
+        return None
+    saved = links()
+    if saved.get(name):
+        return saved[name]
+    key = _key(name)
+    for n, uid in saved.items():
+        if uid and _key(n) == key:
+            return uid
+    return None
+
+
+def _key(s: str) -> str:
+    """Ключ сравнения имён: латиница, без регистра, kh/h → x, о → а, y → i, без пробелов и знаков."""
+    return _norm(s).replace("o", "a").replace("y", "i").replace(" ", "")
 
 
 def names_of(uid: int) -> list:
