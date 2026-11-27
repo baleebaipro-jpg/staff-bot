@@ -496,13 +496,15 @@ def _sales_rows() -> list:
     """Продажи за вчера и сегодня из отчёта по транзакциям."""
     today = core.now().date()
     rows, page = [], 1
-    while page <= 20:
+    limit = (core.flag_json("billz_report_limit") or {}).get("limit", 100)
+    while page <= 50:
         res = _api("GET", "/v1/transaction-report-table", params={
             "start_date": (today - timedelta(days=1)).strftime("%Y-%m-%d"), "end_date": today.strftime("%Y-%m-%d"),
-            "order_types": "SALE", "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
+            "order_types": "SALE", "page": page, "limit": limit, "shop_ids": ",".join(shop_ids())},
+            timeout=SEARCH_TIMEOUT) or {}
         batch = res.get("rows") or []
         rows += batch
-        if len(batch) < 100:
+        if len(batch) < limit:
             break
         page += 1
     return [r for r in rows if (r.get("order_type") or "SALE").upper() == "SALE"]
@@ -531,6 +533,22 @@ def _seller_names(r: dict) -> list:
     return out
 
 
+_shops_cache = {"at": 0, "ids": []}
+
+
+def shop_ids() -> list:
+    """ID всех магазинов BILLZ (отчёт продаж без shop_ids отвечает «Wrong shopID»). Кэш на 6 часов."""
+    if _shops_cache["ids"] and time.time() - _shops_cache["at"] < 6 * 3600:
+        return _shops_cache["ids"]
+    res = _api("GET", "/v1/shop", params={"page": 1, "limit": 100, "only_allowed": "true"}) or {}
+    ids = [x["id"] for x in (res.get("shops") or []) if x.get("id") and not x.get("deleted_at")]
+    if not ids:  # only_allowed не поддержан / пусто — без фильтра
+        res = _api("GET", "/v1/shop", params={"page": 1, "limit": 100}) or {}
+        ids = [x["id"] for x in (res.get("shops") or []) if x.get("id") and not x.get("deleted_at")]
+    _shops_cache.update(at=time.time(), ids=ids)
+    return ids
+
+
 def mirror_sales(day_from: str, day_to: str = None) -> int:
     """Скопировать транзакции BILLZ (продажи, возвраты, обмены) за период в таблицу billz_sales."""
     day_to = day_to or day_from
@@ -539,8 +557,11 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
     while page <= 200:
         try:
             res = _api("GET", "/v1/transaction-report-table", params={
-                "start_date": day_from, "end_date": day_to, "page": page, "limit": limit}, timeout=SEARCH_TIMEOUT) or {}
+                "start_date": day_from, "end_date": day_to, "page": page, "limit": limit,
+                "shop_ids": ",".join(shop_ids())}, timeout=SEARCH_TIMEOUT) or {}
         except BillzError as e:
+            if e.code == 400 and "shop" in str(e).lower():
+                raise  # магазины не подошли — уменьшение страницы не поможет
             if e.code == 400 and limit > 10:  # BILLZ ограничивает размер страницы — пробуем меньше и запоминаем
                 limit = 50 if limit > 50 else 20 if limit > 20 else 10
                 core.flag_json("billz_report_limit", {"limit": limit})
