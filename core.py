@@ -1585,6 +1585,25 @@ def get_client(uid: int):
     return dict(r) if r else None
 
 
+def export_clients() -> str:
+    """CSV всех, кто есть в боте клиентов: Telegram ID, имя, телефон, @username, язык, дата. Возвращает путь к файлу."""
+    import csv
+    d = os.path.join(config.DATA_DIR, "exports")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"klienty_bot_{now():%Y%m%d_%H%M}.csv")
+    with db() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
+        rows = c.execute("SELECT * FROM clients ORDER BY created_at").fetchall()
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig — Excel открывает кириллицу правильно
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["telegram_id", "имя", "телефон", "username", "язык", "в боте с"])
+        for r in rows:
+            w.writerow([r["user_id"], client_full_name(dict(r)) if "first_name" in cols else "", r["phone"] or "",
+                        ("@" + r["username"]) if r["username"] else "", r["lang"] if "lang" in cols else "",
+                        (r["created_at"] or "")[:16]])
+    return path
+
+
 def import_clients(text: str) -> dict:
     """Загрузить прежних подписчиков бота клиентов из текста/CSV: в каждой строке Telegram ID,
     по желанию — номер телефона и имя. Уже известных не трогаем (только дополняем пустой номер)."""

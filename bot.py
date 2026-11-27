@@ -992,7 +992,11 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
                             InlineKeyboardButton(t, url=d[4:]) if d.startswith("url:") else InlineKeyboardButton(t, callback_data=d)
                             for t, d in row] for row in json.loads(m["markup"])])
                     sender = _bot_for(m, app, client_app)
-                    if (m.get("photo") or "").startswith("video:"):  # видео-подтверждение прихода из приложения
+                    if (m.get("photo") or "").startswith("doc:"):  # файл (выгрузка): путь на диске
+                        with open(m["photo"][4:], "rb") as df:
+                            await sender.send_document(m["chat_id"], df, caption=text[:1024], message_thread_id=thread,
+                                                       filename=os.path.basename(m["photo"][4:]))
+                    elif (m.get("photo") or "").startswith("video:"):  # видео-подтверждение прихода из приложения
                         with open(m["photo"][6:], "rb") as vf:
                             await sender.send_video(m["chat_id"], vf, caption=text[:1024], message_thread_id=thread,
                                                     parse_mode=mode, reply_markup=markup)
