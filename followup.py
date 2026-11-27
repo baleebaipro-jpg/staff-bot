@@ -183,7 +183,7 @@ def fetch_today() -> str:
     out = f"📥 BILLZ сегодня: строк {n}, продаж {sales} (с продавцом {withs}, с клиентом {withc})."
     if last:
         out += f"\nПоследняя: {last['date'][11:16]} · продавец «{last['sellers'] or '—'}» · клиент «{last['customer_name'] or '—'}»"
-    if n and not withs:
+    if sales and not withs:
         out += f"\n⚠️ Продавец не найден в данных BILLZ. Поля: {str(keys)[:200]}"
     return out
 
