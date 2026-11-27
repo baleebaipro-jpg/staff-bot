@@ -507,10 +507,20 @@ def _sales_rows() -> list:
         if len(batch) < limit:
             break
         page += 1
-    return [r for r in rows if (r.get("order_type") or "SALE").upper() == "SALE"]
+    return [r for r in rows if _otype(r) == "SALE"]
 
 
 # ---------- копия продаж BILLZ (для ERP: транзакции и сверка) ----------
+
+def _otype(r: dict) -> str:
+    """Тип чека из отчёта BILLZ → SALE / RETURN / EXCHANGE (BILLZ пишет его по-разному: sale, Продажа, ORDER …)."""
+    t = str(r.get("order_type") or "").upper()
+    if "RETURN" in t or "ВОЗВРАТ" in t:
+        return "RETURN"
+    if "EXCHANGE" in t or "ОБМЕН" in t:
+        return "EXCHANGE"
+    return "SALE"
+
 
 def _seller_names(r: dict) -> list:
     """Продавцы строки отчёта BILLZ — поле называется по-разному: seller_names / sellers / seller_name / seller …"""
@@ -575,7 +585,7 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
     now = core.now().strftime(core.FMT)
     if rows:  # для диагностики: какие поля приходят из BILLZ (только названия + поля продавца)
         r0 = rows[0]
-        core.flag_json("billz_mirror_keys", {"keys": sorted(r0.keys())[:80], "seller_fields": {
+        core.flag_json("billz_mirror_keys", {"keys": sorted(r0.keys())[:80], "order_type": r0.get("order_type"), "seller_fields": {
             k: r0.get(k) for k in r0 if "sell" in k.lower() or "employee" in k.lower() or "cashier" in k.lower()}})
     with core.db() as c:
         for r in rows:
@@ -587,7 +597,7 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
                       "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (oid, str(r.get("external_id") or ""), str(r.get("date") or "")[:19].replace("T", " "), r.get("shop_id"),
                        r.get("shop_name"), r.get("customer_name"), r.get("customer_id"),
-                       ", ".join(_seller_names(r)), r.get("cashier_name"), (r.get("order_type") or "SALE").upper(),
+                       ", ".join(_seller_names(r)), r.get("cashier_name"), _otype(r),
                        float(r.get("total_price") or 0), float(r.get("gross_sales") or 0), float(r.get("discount_percent") or 0),
                        float(r.get("sold_measurement_value") or 0) - float(r.get("returned_measurement_value") or 0),
                        json.dumps([{"name": p.get("payment_type_name"), "sum": float(p.get("sum") or 0)}
