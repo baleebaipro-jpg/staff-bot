@@ -1604,6 +1604,44 @@ def export_clients() -> str:
     return path
 
 
+def xlsx_to_text(data: bytes) -> str:
+    """Excel (.xlsx) → текст «ячейка;ячейка» по строкам, первый лист. Без сторонних библиотек (xlsx — это zip с XML)."""
+    import io
+    import re
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    z = zipfile.ZipFile(io.BytesIO(data))
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", ns):
+            shared.append("".join(t.text or "" for t in si.iter("{%s}t" % ns["m"])))
+    sheets = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+    if not sheets:
+        return ""
+    lines = []
+    for row in ET.fromstring(z.read(sheets[0])).iter("{%s}row" % ns["m"]):
+        cells = []
+        for c in row.findall("m:c", ns):
+            v, t = c.find("m:v", ns), c.get("t")
+            if t == "s" and v is not None:
+                val = shared[int(v.text)]
+            elif t == "inlineStr":
+                val = "".join(x.text or "" for x in c.iter("{%s}t" % ns["m"]))
+            else:
+                val = v.text if v is not None else ""
+                try:  # числа Excel: 6834141071.0 / 6.834141071E9 → 6834141071
+                    f = float(val)
+                    if f.is_integer():
+                        val = str(int(f))
+                except (TypeError, ValueError):
+                    pass
+            cells.append(str(val or "").strip())
+        if any(cells):
+            lines.append(";".join(cells))
+    return "\n".join(lines)
+
+
 def import_clients(text: str) -> dict:
     """Загрузить прежних подписчиков бота клиентов из текста/CSV: в каждой строке Telegram ID,
     по желанию — номер телефона и имя. Уже известных не трогаем (только дополняем пустой номер)."""

@@ -1099,6 +1099,11 @@ def api_export_clients(uid, data):
 @need_user(admin=True)
 def api_import_clients(uid, data):
     text = str(data.get("text") or "")
+    if data.get("xlsx"):  # файл Excel — читаем на сервере
+        try:
+            text = core.xlsx_to_text(base64.b64decode(str(data["xlsx"]).split(",", 1)[-1]))
+        except Exception as e:  # noqa: BLE001
+            return jsonify(ok=False, msg=f"Не удалось прочитать Excel: {e}")
     if len(text) > 3_000_000:
         return jsonify(ok=False, msg="Файл слишком большой.")
     r = core.import_clients(text)
@@ -2350,7 +2355,7 @@ PAGE = r"""<!doctype html>
           <div class="hint" style="font-size:12.5px;margin-bottom:8px">Файл .txt или .csv из прежней системы, или вставьте список:
             в каждой строке Telegram ID (можно с номером и именем). Повторы и уже известные пропускаются.</div>
           <label class="btn btn-soft" style="display:block;text-align:center;margin-bottom:8px">📎 Выбрать файл
-            <input type="file" id="imp-file" accept=".txt,.csv,text/plain,text/csv" hidden></label>
+            <input type="file" id="imp-file" accept=".txt,.csv,.xlsx,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
           <textarea id="imp-text" rows="4" placeholder="6834141071&#10;745848319, +998901234567, Aziza"></textarea>
           <button class="btn btn-main" style="width:100%" id="imp-go">Загрузить</button>
         </div>
@@ -4133,15 +4138,22 @@ async function loadClients(more = false) {
     action("/api/set_tier", {store_id: s.dataset.stier, tier: s.value}).then(() => loadClients()));
 }
 let bzLoaded = 0;
+let impXlsx = null;  // Excel-файл (.xlsx) читает сервер
 $("imp-file").onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   if (f.size > 3_000_000) return toast("Файл слишком большой");
-  $("imp-text").value = await f.text(); e.target.value = "";
-  toast(`Файл «${f.name}» прочитан — нажмите «Загрузить»`);
+  if (/\.xlsx$/i.test(f.name)) {
+    impXlsx = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(f); });
+    $("imp-text").value = `📊 Excel: ${f.name} — нажмите «Загрузить»`;
+  } else { impXlsx = null; $("imp-text").value = await f.text(); }
+  e.target.value = "";
+  toast(`Файл «${f.name}» выбран — нажмите «Загрузить»`);
 };
+$("imp-text").oninput = () => { impXlsx = null; };
 $("imp-go").onclick = async () => {
-  const text = $("imp-text").value.trim(); if (!text) return toast("Выберите файл или вставьте список ID");
-  try { const r = await api("/api/import_clients", {text}); toast(r.msg); if (r.ok) { $("imp-text").value = ""; loadClients(); load(); } }
+  const text = $("imp-text").value.trim(); if (!text && !impXlsx) return toast("Выберите файл или вставьте список ID");
+  try { const r = await api("/api/import_clients", impXlsx ? {xlsx: impXlsx} : {text}); toast(r.msg);
+    if (r.ok) { $("imp-text").value = ""; impXlsx = null; loadClients(); load(); } }
   catch (e) { toast(e.message); }
 };
 /* ---------- карточка клиента ---------- */
