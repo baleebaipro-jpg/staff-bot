@@ -114,7 +114,9 @@ def _api(method: str, path: str, params: dict = None, body: dict = None, timeout
             tok = _login()
         code, res = _http(method, path, params, body, tok, timeout)
     if code >= 400:
-        raise BillzError(f"BILLZ {method} {path}: {code} {(res or {}).get('message')}", code)
+        r = res if isinstance(res, dict) else {}
+        why = " · ".join(str(r[k]) for k in ("message", "error", "error_code", "data") if r.get(k) not in (None, "", []))
+        raise BillzError(f"BILLZ {method} {path}: {code} {why or str(res)[:200]}", code)
     return res
 
 
@@ -533,12 +535,20 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
     """Скопировать транзакции BILLZ (продажи, возвраты, обмены) за период в таблицу billz_sales."""
     day_to = day_to or day_from
     rows, page = [], 1
-    while page <= 50:
-        res = _api("GET", "/v1/transaction-report-table", params={
-            "start_date": day_from, "end_date": day_to, "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
+    limit = (core.flag_json("billz_report_limit") or {}).get("limit", 100)
+    while page <= 200:
+        try:
+            res = _api("GET", "/v1/transaction-report-table", params={
+                "start_date": day_from, "end_date": day_to, "page": page, "limit": limit}, timeout=SEARCH_TIMEOUT) or {}
+        except BillzError as e:
+            if e.code == 400 and limit > 10:  # BILLZ ограничивает размер страницы — пробуем меньше и запоминаем
+                limit = 50 if limit > 50 else 20 if limit > 20 else 10
+                core.flag_json("billz_report_limit", {"limit": limit})
+                continue
+            raise
         batch = res.get("rows") or []
         rows += batch
-        if len(batch) < 100:
+        if len(batch) < limit:
             break
         page += 1
     now = core.now().strftime(core.FMT)
