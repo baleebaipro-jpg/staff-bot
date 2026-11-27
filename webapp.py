@@ -1083,6 +1083,18 @@ def api_billz_base(uid, data):
     return jsonify(res)
 
 
+@app.post("/api/export_clients")
+@need_user(admin=True)
+def api_export_clients(uid, data):
+    """Выгрузить ID всех клиентов бота — бот пришлёт файл CSV руководителю в личку."""
+    path = core.export_clients()
+    with core.db() as c:
+        n = c.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
+        c.execute("INSERT INTO outbox(chat_id, text, photo) VALUES(?, ?, ?)",
+                  (uid, f"📤 Клиенты бота: {n} (Telegram ID, имя, телефон, @username)", "doc:" + path))
+    return jsonify(ok=True, msg=f"📤 Файл с {n} клиентами придёт вам в бот через несколько секунд")
+
+
 @app.post("/api/import_clients")
 @need_user(admin=True)
 def api_import_clients(uid, data):
@@ -2343,6 +2355,7 @@ PAGE = r"""<!doctype html>
           <button class="btn btn-main" style="width:100%" id="imp-go">Загрузить</button>
         </div>
       </details>
+      <button class="btn btn-soft" style="width:100%;margin:0 0 10px" id="exp-go">📤 Выгрузить ID клиентов бота (файл)</button>
       <input id="cl-search" placeholder="Поиск: имя или номер">
       <div id="cl-list"></div>
     </div>
@@ -4213,6 +4226,7 @@ function renderClientsAdmin(user = false) {
   clearTimeout(bzTimer); bzTimer = setTimeout(() => loadClients(), user ? 250 : 0);
 }
 $("cl-search").oninput = () => renderClientsAdmin(true);
+$("exp-go").onclick = () => action("/api/export_clients");
 
 function renderNewsAdmin() {
   $("cl-count").textContent = `клиентов: ${data.clients.total} (с номером: ${data.clients.with_phone})`;
