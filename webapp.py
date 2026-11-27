@@ -2796,8 +2796,9 @@ function applyAppSections() {
     b.classList.toggle("app-hide", appHiddenSec(APP_SEC_OF[b.dataset.dgo || b.dataset.tab] || b.dataset.dgo || b.dataset.tab)));
   Object.entries(APP_SEC_BTN).forEach(([id, sec]) => { const el = $(id); if (el) el.classList.toggle("app-hide", appHiddenSec(sec)); });
 }
-function show(v) {
+function show(v, refresh = false) {
   if (appHiddenSec(APP_SEC_OF[v] || v)) { toast("Этот раздел открывается в Telegram-боте\nBu bo'lim Telegram-botda ochiladi"); return; }
+  const same = refresh && v === view;  // обновление того же экрана после действия — без прокрутки наверх
   view = v;
   ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat", "msgr", "appsec"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
@@ -2810,10 +2811,12 @@ function show(v) {
   $("shop-nav").classList.toggle("hidden", v !== "shop");
   document.body.classList.toggle("has-tabs", tabs || v === "shop");
   document.querySelectorAll("#tabbar [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === v));
-  window.scrollTo(0, 0);
-  crmOnShow(v);
-  if (v === "msgr") msgrLoad();
-  if (v === "appsec") appSecLoad();
+  if (!same) {
+    window.scrollTo(0, 0);
+    crmOnShow(v);
+    if (v === "msgr") msgrLoad();
+    if (v === "appsec") appSecLoad();
+  }
   applyAppSections();
 }
 tg.BackButton.onClick(() => { if (!radiBack()) show(SUBPAGES[view] || "me"); });
@@ -3939,7 +3942,9 @@ async function load(fresh = false) {
     }
     openedShop = true;
     if (appHiddenSec(APP_SEC_OF[view] || view)) view = data.is_employee ? "me" : "team";  // раздел скрыли в приложении
-    show(view);
+    const y = window.scrollY;
+    show(view, true);  // тот же экран после действия / автообновления — страница остаётся на месте
+    window.scrollTo(0, y);
   } catch (e) {
     hideSplash();
     if (IS_APP && /Telegram|сотрудник|Только/.test(e.message)) { appToken.set(""); return appLogin(); }  // сессия кончилась
