@@ -20,6 +20,8 @@ import shop
 import appauth
 import invest
 import kpi
+import sellers
+import followup
 import crm
 import msgr
 import tgnumbers
@@ -453,7 +455,8 @@ def api_me(uid, data):
         aud = posts.audience_info()
         if not res["is_admin"]:
             aud["bonus_on"] = False  # бонусы в постах начисляет только руководитель
-        res["posting"] = {"audience": aud, "history": posts.history()}
+        res["posting"] = {"audience": aud, "history": posts.history(),
+                          "client_bot": (core.flag_json("client_bot") or {}).get("username", "")}
     if res["is_admin"]:
         res["projects"] = projects.overview(uid)
         if not res["is_employee"]:
@@ -472,8 +475,10 @@ def api_me(uid, data):
         res["shifts"] = {k: v["title"] for k, v in core.SHIFTS.items()}
         res["shifts"][core.OFF] = "Выходной"
         res["team"] = core.team()
+        bl = sellers.links()
         for e in res["team"]:
             e["ava_v"] = ava_version(e["id"])
+            e["billz"] = [n for n, u in bl.items() if u == e["id"]]  # как он записан продавцом в BILLZ
     return jsonify(res)
 
 
@@ -597,6 +602,40 @@ def api_client_channel(uid, data):
         link = inv["invite_link"]
         core.channel_link_add(link, uid, chat, core.now() + _td(hours=hours))
     return jsonify(ok=True, status="link", link=link, msg=i18n.t(lang, "channel_link"), btn=i18n.t(lang, "channel_btn"))
+
+
+@app.post("/api/sellers")
+@need_user(admin=True)
+def api_sellers(uid, data):
+    """Продавцы BILLZ ↔ сотрудники: список с предложениями системы; action=save {links: {имя BILLZ: ID}}."""
+    ok, msg = True, ""
+    if data.get("action") == "save":
+        ok, msg = sellers.save(data.get("links") or {})
+    elif data.get("action") == "refresh":
+        ok, msg = sellers.refresh_week()
+    elif data.get("action") == "save_emp":
+        ok, msg = sellers.save_by_employee(data.get("links") or {})
+    if data.get("view") == "billz":  # список реальных продавцов BILLZ для кнопки выбора
+        return jsonify(ok=True, emps=sellers.by_employee(), **sellers.billz_names())
+    if data.get("view") == "emp":  # связь без продаж: сотрудник → как записан в BILLZ
+        return jsonify(ok=ok, msg=msg, emps=sellers.by_employee())
+    return jsonify(ok=ok, msg=msg, items=sellers.overview(), diag=sellers.diagnose(),
+                   team=[{"id": e, "name": core.name(e)} for e in config.EMPLOYEES],
+                   mirror=(core.flag_json("billz_mirror") or {}).get("at", ""))
+
+
+@app.post("/api/followup")
+@need_user(admin=True)
+def api_followup(uid, data):
+    """Обратная связь после покупки: статус, предпросмотр (preview), режим (mode = test / live)."""
+    a, ok, msg, text = data.get("action"), True, "", ""
+    if a == "mode":
+        ok, msg = followup.set_mode(str(data.get("mode") or "test"))
+    elif a == "preview":
+        text = followup.preview_now()
+    elif a == "now":
+        ok, msg = followup.run_now()
+    return jsonify(ok=ok, msg=msg, text=text, **followup.status())
 
 
 @app.post("/api/direct_message")
@@ -1045,10 +1084,27 @@ def api_billz_base(uid, data):
     return jsonify(res)
 
 
+@app.post("/api/export_clients")
+@need_user(admin=True)
+def api_export_clients(uid, data):
+    """Выгрузить ID всех клиентов бота — бот пришлёт файл CSV руководителю в личку."""
+    path = core.export_clients()
+    with core.db() as c:
+        n = c.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
+        c.execute("INSERT INTO outbox(chat_id, text, photo) VALUES(?, ?, ?)",
+                  (uid, f"📤 Клиенты бота: {n} (Telegram ID, имя, телефон, @username)", "doc:" + path))
+    return jsonify(ok=True, msg=f"📤 Файл с {n} клиентами придёт вам в бот через несколько секунд")
+
+
 @app.post("/api/import_clients")
 @need_user(admin=True)
 def api_import_clients(uid, data):
     text = str(data.get("text") or "")
+    if data.get("xlsx"):  # файл Excel — читаем на сервере
+        try:
+            text = core.xlsx_to_text(base64.b64decode(str(data["xlsx"]).split(",", 1)[-1]))
+        except Exception as e:  # noqa: BLE001
+            return jsonify(ok=False, msg=f"Не удалось прочитать Excel: {e}")
     if len(text) > 3_000_000:
         return jsonify(ok=False, msg="Файл слишком большой.")
     r = core.import_clients(text)
@@ -2081,7 +2137,8 @@ PAGE = r"""<!doctype html>
   <div id="view-projects" class="hidden">
     <div class="page-title">📁 Мои проекты</div>
     <div class="page-sub">Личные проекты и задачи — видите только вы</div>
-    <div class="card"><div class="head"><h3 id="day-title">☀️ Мой день</h3></div><div id="proj-day"></div></div>
+    <!-- «Мой день» показывается на главной — здесь скрыт, чтобы не дублировать -->
+    <div class="card hidden" id="proj-day-card"><div class="head"><h3 id="day-title">☀️ Мой день</h3></div><div id="proj-day"></div></div>
     <div class="card">
       <div class="head"><h3>Проекты</h3><span class="hint" style="font-size:13px" id="proj-count"></span></div>
       <div class="add-row"><input id="np-title" placeholder="Название нового проекта" maxlength="100">
@@ -2247,6 +2304,7 @@ PAGE = r"""<!doctype html>
         <div style="margin-top:10px">
           <input id="po-btn-text" maxlength="60" placeholder="Текст кнопки, например: Заказать">
           <input id="po-btn-url" maxlength="500" placeholder="Ссылка: https://t.me/xupingSilver" inputmode="url">
+          <button class="btn btn-soft btn-sm" style="width:100%" id="po-btn-channel">📢 Кнопка «Kanal» — личная ссылка в канал</button>
         </div>
       </details>
       <div class="po-lbl">Где опубликовать <span style="font-size:11.5px">(можно несколько)</span></div>
@@ -2299,11 +2357,12 @@ PAGE = r"""<!doctype html>
           <div class="hint" style="font-size:12.5px;margin-bottom:8px">Файл .txt или .csv из прежней системы, или вставьте список:
             в каждой строке Telegram ID (можно с номером и именем). Повторы и уже известные пропускаются.</div>
           <label class="btn btn-soft" style="display:block;text-align:center;margin-bottom:8px">📎 Выбрать файл
-            <input type="file" id="imp-file" accept=".txt,.csv,text/plain,text/csv" hidden></label>
+            <input type="file" id="imp-file" accept=".txt,.csv,.xlsx,text/plain,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></label>
           <textarea id="imp-text" rows="4" placeholder="6834141071&#10;745848319, +998901234567, Aziza"></textarea>
           <button class="btn btn-main" style="width:100%" id="imp-go">Загрузить</button>
         </div>
       </details>
+      <button class="btn btn-soft" style="width:100%;margin:0 0 10px" id="exp-go">📤 Выгрузить ID клиентов бота (файл)</button>
       <input id="cl-search" placeholder="Поиск: имя или номер">
       <div id="cl-list"></div>
     </div>
@@ -2450,6 +2509,10 @@ PAGE = r"""<!doctype html>
     <div class="page-title">👥 Команда</div>
     <div class="page-sub" id="staff-page-sub"></div>
     <div class="staff-actions">
+      <button class="card" id="go-followup" style="width:100%;text-align:left;font-size:14.5px">📞 Обратная связь после покупки
+        <div class="hint" style="font-size:12.5px;margin-top:2px" id="fu-sub">На следующий день — задача продавцу связаться с клиентом</div></button>
+      <button class="card" id="go-sellers" style="width:100%;text-align:left;font-size:14.5px">🔗 Продавцы BILLZ ↔ сотрудники
+        <div class="hint" style="font-size:12.5px;margin-top:2px">Махира в BILLZ = Moxira в команде — для отчётов и задач по клиентам</div></button>
       <button class="card" id="cancel-late" style="width:100%;text-align:left;font-size:14.5px">🚫 Отменить сегодняшние штрафы за опоздание
         <div class="hint" style="font-size:12.5px;margin-top:2px">Если бот не работал — отменит выписанные и не даст выписать новые до конца дня</div></button>
       <details class="card staff-act">
@@ -2733,8 +2796,9 @@ function applyAppSections() {
     b.classList.toggle("app-hide", appHiddenSec(APP_SEC_OF[b.dataset.dgo || b.dataset.tab] || b.dataset.dgo || b.dataset.tab)));
   Object.entries(APP_SEC_BTN).forEach(([id, sec]) => { const el = $(id); if (el) el.classList.toggle("app-hide", appHiddenSec(sec)); });
 }
-function show(v) {
+function show(v, refresh = false) {
   if (appHiddenSec(APP_SEC_OF[v] || v)) { toast("Этот раздел открывается в Telegram-боте\nBu bo'lim Telegram-botda ochiladi"); return; }
+  const same = refresh && v === view;  // обновление того же экрана после действия — без прокрутки наверх
   view = v;
   ["me", "history", "team", "client", "invest", "invest-admin", "clients", "staff", "projects", "project", "posting", "earn", "earn-admin", "shop", "emp", "ccard", "crm", "crmchat", "msgr", "appsec"].forEach(n => $("view-" + n).classList.toggle("hidden", n !== v));
   $("seg").classList.toggle("hidden", !(data && data.is_admin && data.is_employee) || v in SUBPAGES);
@@ -2747,10 +2811,12 @@ function show(v) {
   $("shop-nav").classList.toggle("hidden", v !== "shop");
   document.body.classList.toggle("has-tabs", tabs || v === "shop");
   document.querySelectorAll("#tabbar [data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === v));
-  window.scrollTo(0, 0);
-  crmOnShow(v);
-  if (v === "msgr") msgrLoad();
-  if (v === "appsec") appSecLoad();
+  if (!same) {
+    window.scrollTo(0, 0);
+    crmOnShow(v);
+    if (v === "msgr") msgrLoad();
+    if (v === "appsec") appSecLoad();
+  }
   applyAppSections();
 }
 tg.BackButton.onClick(() => { if (!radiBack()) show(SUBPAGES[view] || "me"); });
@@ -3109,6 +3175,7 @@ function renderEmp() {
     <div class="card"><div class="member"><div class="ava" style="width:72px;height:72px">${avatar(e.id, e.name, e.ava_v)}</div>
       <div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:20px">${esc(e.name)}</b><span style="font-size:20px">${e.icon}</span></div>
         <div class="hint" style="font-size:13px">${esc(e.role)} · сегодня: ${esc(e.schedule)}</div>
+        <button class="link" id="ec-billz" style="font-size:12.5px;padding:2px 0">🔗 ${(e.billz || []).length ? "В BILLZ: " + e.billz.map(esc).join(", ") + " ✏️" : "Связать с продавцом BILLZ"}</button>
         <div style="font-size:14px;margin-top:2px">${esc(e.status)}${e.late ? ` <span style="color:var(--red)">· опоздание ${e.late}</span>` : ""}</div></div></div>
       ${e.on_site_since ? `<button class="btn btn-soft" style="width:100%;margin-top:12px" id="ec-out">🚪 Закончить смену за сотрудника</button>` : ""}
       <div class="bar mini-bar" style="margin-top:12px"><div style="width:${pct}%"></div></div>
@@ -3146,6 +3213,7 @@ function renderEmp() {
           ${x.paid ? `<span class="pen-tag">оплачен ${x.paid_at}</span>` : `<span class="pen-tag" style="color:var(--red)">не оплачен</span>`}</div>`).join("")}</details>` : ""}</div>`;
   $("ec-week").onclick = $("ec-week2").onclick = () => openWeek(e.id);
   bindKpiAdmin(e);
+  $("ec-billz").onclick = () => billzPick(e.id, e.name);
   bindDm("staff");
   if ($("ec-out")) $("ec-out").onclick = () => {
     const now = new Date(), p2 = n => String(n).padStart(2, "0"), cur = `${p2(now.getHours())}:${p2(now.getMinutes())}`;
@@ -3682,6 +3750,12 @@ document.querySelectorAll("#po-when button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#po-when button").forEach(x => x.classList.toggle("on", x === b));
   $("po-at").classList.toggle("hidden", poWhen !== "later");
 });
+$("po-btn-channel").onclick = () => {
+  const u = data.client_bot || (data.posting && data.posting.client_bot);
+  if (!u) return toast("Бот клиентов ещё не запущен — кнопка недоступна");
+  $("po-btn-text").value = "📢 Kanal"; $("po-btn-url").value = `https://t.me/${u}?start=channel`;
+  toast("Кнопка «Kanal» добавлена: клиент получит личную ссылку-заявку в канал");
+};
 function poBody() {
   return {texts: poEd.texts(), image: poPhoto || "", button_text: $("po-btn-text").value.trim(),
           button_url: $("po-btn-url").value.trim()};
@@ -3868,7 +3942,9 @@ async function load(fresh = false) {
     }
     openedShop = true;
     if (appHiddenSec(APP_SEC_OF[view] || view)) view = data.is_employee ? "me" : "team";  // раздел скрыли в приложении
-    show(view);
+    const y = window.scrollY;
+    show(view, true);  // тот же экран после действия / автообновления — страница остаётся на месте
+    window.scrollTo(0, y);
   } catch (e) {
     hideSplash();
     if (IS_APP && /Telegram|сотрудник|Только/.test(e.message)) { appToken.set(""); return appLogin(); }  // сессия кончилась
@@ -4075,15 +4151,22 @@ async function loadClients(more = false) {
     action("/api/set_tier", {store_id: s.dataset.stier, tier: s.value}).then(() => loadClients()));
 }
 let bzLoaded = 0;
+let impXlsx = null;  // Excel-файл (.xlsx) читает сервер
 $("imp-file").onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   if (f.size > 3_000_000) return toast("Файл слишком большой");
-  $("imp-text").value = await f.text(); e.target.value = "";
-  toast(`Файл «${f.name}» прочитан — нажмите «Загрузить»`);
+  if (/\.xlsx$/i.test(f.name)) {
+    impXlsx = await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(f); });
+    $("imp-text").value = `📊 Excel: ${f.name} — нажмите «Загрузить»`;
+  } else { impXlsx = null; $("imp-text").value = await f.text(); }
+  e.target.value = "";
+  toast(`Файл «${f.name}» выбран — нажмите «Загрузить»`);
 };
+$("imp-text").oninput = () => { impXlsx = null; };
 $("imp-go").onclick = async () => {
-  const text = $("imp-text").value.trim(); if (!text) return toast("Выберите файл или вставьте список ID");
-  try { const r = await api("/api/import_clients", {text}); toast(r.msg); if (r.ok) { $("imp-text").value = ""; loadClients(); load(); } }
+  const text = $("imp-text").value.trim(); if (!text && !impXlsx) return toast("Выберите файл или вставьте список ID");
+  try { const r = await api("/api/import_clients", impXlsx ? {xlsx: impXlsx} : {text}); toast(r.msg);
+    if (r.ok) { $("imp-text").value = ""; impXlsx = null; loadClients(); load(); } }
   catch (e) { toast(e.message); }
 };
 /* ---------- карточка клиента ---------- */
@@ -4168,6 +4251,7 @@ function renderClientsAdmin(user = false) {
   clearTimeout(bzTimer); bzTimer = setTimeout(() => loadClients(), user ? 250 : 0);
 }
 $("cl-search").oninput = () => renderClientsAdmin(true);
+$("exp-go").onclick = () => action("/api/export_clients");
 
 function renderNewsAdmin() {
   $("cl-count").textContent = `клиентов: ${data.clients.total} (с номером: ${data.clients.with_phone})`;
@@ -5235,6 +5319,116 @@ document.querySelectorAll(".page-title").forEach(t => {
   hero.lastElementChild.append(t, sub);
 });
 $("go-staff").onclick = () => show("staff");
+/* Связь продавцов BILLZ с сотрудниками */
+/* Кнопка «Связать с продавцом BILLZ»: список реальных продавцов из BILLZ, выбор касанием */
+async function billzPick(uid, name, onDone) {
+  invSheet(`<h3>🔗 ${esc(name)} — продавец BILLZ</h3><div class="empty">⏳ Загружаю продавцов из BILLZ…</div>`);
+  let r; try { r = await api("/api/sellers", {view: "billz"}); } catch (e) { return invSheet(`<h3>🔗 Продавец BILLZ</h3><div class="empty">${esc(e.message)}</div>`); }
+  const me = (r.emps.find(e => e.id === uid) || {}).billz || [];
+  const taken = {}; r.emps.forEach(e => e.billz.forEach(n => { if (e.id !== uid) taken[n] = e.name; }));
+  const sel = new Set(me);
+  const draw = () => {
+    const q = ($("bp-q") && $("bp-q").value || "").toLowerCase();
+    $("bp-list").innerHTML = r.names.filter(n => !q || n.toLowerCase().includes(q)).map(n =>
+      `<button data-bp="${esc(n)}" class="${sel.has(n) ? "on" : ""}">${sel.has(n) ? "✅ " : ""}${esc(n)}${taken[n] ? ` <span class="hint" style="font-size:11px">· ${esc(taken[n])}</span>` : ""}</button>`).join("")
+      || `<div class="hint" style="font-size:13px">${r.names.length ? "Никого не нашлось" : "BILLZ не отдал список продавцов — впишите имя вручную ниже."}</div>`;
+    document.querySelectorAll("[data-bp]").forEach(b => b.onclick = () => { const n = b.dataset.bp; sel.has(n) ? sel.delete(n) : sel.add(n); draw(); });
+  };
+  invSheet(`<h3>🔗 ${esc(name)} — продавец BILLZ</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 8px">Нажмите на продавца из BILLZ (можно несколько).${r.source ? " Источник: " + (r.source.startsWith("/") ? "сотрудники в BILLZ" : "продажи BILLZ") + "." : ""}</div>
+    ${r.names.length > 8 ? `<input id="bp-q" placeholder="🔎 Поиск">` : ""}
+    <div class="quick" id="bp-list" style="margin:0 0 10px;max-height:45vh;overflow:auto"></div>
+    <input id="bp-manual" placeholder="или вписать вручную, как в BILLZ" maxlength="100">
+    ${r.error && !r.names.length ? `<div class="hint" style="font-size:11.5px;margin:-4px 0 8px">BILLZ: ${esc(r.error)}</div>` : ""}
+    ${sheetBtns("Сохранить")}`);
+  draw(); if ($("bp-q")) $("bp-q").oninput = draw;
+  $("is-cancel").onclick = invSheetClose;
+  $("is-ok").onclick = async () => {
+    const extra = $("bp-manual").value.trim(); if (extra) sel.add(extra);
+    try { const x = await api("/api/sellers", {action: "save_emp", view: "emp", links: {[uid]: [...sel].join(", ")}}); toast(x.msg); invSheetClose();
+      if (onDone) onDone(); else load(); } catch (e) { toast(e.message); }
+  };
+}
+/* Связь сотрудников с BILLZ без продаж: у каждого сотрудника — как он записан продавцом в BILLZ */
+async function sellersEmpSheet() {
+  invSheet(`<h3>🔗 Сотрудники ↔ BILLZ</h3><div class="empty">⏳</div>`);
+  let r; try { r = await api("/api/sellers", {view: "emp"}); } catch (e) { return toast(e.message); }
+  invSheet(`<h3>🔗 Сотрудники ↔ BILLZ</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Впишите, как каждый сотрудник записан продавцом в BILLZ — точно как в BILLZ
+      (например «Махира»). Несколько вариантов — через запятую. Пусто — не связан.</div>
+    ${r.emps.map(e => `<div class="kpi-row" style="flex-wrap:wrap"><div class="tt" style="flex:1 1 100%"><b>${esc(e.name)}</b></div>
+      <input data-se="${e.id}" maxlength="200" placeholder="Имя в BILLZ" value="${esc(e.billz.join(", "))}" style="margin:6px 0 0">
+      <button class="btn btn-soft btn-sm" style="width:100%;margin-top:6px" data-sep="${e.id}" data-sen="${esc(e.name)}">🔗 Выбрать продавца из BILLZ</button></div>`).join("")}
+    ${sheetBtns("Сохранить")}
+    <button class="link" id="sl-from-sales" style="display:block;margin:12px auto 0;font-size:13px">📥 Подобрать по продажам BILLZ</button>`);
+  $("is-cancel").onclick = invSheetClose;
+  $("sl-from-sales").onclick = sellersSheet;
+  document.querySelectorAll("[data-sep]").forEach(b => b.onclick = () => billzPick(+b.dataset.sep, b.dataset.sen, sellersEmpSheet));
+  $("is-ok").onclick = async () => {
+    const links = {}; document.querySelectorAll("[data-se]").forEach(i => { links[i.dataset.se] = i.value; });
+    try { const x = await api("/api/sellers", {action: "save_emp", view: "emp", links}); toast(x.msg); invSheetClose(); load(); }
+    catch (e) { toast(e.message); }
+  };
+}
+async function sellersSheet() {
+  invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">⏳</div>`);
+  let r; try { r = await api("/api/sellers"); } catch (e) { return invSheet(`<h3>🔗 Продавцы BILLZ</h3><div class="empty">${esc(e.message)}</div>`); }
+  const opt = (sel) => `<option value="0">— не сотрудник / не связывать —</option>` +
+    r.team.map(t => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+  const sug = r.items.filter(x => !x.saved && x.suggested).length, d = r.diag || {};
+  const diag = `<div class="hint" style="font-size:12px;margin:0 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:12px">
+    📊 Продаж в копии BILLZ: ${d.total || 0} · за неделю: ${d.week || 0} (с продавцом: ${d.week_sellers || 0})
+    ${d.last_sale ? " · последняя: " + esc(d.last_sale) : ""}${d.mirror_at ? "<br>🔄 Обновлено: " + esc(d.mirror_at) + " (" + esc(d.mirror_last || "") + ")" : ""}
+    ${d.billz_on === false ? "<br>⚠️ BILLZ не подключён" : d.report_on === false ? "<br>⚠️ BILLZ не даёт отчёт продаж — копия не обновляется сама" : ""}
+    ${d.keys && d.keys.seller_fields ? "<br>🔎 Поля продавца в BILLZ: " + esc(JSON.stringify(d.keys.seller_fields).slice(0, 200)) : ""}
+    <button class="btn btn-soft btn-sm" style="width:100%;margin-top:8px" id="sl-refresh">🔄 Загрузить продажи за неделю из BILLZ</button></div>`;
+  invSheet(`<h3>🔗 Продавцы BILLZ ↔ сотрудники</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">Продавцы из продаж BILLZ за полгода. Система предложила совпадения по имени —
+      проверьте и нажмите «Сохранить».</div>${diag}
+    ${r.items.length ? r.items.map((x, i) => `<div class="kpi-row" style="flex-wrap:wrap">
+      <div class="tt" style="flex:1 1 100%"><b>${esc(x.name)}</b> <span class="hint" style="font-size:12px">· продаж: ${x.sales} · посл. ${x.last.slice(8, 10)}.${x.last.slice(5, 7)}</span>
+        ${x.saved ? (x.uid ? ' <span class="pen-tag">✅ связан</span>' : ' <span class="hint" style="font-size:12px">не связан</span>')
+          : x.suggested ? ' <span class="pen-tag" style="color:#fbbf24">💡 предложение</span>' : ""}</div>
+      <select data-sl="${i}" style="margin:6px 0 0">${opt(x.saved ? x.uid : x.suggested)}</select></div>`).join("")
+      : `<div class="empty">Продавцов пока нет — нажмите «Загрузить продажи за неделю».</div>`}
+    ${r.items.length ? sheetBtns(sug ? `Сохранить (предложений: ${sug})` : "Сохранить") : `<button class="btn btn-soft" style="width:100%" id="is-cancel">Закрыть</button>`}`);
+  $("is-cancel").onclick = invSheetClose;
+  $("sl-refresh").onclick = async () => {
+    $("sl-refresh").disabled = true; $("sl-refresh").textContent = "⏳ Загружаю из BILLZ…";
+    try { const x = await api("/api/sellers", {action: "refresh"}); toast(x.msg); } catch (e) { toast(e.message); }
+    sellersSheet();
+  };
+  if ($("is-ok")) $("is-ok").onclick = async () => {
+    const links = {}; document.querySelectorAll("[data-sl]").forEach(s => { links[r.items[+s.dataset.sl].name] = +s.value; });
+    try { const x = await api("/api/sellers", {action: "save", links}); toast(x.msg); invSheetClose(); load(); } catch (e) { toast(e.message); }
+  };
+}
+$("go-sellers").onclick = sellersEmpSheet;
+/* Обратная связь после покупки: тест / включено, предпросмотр */
+async function followupSheet(body) {
+  let r; try { r = await api("/api/followup", body || {}); } catch (e) { return toast(e.message); }
+  if (r.msg) toast(r.msg);
+  const live = r.mode === "live";
+  invSheet(`<h3>📞 Обратная связь после покупки</h3>
+    <div class="hint" style="font-size:12.5px;margin:-6px 0 10px">По каждой новой продаже BILLZ (с ${esc(r.since)}) на следующий день в ${r.hour}:00
+      продавцу — задача связаться с клиентом. Продавец определяется по связи «Продавцы BILLZ ↔ сотрудники». Задача не мешает отметить уход.</div>
+    <div class="kpi-res" style="margin:0 0 10px">${live ? "✅ <b style='font-size:15px'>Включено</b> — задачи ставятся менеджерам"
+      : "🧪 <b style='font-size:15px;color:#fbbf24'>Тест</b> — менеджерам ничего не отправляется, предпросмотр утром только вам"}</div>
+    <div class="pen-stats three" style="margin-bottom:10px"><div><b>${r.pending}</b><span>ждут</span></div>
+      <div><b>${live ? r.tasks : r.test}</b><span>${live ? "задач поставлено" : "в тесте"}</span></div><div><b>${r.unlinked + r.noclient}</b><span>пропущено</span></div></div>
+    ${r.text ? `<div class="hint" style="font-size:13px;white-space:pre-wrap;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;max-height:40vh;overflow:auto">${esc(r.text)}</div>` : ""}
+    <button class="btn btn-soft" style="width:100%" id="fu-prev">👁 Проверить сейчас</button>
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-now">📌 Поставить задачи сейчас (не ждать утра)</button>
+    <button class="btn ${live ? "btn-soft" : "btn-main"}" style="width:100%;margin-top:8px" id="fu-mode">${live ? "🧪 Вернуть тестовый режим" : "✅ Включить для менеджеров"}</button>
+    <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-close">Закрыть</button>`);
+  $("fu-close").onclick = invSheetClose;
+  $("fu-prev").onclick = () => followupSheet({action: "preview"});
+  $("fu-now").onclick = () => tg.showConfirm("Поставить задачи «обратная связь» прямо сейчас по всем ожидающим продажам?",
+    ok => ok && followupSheet({action: "now"}));
+  $("fu-mode").onclick = () => tg.showConfirm(live ? "Вернуть тестовый режим? Задачи перестанут ставиться." :
+    "Включить? Менеджеры начнут получать задачи «обратная связь» по новым продажам.", ok => ok && followupSheet({action: "mode", mode: live ? "test" : "live"}));
+}
+$("go-followup").onclick = () => followupSheet();
 $("cancel-late").onclick = () => tg.showConfirm("Отменить все штрафы за опоздание за сегодня и не выписывать новые до конца дня?",
   ok => ok && action("/api/cancel_late_fines"));
 $("go-projects").onclick = () => show("projects");

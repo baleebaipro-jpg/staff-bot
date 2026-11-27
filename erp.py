@@ -114,8 +114,47 @@ def _api(method: str, path: str, params: dict = None, body: dict = None, timeout
             tok = _login()
         code, res = _http(method, path, params, body, tok, timeout)
     if code >= 400:
-        raise BillzError(f"BILLZ {method} {path}: {code} {(res or {}).get('message')}", code)
+        r = res if isinstance(res, dict) else {}
+        why = " · ".join(str(r[k]) for k in ("message", "error", "error_code", "data") if r.get(k) not in (None, "", []))
+        raise BillzError(f"BILLZ {method} {path}: {code} {why or str(res)[:200]}", code)
     return res
+
+
+# ---------- сотрудники (продавцы) BILLZ ----------
+
+_users_cache = {"at": 0, "names": [], "source": ""}
+USER_PATHS = ["/v1/user", "/v2/user", "/v1/users", "/v2/users", "/v1/employee", "/v2/employee", "/v1/company/user",
+              "/v1/seller", "/v2/seller"]
+
+
+def billz_users(force: bool = False) -> dict:
+    """Список продавцов/сотрудников BILLZ. Путь API у BILLZ точно не задокументирован — пробуем известные варианты,
+    рабочий запоминаем. Кэш на час. Возвращает {names, source, error}."""
+    if not force and _users_cache["names"] and time.time() - _users_cache["at"] < 3600:
+        return dict(_users_cache, error="")
+    known = (core.flag_json("billz_users_path") or {}).get("path")
+    errors = []
+    for path in ([known] if known else []) + [p for p in USER_PATHS if p != known]:
+        try:
+            res = _api("GET", path, params={"page": 1, "limit": 100}, timeout=20)
+        except BillzError as e:
+            errors.append(f"{path}: {e.code or ''}")
+            continue
+        items = res if isinstance(res, list) else next(
+            (res.get(k) for k in ("users", "employees", "sellers", "items", "data", "rows", "result") if isinstance(res.get(k), list)), [])
+        names = []
+        for x in items or []:
+            if not isinstance(x, dict):
+                continue
+            n = x.get("name") or x.get("full_name") or " ".join(str(v) for v in (x.get("first_name"), x.get("last_name")) if v)
+            n = (n or "").strip()
+            if n and n not in names:
+                names.append(n)
+        if names:
+            core.flag_json("billz_users_path", {"path": path})
+            _users_cache.update(at=time.time(), names=sorted(names), source=path)
+            return dict(_users_cache, error="")
+    return {"names": [], "source": "", "error": "; ".join(errors)[:300]}
 
 
 # ---------- клиенты ----------
@@ -457,33 +496,97 @@ def _sales_rows() -> list:
     """Продажи за вчера и сегодня из отчёта по транзакциям."""
     today = core.now().date()
     rows, page = [], 1
-    while page <= 20:
-        res = _api("GET", "/v1/transaction_report_table", params={
+    limit = (core.flag_json("billz_report_limit") or {}).get("limit", 100)
+    while page <= 50:
+        res = _api("GET", "/v1/transaction-report-table", params={
             "start_date": (today - timedelta(days=1)).strftime("%Y-%m-%d"), "end_date": today.strftime("%Y-%m-%d"),
-            "order_types": "SALE", "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
+            "order_types": "SALE", "page": page, "limit": limit, "shop_ids": ",".join(shop_ids())},
+            timeout=SEARCH_TIMEOUT) or {}
         batch = res.get("rows") or []
         rows += batch
-        if len(batch) < 100:
+        if len(batch) < limit:
             break
         page += 1
-    return [r for r in rows if (r.get("order_type") or "SALE").upper() == "SALE"]
+    return [r for r in rows if _otype(r) == "SALE"]
 
 
 # ---------- копия продаж BILLZ (для ERP: транзакции и сверка) ----------
+
+def _otype(r: dict) -> str:
+    """Тип чека из отчёта BILLZ → SALE / RETURN / EXCHANGE (BILLZ пишет его по-разному: sale, Продажа, ORDER …)."""
+    t = str(r.get("order_type") or "").upper()
+    if "RETURN" in t or "ВОЗВРАТ" in t:
+        return "RETURN"
+    if "EXCHANGE" in t or "ОБМЕН" in t:
+        return "EXCHANGE"
+    return "SALE"
+
+
+def _seller_names(r: dict) -> list:
+    """Продавцы строки отчёта BILLZ — поле называется по-разному: seller_names / sellers / seller_name / seller …"""
+    out = []
+    for key in ("seller_names", "sellers", "seller_name", "seller", "sellers_names", "employee_name", "employees"):
+        v = r.get(key)
+        if not v:
+            continue
+        for x in (v if isinstance(v, list) else [v]):
+            if isinstance(x, dict):
+                n = x.get("name") or x.get("full_name") or " ".join(
+                    str(p) for p in (x.get("first_name"), x.get("last_name")) if p)
+            else:
+                n = str(x)
+            n = (n or "").strip()
+            if n and n not in out:
+                out.append(n)
+        if out:
+            break
+    return out
+
+
+_shops_cache = {"at": 0, "ids": []}
+
+
+def shop_ids() -> list:
+    """ID всех магазинов BILLZ (отчёт продаж без shop_ids отвечает «Wrong shopID»). Кэш на 6 часов."""
+    if _shops_cache["ids"] and time.time() - _shops_cache["at"] < 6 * 3600:
+        return _shops_cache["ids"]
+    res = _api("GET", "/v1/shop", params={"page": 1, "limit": 100, "only_allowed": "true"}) or {}
+    ids = [x["id"] for x in (res.get("shops") or []) if x.get("id") and not x.get("deleted_at")]
+    if not ids:  # only_allowed не поддержан / пусто — без фильтра
+        res = _api("GET", "/v1/shop", params={"page": 1, "limit": 100}) or {}
+        ids = [x["id"] for x in (res.get("shops") or []) if x.get("id") and not x.get("deleted_at")]
+    _shops_cache.update(at=time.time(), ids=ids)
+    return ids
+
 
 def mirror_sales(day_from: str, day_to: str = None) -> int:
     """Скопировать транзакции BILLZ (продажи, возвраты, обмены) за период в таблицу billz_sales."""
     day_to = day_to or day_from
     rows, page = [], 1
-    while page <= 50:
-        res = _api("GET", "/v1/transaction_report_table", params={
-            "start_date": day_from, "end_date": day_to, "page": page, "limit": 100}, timeout=SEARCH_TIMEOUT) or {}
+    limit = (core.flag_json("billz_report_limit") or {}).get("limit", 100)
+    while page <= 200:
+        try:
+            res = _api("GET", "/v1/transaction-report-table", params={
+                "start_date": day_from, "end_date": day_to, "page": page, "limit": limit,
+                "shop_ids": ",".join(shop_ids())}, timeout=SEARCH_TIMEOUT) or {}
+        except BillzError as e:
+            if e.code == 400 and "shop" in str(e).lower():
+                raise  # магазины не подошли — уменьшение страницы не поможет
+            if e.code == 400 and limit > 10:  # BILLZ ограничивает размер страницы — пробуем меньше и запоминаем
+                limit = 50 if limit > 50 else 20 if limit > 20 else 10
+                core.flag_json("billz_report_limit", {"limit": limit})
+                continue
+            raise
         batch = res.get("rows") or []
         rows += batch
-        if len(batch) < 100:
+        if len(batch) < limit:
             break
         page += 1
     now = core.now().strftime(core.FMT)
+    if rows:  # для диагностики: какие поля приходят из BILLZ (только названия + поля продавца)
+        r0 = rows[0]
+        core.flag_json("billz_mirror_keys", {"keys": sorted(r0.keys())[:80], "order_type": r0.get("order_type"), "seller_fields": {
+            k: r0.get(k) for k in r0 if "sell" in k.lower() or "employee" in k.lower() or "cashier" in k.lower()}})
     with core.db() as c:
         for r in rows:
             oid = r.get("order_id") or r.get("row_id")
@@ -494,7 +597,7 @@ def mirror_sales(day_from: str, day_to: str = None) -> int:
                       "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (oid, str(r.get("external_id") or ""), str(r.get("date") or "")[:19].replace("T", " "), r.get("shop_id"),
                        r.get("shop_name"), r.get("customer_name"), r.get("customer_id"),
-                       ", ".join(r.get("seller_names") or []), r.get("cashier_name"), (r.get("order_type") or "SALE").upper(),
+                       ", ".join(_seller_names(r)), r.get("cashier_name"), _otype(r),
                        float(r.get("total_price") or 0), float(r.get("gross_sales") or 0), float(r.get("discount_percent") or 0),
                        float(r.get("sold_measurement_value") or 0) - float(r.get("returned_measurement_value") or 0),
                        json.dumps([{"name": p.get("payment_type_name"), "sum": float(p.get("sum") or 0)}

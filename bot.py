@@ -945,6 +945,8 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         try:
             posts.dispatch_due()
             erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
+            import followup
+            followup.tick()  # обратная связь с клиентом на следующий день после покупки
             shop.daily()  # ERP: напоминания о разморозке бонусов, сгорание баллов
             erp.start_purchase_watch()  # «спасибо за покупку» — проверка продаж каждые 30 с (запускается один раз)
         except Exception:
@@ -990,7 +992,11 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
                             InlineKeyboardButton(t, url=d[4:]) if d.startswith("url:") else InlineKeyboardButton(t, callback_data=d)
                             for t, d in row] for row in json.loads(m["markup"])])
                     sender = _bot_for(m, app, client_app)
-                    if (m.get("photo") or "").startswith("video:"):  # видео-подтверждение прихода из приложения
+                    if (m.get("photo") or "").startswith("doc:"):  # файл (выгрузка): путь на диске
+                        with open(m["photo"][4:], "rb") as df:
+                            await sender.send_document(m["chat_id"], df, caption=text[:1024], message_thread_id=thread,
+                                                       filename=os.path.basename(m["photo"][4:]))
+                    elif (m.get("photo") or "").startswith("video:"):  # видео-подтверждение прихода из приложения
                         with open(m["photo"][6:], "rb") as vf:
                             await sender.send_video(m["chat_id"], vf, caption=text[:1024], message_thread_id=thread,
                                                     parse_mode=mode, reply_markup=markup)
@@ -1199,6 +1205,11 @@ async def post_init(app: Application) -> None:
 
 
 async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ссылка t.me/<бот>?start=channel (кнопка «📢 Kanal» под постом) — сразу личная ссылка-заявка в канал
+    if context.args and context.args[0] == "channel" and getattr(config, "CLIENT_CHANNEL_ID", None):
+        cl = core.get_client(update.effective_user.id) or {}
+        if cl.get("lang"):
+            return await channel_link(update, context, i18n.lang_of(cl.get("lang")))
     await client_menu(update, greet=True)
 
 
@@ -1233,6 +1244,7 @@ async def _run_both(app: Application, capp: Application) -> None:
         try:
             await capp.initialize()
             CLIENT_BOT.update(username=capp.bot.username, ok=True)  # до старта бота сотрудников — для ссылок
+            core.flag_json("client_bot", {"username": capp.bot.username})  # для кнопки «📢 Kanal» в Постинге
         except Exception as e:  # noqa: BLE001 — любой сбой бота клиентов не должен ронять бота сотрудников
             logging.error("❌ Бот клиентов не запустился (проверьте CLIENT_BOT_TOKEN): %s — работаю одним ботом", e)
             CLIENT_BOT["ok"] = False  # клиентов обслуживает бот сотрудников, как раньше

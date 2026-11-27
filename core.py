@@ -394,6 +394,10 @@ def init_db():
     cancel_configured_late_days()
     import kpi  # касса сотрудника и KPI
     kpi.init()
+    import sellers  # связь продавцов BILLZ с сотрудниками
+    sellers.init()
+    import followup  # обратная связь с клиентом на следующий день после покупки
+    followup.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")
@@ -1255,7 +1259,8 @@ def _unfinished(c, uid) -> list:
     """Незакрытые задачи на сегодня — от руководителя и свои (перенесённые на будущее не считаются).
     Пока они не закрыты, уход отметить нельзя."""
     return c.execute("SELECT id, title, status, due_date, template_id FROM tasks WHERE user_id=? AND status IN ('open', 'review') "
-                     "AND (due_date IS NULL OR due_date <= ?) ORDER BY id", (uid, now().strftime("%Y-%m-%d"))).fetchall()
+                     "AND (due_date IS NULL OR due_date <= ?) AND COALESCE(soft, 0)=0 ORDER BY id",  # soft — напоминание, уход не блокирует
+                     (uid, now().strftime("%Y-%m-%d"))).fetchall()
 
 
 def _all_open(c, uid) -> list:
@@ -1578,6 +1583,63 @@ def get_client(uid: int):
     with db() as c:
         r = c.execute("SELECT * FROM clients WHERE user_id=?", (uid,)).fetchone()
     return dict(r) if r else None
+
+
+def export_clients() -> str:
+    """CSV всех, кто есть в боте клиентов: Telegram ID, имя, телефон, @username, язык, дата. Возвращает путь к файлу."""
+    import csv
+    d = os.path.join(config.DATA_DIR, "exports")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"klienty_bot_{now():%Y%m%d_%H%M}.csv")
+    with db() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
+        rows = c.execute("SELECT * FROM clients ORDER BY created_at").fetchall()
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig — Excel открывает кириллицу правильно
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["telegram_id", "имя", "телефон", "username", "язык", "в боте с"])
+        for r in rows:
+            w.writerow([r["user_id"], client_full_name(dict(r)) if "first_name" in cols else "", r["phone"] or "",
+                        ("@" + r["username"]) if r["username"] else "", r["lang"] if "lang" in cols else "",
+                        (r["created_at"] or "")[:16]])
+    return path
+
+
+def xlsx_to_text(data: bytes) -> str:
+    """Excel (.xlsx) → текст «ячейка;ячейка» по строкам, первый лист. Без сторонних библиотек (xlsx — это zip с XML)."""
+    import io
+    import re
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    z = zipfile.ZipFile(io.BytesIO(data))
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", ns):
+            shared.append("".join(t.text or "" for t in si.iter("{%s}t" % ns["m"])))
+    sheets = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+    if not sheets:
+        return ""
+    lines = []
+    for row in ET.fromstring(z.read(sheets[0])).iter("{%s}row" % ns["m"]):
+        cells = []
+        for c in row.findall("m:c", ns):
+            v, t = c.find("m:v", ns), c.get("t")
+            if t == "s" and v is not None:
+                val = shared[int(v.text)]
+            elif t == "inlineStr":
+                val = "".join(x.text or "" for x in c.iter("{%s}t" % ns["m"]))
+            else:
+                val = v.text if v is not None else ""
+                try:  # числа Excel: 6834141071.0 / 6.834141071E9 → 6834141071
+                    f = float(val)
+                    if f.is_integer():
+                        val = str(int(f))
+                except (TypeError, ValueError):
+                    pass
+            cells.append(str(val or "").strip())
+        if any(cells):
+            lines.append(";".join(cells))
+    return "\n".join(lines)
 
 
 def import_clients(text: str) -> dict:
