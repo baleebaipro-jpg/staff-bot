@@ -170,7 +170,8 @@ def api_msgr_config(dev, data):
     s = msgr.settings()
     if isinstance(data.get("groups"), list):
         msgr.report_groups(data["groups"])
-    return jsonify(ok=True, name=msgr.dev_name(dev), perms=msgr.staff_perms(dev.get("staff_uid") or 0)["perms"],
+    return jsonify(ok=True, name=msgr.dev_name(dev), funnel=msgr.dev_funnel(dev),
+                   perms=msgr.staff_perms(dev.get("staff_uid") or 0)["perms"],
                    whitelist=s["whitelist"], keepalive=s["keepalive"], assign=msgr.assignments_for(dev))
 
 

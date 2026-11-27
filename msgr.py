@@ -131,15 +131,10 @@ def staff_number(staff_uid: int):
 
 def new_code(admin_uid: int, staff_uid: int = 0, name: str = "", number_id: int = 0) -> dict:
     """Ключ доступа для сотрудника staff_uid на рабочем номере number_id (8 символов, 10 минут, один раз).
-    Один сотрудник — один номер: пока у него включён телефон на другом номере, ключ не выдаётся."""
+    Воронки: один сотрудник может иметь ключи сразу на нескольких рабочих номерах (вторая/третья воронка)."""
     staff_uid, number_id = int(staff_uid or 0), int(number_id or 0)
     if staff_uid and staff_uid not in {x["uid"] for x in staff()}:
         staff_uid = 0
-    if number_id:
-        busy = staff_number(staff_uid) if staff_uid else None
-        if busy and busy != number_id:
-            return {"ok": False, "error": f"{core.name(staff_uid)} уже работает на другом рабочем номере. "
-                                          "Сначала отключите его телефон там."}
     name = core.name(staff_uid) if staff_uid else (name or "").strip()[:60]
     code = "".join(secrets.choice("0123456789") for _ in range(KEY_DIGITS))
     with core.db() as c:
@@ -409,6 +404,18 @@ def link(tg_id: int, billz_id: str, dev: dict) -> None:
 
 
 # ---------- журнал нарушений ----------
+
+def dev_funnel(dev: dict) -> str:
+    """Название воронки (рабочего номера) телефона — для профиля в приложении."""
+    nid = (dev or {}).get("number_id")
+    if not nid:
+        return ""
+    import tgnumbers
+    for n in tgnumbers.numbers():
+        if n["id"] == nid:
+            return n["title"]
+    return ""
+
 
 def dev_name(dev: dict) -> str:
     dev = dev or {}
