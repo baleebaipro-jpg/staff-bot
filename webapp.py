@@ -2119,7 +2119,8 @@ PAGE = r"""<!doctype html>
   <div id="view-projects" class="hidden">
     <div class="page-title">📁 Мои проекты</div>
     <div class="page-sub">Личные проекты и задачи — видите только вы</div>
-    <div class="card"><div class="head"><h3 id="day-title">☀️ Мой день</h3></div><div id="proj-day"></div></div>
+    <!-- «Мой день» показывается на главной — здесь скрыт, чтобы не дублировать -->
+    <div class="card hidden" id="proj-day-card"><div class="head"><h3 id="day-title">☀️ Мой день</h3></div><div id="proj-day"></div></div>
     <div class="card">
       <div class="head"><h3>Проекты</h3><span class="hint" style="font-size:13px" id="proj-count"></span></div>
       <div class="add-row"><input id="np-title" placeholder="Название нового проекта" maxlength="100">
