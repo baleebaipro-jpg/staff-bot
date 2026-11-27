@@ -1205,6 +1205,11 @@ async def post_init(app: Application) -> None:
 
 
 async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ссылка t.me/<бот>?start=channel (кнопка «📢 Kanal» под постом) — сразу личная ссылка-заявка в канал
+    if context.args and context.args[0] == "channel" and getattr(config, "CLIENT_CHANNEL_ID", None):
+        cl = core.get_client(update.effective_user.id) or {}
+        if cl.get("lang"):
+            return await channel_link(update, context, i18n.lang_of(cl.get("lang")))
     await client_menu(update, greet=True)
 
 
@@ -1239,6 +1244,7 @@ async def _run_both(app: Application, capp: Application) -> None:
         try:
             await capp.initialize()
             CLIENT_BOT.update(username=capp.bot.username, ok=True)  # до старта бота сотрудников — для ссылок
+            core.flag_json("client_bot", {"username": capp.bot.username})  # для кнопки «📢 Kanal» в Постинге
         except Exception as e:  # noqa: BLE001 — любой сбой бота клиентов не должен ронять бота сотрудников
             logging.error("❌ Бот клиентов не запустился (проверьте CLIENT_BOT_TOKEN): %s — работаю одним ботом", e)
             CLIENT_BOT["ok"] = False  # клиентов обслуживает бот сотрудников, как раньше

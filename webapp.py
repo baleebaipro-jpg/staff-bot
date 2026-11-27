@@ -455,7 +455,8 @@ def api_me(uid, data):
         aud = posts.audience_info()
         if not res["is_admin"]:
             aud["bonus_on"] = False  # бонусы в постах начисляет только руководитель
-        res["posting"] = {"audience": aud, "history": posts.history()}
+        res["posting"] = {"audience": aud, "history": posts.history(),
+                          "client_bot": (core.flag_json("client_bot") or {}).get("username", "")}
     if res["is_admin"]:
         res["projects"] = projects.overview(uid)
         if not res["is_employee"]:
@@ -2303,6 +2304,7 @@ PAGE = r"""<!doctype html>
         <div style="margin-top:10px">
           <input id="po-btn-text" maxlength="60" placeholder="Текст кнопки, например: Заказать">
           <input id="po-btn-url" maxlength="500" placeholder="Ссылка: https://t.me/xupingSilver" inputmode="url">
+          <button class="btn btn-soft btn-sm" style="width:100%" id="po-btn-channel">📢 Кнопка «Kanal» — личная ссылка в канал</button>
         </div>
       </details>
       <div class="po-lbl">Где опубликовать <span style="font-size:11.5px">(можно несколько)</span></div>
@@ -3745,6 +3747,12 @@ document.querySelectorAll("#po-when button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#po-when button").forEach(x => x.classList.toggle("on", x === b));
   $("po-at").classList.toggle("hidden", poWhen !== "later");
 });
+$("po-btn-channel").onclick = () => {
+  const u = data.client_bot || (data.posting && data.posting.client_bot);
+  if (!u) return toast("Бот клиентов ещё не запущен — кнопка недоступна");
+  $("po-btn-text").value = "📢 Kanal"; $("po-btn-url").value = `https://t.me/${u}?start=channel`;
+  toast("Кнопка «Kanal» добавлена: клиент получит личную ссылку-заявку в канал");
+};
 function poBody() {
   return {texts: poEd.texts(), image: poPhoto || "", button_text: $("po-btn-text").value.trim(),
           button_url: $("po-btn-url").value.trim()};
