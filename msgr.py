@@ -277,6 +277,14 @@ def check_owner_code(code: str) -> dict:
     return {"ok": False, "error": "Неверный код."}
 
 
+def funnels_count() -> dict:
+    """Сколько воронок (активных телефонов с рабочим номером) у каждого сотрудника."""
+    with core.db() as c:
+        rows = c.execute("SELECT staff_uid, COUNT(*) AS n FROM msgr_devices "
+                         "WHERE disabled=0 AND staff_uid IS NOT NULL GROUP BY staff_uid").fetchall()
+    return {r["staff_uid"]: r["n"] for r in rows}
+
+
 def sessions_by_staff() -> list:
     """Активные сессии (включённые телефоны), сгруппированные по менеджеру. У каждого — его воронки (номер + ключ)."""
     import tgnumbers

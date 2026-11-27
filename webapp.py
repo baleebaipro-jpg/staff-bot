@@ -253,7 +253,8 @@ def api_msgr_admin(uid, data):
         msgr.save_staff(int(data.get("staff_uid") or 0), data.get("perms"), data.get("see_others"), bool(data.get("reset")))
         msg = "✅ Доступы сотрудника сохранены"
     s = msgr.settings()
-    staff = [dict(x, **msgr.staff_perms(x["uid"])) for x in msgr.staff()]
+    fcount = msgr.funnels_count()
+    staff = [dict(x, **msgr.staff_perms(x["uid"]), funnels=fcount.get(x["uid"], 0)) for x in msgr.staff()]
     return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=staff, perms=s["perms"], perm_titles=msgr.PERMS,
                    whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50),
                    sessions=msgr.sessions_by_staff(), owner_code_set=msgr.owner_code_set(),
@@ -4899,7 +4900,7 @@ function msgrRender(r) {
   $("ms-tact").value = r.assign.timeout_action;
   const SEE = ["не видит чужие чаты", "видит чужие чаты (только чтение)"];
   $("ms-staff-list").innerHTML = r.staff.map(x => `<details style="padding:8px 0;border-bottom:1px solid var(--line)">
-      <summary><b>${esc(x.name)}</b> <span class="hint" style="font-size:12px">${x.custom ? "свои доступы" : "как у всех"}${x.see_others ? " · видит чужие" : ""}</span></summary>
+      <summary><b>${esc(x.name)}</b> <span class="hint" style="font-size:12px">🔑 воронок: ${x.funnels || 0}${x.custom ? " · свои доступы" : ""}${x.see_others ? " · видит чужие" : ""}</span></summary>
       <div style="padding:6px 0">${Object.entries(r.perm_titles).map(([k, t]) => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0">
         <span style="flex:1">${esc(t)}</span><label class="sw"><input type="checkbox" data-sp="${x.uid}" data-k="${k}" ${x.perms[k] ? "checked" : ""}><span></span></label></div>`).join("")}
         <select data-see="${x.uid}" style="width:100%;margin:6px 0">${SEE.map((t, i) => `<option value="${i}" ${x.see_others === i ? "selected" : ""}>${t}</option>`).join("")}</select>
