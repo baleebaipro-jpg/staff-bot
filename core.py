@@ -409,6 +409,8 @@ def init_db():
     sellers.init()
     import followup  # обратная связь с клиентом на следующий день после покупки
     followup.init()
+    import managers
+    managers.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")

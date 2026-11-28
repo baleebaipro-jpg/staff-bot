@@ -1166,7 +1166,11 @@ def api_client_card(uid, data):
                        else "Загрузка истории уже идёт…")
     if erp.enabled() and not (core.flag_json("billz_history") or {}).get("from"):
         erp.history_backfill()  # первый раз — история продаж за год загрузится сама (в фоне)
-    return jsonify(shop.client_card(data.get("bot_id") or None, data.get("store_id") or None))
+    import managers
+    card = shop.client_card(data.get("bot_id") or None, data.get("store_id") or None)
+    card["manager"] = managers.get(card.get("bot_id"), card.get("store_id")) or 0
+    card["managers"] = managers.team()
+    return jsonify(card)
 
 
 @app.post("/api/branding")
@@ -1177,6 +1181,15 @@ def api_branding(uid, data):
     b = {k: str(data.get(k) or "").strip()[:n] for k, n in keys.items()}
     core.flag_json("branding", {k: v for k, v in b.items() if v})
     return jsonify(ok=True, msg="✏️ Надписи сохранены")
+
+
+@app.post("/api/client_manager")
+@need_user(admin=True)
+def api_client_manager(uid, data):
+    """Назначить клиенту личного менеджера (раздел «👤 Мой менеджер» в клиентском боте, Silver / Gold)."""
+    import managers
+    ok, msg = managers.assign(data.get("user_id") or None, data.get("store_id") or None, data.get("manager") or 0)
+    return jsonify(ok=ok, msg=msg)
 
 
 @app.post("/api/set_tier")
@@ -4242,7 +4255,9 @@ function renderCard() {
         <div class="hint" style="font-size:13.5px">${c.phone ? `<a href="tel:${esc(c.phone)}" style="color:#b9a2ff">${esc(c.phone)}</a>` : "номер не указан"}${c.birth ? " · 🎂 " + dt(c.birth) : ""}</div>
         <div style="margin-top:6px">${c.in_bot ? '<span class="badge">🤖 в боте</span>' : ""}${c.lang ? `<span class="badge">${c.lang.toUpperCase()}</span>` : ""}${c.since ? `<span class="badge">с ${dt(c.since)}</span>` : ""}
           ${(k.group_names || []).map(g => `<span class="badge">👥 ${esc(g)}</span>`).join("")}${(k.tag_names || []).map(g => `<span class="badge">🏷 ${esc(g)}</span>`).join("")}</div></div></div>
-      <select id="cc-tier" style="margin:12px 0 0">${Object.entries(tiers).map(([t, n]) => `<option value="${t}" ${t === c.tier ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+      <select id="cc-tier" style="margin:12px 0 0">${Object.entries(tiers).map(([t, n]) => `<option value="${t}" ${t === c.tier ? "selected" : ""}>${n}</option>`).join("")}</select>
+      <div class="hint" style="font-size:12.5px;margin:10px 0 4px">👤 Личный менеджер — клиент видит его в боте (Silver и Gold)</div>
+      <select id="cc-manager"><option value="0">— не назначен —</option>${(c.managers || []).map(e => `<option value="${e.id}" ${e.id === c.manager ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select></div>
     ${c.card_error ? `<div class="card hint" style="font-size:13px">⚠️ BILLZ: ${esc(c.card_error)}</div>` : ""}
     ${c.card ? `<div class="card"><b style="font-size:18px">📊 Статистика (BILLZ)</b>
       <div class="inv-tiles" style="grid-template-columns:1fr 1fr;margin-top:10px">
@@ -4273,6 +4288,7 @@ function renderCard() {
       : `<div class="empty">Покупок не найдено</div>`}
       ${c.erp_sales.length ? `<div class="hint" style="font-size:12.5px;margin-top:8px">🧾 В нашем учёте: ${c.erp_sales.map(x => `№${x.id} ${dt(x.date)} — ${m(x.amount)}`).join(" · ")}</div>` : ""}</div>`;
   $("cc-tier").onchange = e => action("/api/set_tier", c.bot_id ? {user_id: c.bot_id, tier: e.target.value} : {store_id: c.store_id, tier: e.target.value});
+  $("cc-manager").onchange = e => action("/api/client_manager", {user_id: c.bot_id || 0, store_id: c.store_id || "", manager: +e.target.value});
   $("cc-note-save").onclick = () => api("/api/client_card", {action: "note", phone: c.phone, name: c.name, note: $("cc-note").value})
     .then(r => toast(r.msg)).catch(e => toast(e.message));
   bindDm("client");
