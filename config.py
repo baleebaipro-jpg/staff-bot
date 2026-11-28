@@ -243,6 +243,7 @@ EMPLOYEES = {
     675957862: {"name": "Moxira Isxakova", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 4000},
     730908311: {"name": "Moxinur Manager", "role": "Менеджер", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 200},
     6335687339: {"name": "Dilrabo Freshman", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 0},
+    8670903983: {"name": "Jumayeva Nargiza", "role": "Сотрудник", "shift": "free", "days": [0, 1, 2, 3, 4, 5], "hours_before": 180},
 }
 
 
