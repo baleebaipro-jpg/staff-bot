@@ -270,6 +270,25 @@ def db():
         conn.close()
 
 
+def make_backup() -> str:
+    """Согласованная копия базы (sqlite backup API, без остановки бота), сжатая в zip. Возвращает путь к файлу."""
+    import zipfile
+    stamp = now().strftime("%Y-%m-%d_%H-%M")
+    raw = os.path.join(_DATA_DIR, f"backup_{stamp}.db")
+    src = sqlite3.connect(DB_PATH, timeout=30)
+    dst = sqlite3.connect(raw)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    out = os.path.join(_DATA_DIR, f"radi_backup_{stamp}.zip")
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(raw, "staff.db")
+    os.remove(raw)
+    return out
+
+
 def init_db():
     with db() as c:
         c.executescript(

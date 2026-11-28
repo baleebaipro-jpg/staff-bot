@@ -1301,6 +1301,30 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _react(context.bot, s["chat_id"], s["msg_id"], "🤔")
 
 
+async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/backup — руководителю в личку: резервная копия базы (zip). Только в личном чате с ботом."""
+    m = update.effective_message
+    if not m or not core.is_admin(update.effective_user.id) or update.effective_chat.type != "private":
+        return
+    await m.reply_text("💾 Делаю резервную копию…")
+    path = None
+    try:
+        path = await asyncio.to_thread(core.make_backup)
+        size = os.path.getsize(path) / 1024 / 1024
+        if size > 49:
+            return await m.reply_text(f"⚠️ Копия {size:.0f} МБ — больше лимита Telegram (50 МБ).")
+        with open(path, "rb") as f:
+            await m.reply_document(f, filename=os.path.basename(path),
+                                   caption=f"💾 Резервная копия базы · {size:.1f} МБ\nХраните в надёжном месте, никому не пересылайте: "
+                                           "в ней телефоны клиентов и данные сотрудников.")
+    except Exception as e:  # noqa: BLE001
+        logging.exception("Резервная копия")
+        await m.reply_text(f"⚠️ Не получилось: {str(e)[:200]}")
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+
 async def savdo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/savdo — проверка настроек продаж из чата; /savdo_tovar <штрихкод> — товар для продаж по свободной цене."""
     import savdo
@@ -1474,6 +1498,7 @@ def main() -> None:
     app.add_handler(CommandHandler("chatid", chat_id))
     app.add_handler(CommandHandler("shtraf", shtraf_topic_cmd))
     app.add_handler(CommandHandler(["savdo", "savdo_tovar"], savdo_cmd))
+    app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CallbackQueryHandler(savdo_button, pattern=r"^sv:(ok|no|re):\d+$"))
     app.add_handler(CommandHandler("billz", billz_cmd))
     app.add_handler(CommandHandler("investchat", invest_chat_cmd))
