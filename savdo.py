@@ -173,6 +173,8 @@ def parse(text: str) -> dict:
             # «bonus omagan / olmagan / berilmagan» — бонус ещё не получал → начислить 29%;
             # «bonus berilgan / ogan / olgan» — уже получил → ничего не добавлять
             out["bonus_line"] = ln
+            if re.match(r"\s*\d", ln) and _num(ln) >= 1000 and not out["total"]:  # «800.000 dum yoq bonus omagan»
+                out["total"] = _num(ln)
             if re.search(r"ma.?g?.?an\b|magan|yo.?q|не\s*получ|нет", low):
                 out["bonus"] = True
             elif re.search(r"berilgan|o.?l?gan|oldi|bor|получ|дали", low):
@@ -395,6 +397,12 @@ def save(chat, thread, msg_id, poster, poster_name, text, p) -> int:
                         "VALUES(?, ?, ?, ?, ?, ?, ?, 'wait', ?)", (chat, thread, msg_id, poster, poster_name, text,
                                                                    json.dumps(p, ensure_ascii=False), core.now().strftime(core.FMT)))
         return cur.lastrowid
+
+
+def already_done(chat: int, msg_id: int) -> bool:
+    with core.db() as c:
+        return bool(c.execute("SELECT 1 FROM chat_sales WHERE chat_id=? AND msg_id=? AND status IN ('ok', 'run')",
+                              (chat, msg_id)).fetchone())
 
 
 def get(sid: int) -> dict:
