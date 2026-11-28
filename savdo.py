@@ -117,7 +117,7 @@ def _num(s: str) -> float:
 def parse(text: str) -> dict:
     lines = [x.strip() for x in (text or "").splitlines() if x.strip()]
     out = {"seller": "", "pay": "", "last_name": "", "first_name": "", "birth": "", "contract": "", "total": 0.0,
-           "bonus_used": 0.0, "phone": "", "problems": []}
+           "bonus_used": 0.0, "bonus": None, "bonus_line": "", "phone": "", "problems": []}
     rest = []
     for i, ln in enumerate(lines):
         low = ln.lower()
@@ -134,7 +134,14 @@ def parse(text: str) -> dict:
             out["contract"] = digits or ln.split(":", 1)[-1].strip()
             continue
         if "bonus" in low or "бонус" in low:
-            out["bonus_used"] = 0 if re.search(r"o.?magan|olmagan|ishlatmagan|yo.?q|нет|не\b|0\b", low) and not _num(ln) else _num(ln)
+            # «bonus omagan / olmagan / berilmagan» — бонус ещё не получал → начислить 29%;
+            # «bonus berilgan / ogan / olgan» — уже получил → ничего не добавлять
+            out["bonus_line"] = ln
+            if re.search(r"ma.?g?.?an\b|magan|yo.?q|не\s*получ|нет", low):
+                out["bonus"] = True
+            elif re.search(r"berilgan|o.?l?gan|oldi|bor|получ|дали", low):
+                out["bonus"] = False
+            continue
             continue
         b = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", ln)
         if b and not out["birth"]:
@@ -278,9 +285,7 @@ def plan(text: str, poster: int = 0) -> dict:
         p["client_balance"] = (cl or {}).get("balance") or 0
     except Exception as e:  # noqa: BLE001
         p["problems"].append(f"BILLZ: {str(e)[:150]}")
-    if p["bonus_used"] and p["bonus_used"] > (p.get("client_balance") or 0):
-        p["problems"].append(f"бонусами {money(p['bonus_used'])}, а у клиента {money(p.get('client_balance') or 0)}")
-    p["bonus_add"] = round(p["total"] * BONUS_PCT / 100)
+    p["bonus_add"] = round(p["total"] * BONUS_PCT / 100) if p.get("bonus") else 0
     return p
 
 
@@ -299,7 +304,9 @@ def preview(p: dict, poster_name: str = "") -> str:
              f"🎂 {p['birth'][8:10]}.{p['birth'][5:7]}.{p['birth'][:4]}" if p["birth"] else "🎂 —",
              f"📄 Договор: {p['contract'] or '—'}",
              f"💰 Сумма: <b>{money(p['total'])}</b>" + (f" (из них бонусами {money(p['bonus_used'])})" if p["bonus_used"] else ""),
-             f"🎁 Бонус клиенту: +{money(p['bonus_add'])} ({BONUS_PCT}%)",
+             (f"🎁 Бонус клиенту: +{money(p['bonus_add'])} ({BONUS_PCT}%)" if p.get("bonus")
+              else "🎁 Бонус: не начисляется" + (f" («{p['bonus_line']}»)" if p.get("bonus") is False
+                                                 else " — ⚠️ в сообщении нет строки «bonus omagan / berilgan»")),
              f"🏬 {p.get('shop_name') or '—'}"]
     if p["problems"]:
         lines.append("\n⚠️ " + "\n⚠️ ".join(p["problems"]))
@@ -399,11 +406,15 @@ def run(sid: int):
         finish(sid, "fail", msg, order_id)
         return False, msg
     notes = []
-    try:  # бонус клиенту
+    try:  # бонус клиенту — только если «bonus omagan»
+        if not p["bonus_add"]:
+            raise StopIteration
         card = erp._api("GET", f"/v1/customer/{cid}") or {}
         before = float(card.get("balance") or 0)
         erp.set_balance(cid, before + p["bonus_add"])
         notes.append(f"🎁 Бонус +{money(p['bonus_add'])} (было {money(before)}, стало {money(before + p['bonus_add'])})")
+    except StopIteration:
+        notes.append("🎁 Бонус не начислялся")
     except Exception as e:  # noqa: BLE001
         notes.append(f"⚠️ Бонус не начислен: {str(e)[:150]}")
     try:  # заметка клиента в кабинете
