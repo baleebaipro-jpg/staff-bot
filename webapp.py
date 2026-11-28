@@ -237,6 +237,11 @@ def api_msgr_admin(uid, data):
     if a == "num_remove":
         tgnumbers.remove(int(data.get("number_id") or 0))
         msg = "Рабочий номер удалён с сервера"
+    if a == "num_rename":
+        rr = tgnumbers.set_title(int(data.get("number_id") or 0), str(data.get("title") or ""))
+        if not rr.get("ok"):
+            return jsonify(rr), 400
+        msg = "✅ Название воронки сохранено"
     if a == "owner_code":
         msgr.set_owner_code(str(data.get("code") or ""))
         msg = "✅ Код входа по номеру сохранён" if (data.get("code") or "").strip() else "Код снят — вход по номеру открыт"
@@ -2224,7 +2229,7 @@ PAGE = r"""<!doctype html>
     <div class="page-title">📱 RADI Chat</div>
     <div class="page-sub">Telegram рабочего аккаунта на телефонах менеджеров</div>
     <div class="card"><b>Рабочие номера</b>
-      <div class="hint" style="margin:6px 0 8px">Главные профили компании (SIM). Подключите номер один раз — сотрудники входят в него только по ключу.</div>
+      <div class="hint" style="margin:6px 0 8px">Воронки компании (рабочие номера, SIM). Подключите номер один раз — сотрудники входят по ключу. ✏️ — задать название воронки (напр. «Воронка 1 — Новые»): оно видно сотруднику в профиле приложения.</div>
       <div id="ms-nums"></div>
       <div id="ms-num-add" style="margin-top:8px">
         <input id="ms-num-phone" placeholder="+998 90 123 45 67" inputmode="tel" style="margin-bottom:8px">
@@ -2243,7 +2248,7 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="card">
       <b>Ключ доступа сотрудника</b>
-      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите ключ (8 цифр, 10 минут, один раз). Сотрудник вводит его в RADI Chat и сразу входит в рабочий аккаунт — номер, код и облачный пароль ему не нужны. Один сотрудник — один рабочий номер.</div>
+      <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите ключ (8 цифр, 10 минут, один раз). Сотрудник вводит его в RADI Chat и сразу входит в рабочий аккаунт — номер, код и облачный пароль ему не нужны. Одному сотруднику можно выдать ключи на несколько воронок.</div>
       <select id="ms-staff" style="margin-bottom:8px;width:100%"><option value="">— Чей телефон? Выберите сотрудника —</option></select>
       <select id="ms-number" class="hidden" style="margin-bottom:8px;width:100%"></select>
       <button class="btn btn-main" id="ms-code-btn" style="width:100%">🔑 Получить ключ</button>
@@ -4849,11 +4854,26 @@ function msgrRender(r) {
     $("ms-nums").innerHTML = r.numbers.length ? r.numbers.map(n => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
         <span style="font-size:20px">${n.ready ? "📞" : "⏳"}</span>
         <span style="flex:1;min-width:0"><b>${esc(n.title)}</b><div class="hint" style="font-size:12px">${esc(n.phone)} · ${n.ready ? "подключён" : "не завершено"} · телефонов: ${n.devices}</div></span>
+        <button class="btn btn-soft" data-num-ren="${n.id}" style="padding:8px 10px" title="Название воронки">✏️</button>
         <button class="btn btn-soft" data-num-rm="${n.id}" style="padding:8px 12px">Удалить</button></div>`).join("")
       : `<div class="hint">${r.numbers_enabled ? "Пока ни одного номера" : "⚠️ На сервере нет TG_API_ID / TG_API_HASH — добавьте их в Railway → Variables"}</div>`;
     document.querySelectorAll("[data-num-rm]").forEach(b => b.onclick = async () => {
       if (!await new Promise(ok => tg.showConfirm("Удалить рабочий номер с сервера? Новые ключи на него выдать будет нельзя.", ok))) return;
       msgrApi({action: "num_remove", number_id: Number(b.dataset.numRm)});
+    });
+    document.querySelectorAll("[data-num-ren]").forEach(b => b.onclick = () => {
+      const id = Number(b.dataset.numRen);
+      const cur = (window._msNumbers || []).find(x => x.id === id) || {};
+      const row = b.parentElement;
+      row.innerHTML = `<input class="ms-ren-in" style="flex:1;margin:0" placeholder="Напр. Воронка 1 — Новые" maxlength="60">
+        <button class="btn btn-main ms-ren-ok" style="padding:8px 14px">✓</button>
+        <button class="btn btn-soft ms-ren-no" style="padding:8px 12px">✕</button>`;
+      const inp = row.querySelector(".ms-ren-in");
+      inp.value = cur.title || ""; inp.focus();
+      const save = () => { const t = inp.value.trim(); if (!t) { toast("Введите название воронки"); return; } msgrApi({action: "num_rename", number_id: id, title: t}); };
+      row.querySelector(".ms-ren-ok").onclick = save;
+      inp.onkeydown = e => { if (e.key === "Enter") save(); };
+      row.querySelector(".ms-ren-no").onclick = () => msgrApi({action: "reload"});
     });
     const ready = r.numbers.filter(n => n.ready), ns = $("ms-number"), curN = ns.value;
     ns.innerHTML = ready.map(n => `<option value="${n.id}">📞 ${esc(n.title)}</option>`).join("");

@@ -205,6 +205,16 @@ def remove(nid: int) -> None:
         c.execute("DELETE FROM msgr_numbers WHERE id=?", (nid,))
 
 
+def set_title(nid: int, title: str) -> dict:
+    """Название воронки (рабочего номера) — показывается сотруднику в профиле приложения."""
+    title = (title or "").strip()[:60]
+    if not title:
+        return {"ok": False, "error": "Введите название воронки."}
+    with core.db() as c:
+        c.execute("UPDATE msgr_numbers SET title=? WHERE id=?", (title, int(nid)))
+    return {"ok": True}
+
+
 def _session(nid: int):
     with core.db() as c:
         r = c.execute("SELECT * FROM msgr_numbers WHERE id=? AND status='ready'", (nid,)).fetchone()
