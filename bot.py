@@ -188,6 +188,8 @@ async def silver_offer(update: Update, lang: str, cl: dict) -> None:
     tier = core.tier_title(core.tier_of(cl))
     if not _silver_offer_for(cl):
         return await reply(update, i18n.t(lang, "silver_already", tier=tier), reply_markup=client_keyboard(update.effective_user.id))
+    if getattr(config, "SILVER_UPGRADE_SOON", False):  # кнопка есть, но переход пока закрыт
+        return await reply(update, i18n.t(lang, "silver_soon"), parse_mode="HTML", reply_markup=client_keyboard(update.effective_user.id))
     await reply(update, i18n.t(lang, "silver_offer", tier=tier), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(
         [[InlineKeyboardButton(i18n.t(lang, "silver_btn"), url=config.SILVER_UPGRADE_URL)]]))
 
@@ -382,7 +384,7 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         import managers
         msg, url = managers.client_text(u.id, lang)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(i18n.t(lang, "manager_btn"), url=url)]]) if url else client_keyboard(u.id)
-        if not url and _silver_offer_for(cl):  # Bronza: сразу предложить Silver
+        if not url and _silver_offer_for(cl) and not getattr(config, "SILVER_UPGRADE_SOON", False):  # Bronza: сразу предложить Silver
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(i18n.t(lang, "silver_btn"), url=config.SILVER_UPGRADE_URL)]])
         return await reply(update, msg, parse_mode="HTML", reply_markup=kb)
     if text in i18n.all_variants("btn_invest"):  # раздел скрыт от клиентов — старая кнопка просто открывает меню

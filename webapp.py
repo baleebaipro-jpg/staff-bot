@@ -483,7 +483,8 @@ def api_me(uid, data):
                          # «📢 Канал» — личная ссылка-заявка (как кнопка в боте клиентов)
                          "channel": i18n.t(i18n.lang_of(cl.get("lang")), "btn_channel") if _channel_on() else "",
                          # «🥈 Стать Silver» — клиентам Bronza: ссылка на бот подписки
-                         "upgrade": (getattr(config, "SILVER_UPGRADE_URL", "") or "") if tier == "bronza" else ""}
+                         "upgrade": (getattr(config, "SILVER_UPGRADE_URL", "") or "") if tier == "bronza" else "",
+                         "upgrade_soon": bool(getattr(config, "SILVER_UPGRADE_SOON", False))}
         res["news"] = core.news_list(10, i18n.lang_of(cl.get("lang")))  # каждый клиент — на своём языке
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
@@ -1465,6 +1466,9 @@ PAGE = r"""<!doctype html>
                 linear-gradient(140deg, #2a2d3a 0%, #4b5163 45%, #1c1e28 100%);
     box-shadow: 0 10px 34px rgba(203,213,225,.18), inset 0 1px 0 rgba(255,255,255,.25); animation: suGlow 3s ease-in-out infinite; }
   .silver-up:active { transform: scale(.985); }
+  .silver-up.su-off { cursor: default; }
+  .silver-up.su-off:active { transform: none; }
+  .silver-up.su-off .su-cta { animation: none; background: rgba(255,255,255,.16); color: #e2e8f0; border: 1px dashed rgba(226,232,240,.5); }
   .su-shine { position: absolute; top: 0; left: 0; width: 40%; height: 100%; pointer-events: none;
     background: linear-gradient(100deg, transparent, rgba(255,255,255,.28), transparent); animation: suShine 3.2s ease-in-out infinite; }
   .su-top { display: flex; align-items: center; gap: 12px; }
@@ -4171,13 +4175,16 @@ function renderClient() {
   $("cl-refresh").textContent = ct("refresh") + (bz.synced ? " · " + bz.synced.slice(11, 16) : "");
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
   $("cl-silver").classList.toggle("hidden", !c.upgrade);
-  $("cl-silver").dataset.url = c.upgrade || "";
+  $("cl-silver").dataset.url = c.upgrade_soon ? "" : (c.upgrade || "");
+  $("cl-silver").classList.toggle("su-off", !!c.upgrade_soon);
+  $("cl-silver").querySelector(".su-cta").textContent = c.upgrade_soon ? ct("soon_pill") : ct("su_cta");
   $("cl-channel").classList.toggle("hidden", !c.channel);
   $("cl-channel-t").textContent = (c.channel || "").replace(/^[^\p{L}]+/u, "");
   $("cl-channel-s").textContent = ct("channel_sub");
 }
 $("cl-silver").onclick = () => {
-  const url = $("cl-silver").dataset.url; if (!url) return;
+  const url = $("cl-silver").dataset.url;
+  if (!url) return toast(ct("soon_pill"));
   if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred && tg.HapticFeedback.impactOccurred("medium");
   if (/^https:\/\/t\.me\//.test(url) && tg.openTelegramLink) tg.openTelegramLink(url);
   else if (tg.openLink) tg.openLink(url); else location.href = url;
