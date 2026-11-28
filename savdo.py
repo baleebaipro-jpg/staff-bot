@@ -125,6 +125,15 @@ def is_debt_case(text: str) -> bool:
 SKIP_REPLY = getattr(config, "SALE_SKIP_REPLY", "Hojayin sizsiz Eplomayman!!")
 
 
+def pay_allowed(p: dict) -> bool:
+    """Пока пробиваем только оплату SALE_ONLY_PAY (Uzum Nasiya)."""
+    only = str(getattr(config, "SALE_ONLY_PAY", "") or "").lower()
+    if not only:
+        return True
+    word = (p.get("pay") or "").lower()
+    return bool(word) and (word.startswith(only.split()[0]) or only.split()[0] in word)
+
+
 def _is_pay(word: str) -> bool:
     w = (word or "").lower().strip()
     return bool(w) and any(w.startswith(k) or k in w.split() for k in PAY_ALIASES)
@@ -267,8 +276,22 @@ def _match_pay(word: str):
     return None
 
 
+def _shops() -> dict:
+    import erp
+    res = erp._api("GET", "/v1/shop", params={"page": 1, "limit": 100}) or {}
+    return {x["id"]: x.get("name") or "" for x in (res.get("shops") or []) if x.get("id")}
+
+
 def _cashbox(seller_id: str = ""):
     boxes = _cached("boxes", _cashboxes)
+    only = str(getattr(config, "SALE_SHOP", "") or "").lower()
+    if only:  # пробиваем только в этом магазине — без запасных вариантов
+        names = _cached("shops", _shops)
+        for b in boxes:
+            b["shop"] = b["shop"] or names.get(b["shop_id"], "")
+        pat = re.compile(r"(?<![0-9a-zа-я])" + re.escape(only) + r"(?![0-9a-zа-я])")
+        hit = [b for b in boxes if pat.search(b["shop"].lower())] or [b for b in boxes if pat.search(b["name"].lower())]
+        return hit[0] if hit else None
     want = (getattr(config, "SALE_CASHBOX", "") or "").lower()
     if want:
         hit = [b for b in boxes if want in (b["name"] + " " + b["shop"]).lower()]
@@ -297,13 +320,18 @@ def plan(text: str, poster: int = 0) -> dict:
         if p["seller"] and not s:
             p["problems"].append(f"продавец «{p['seller']}» не найден в BILLZ")
         pay = _match_pay(p["pay"] or "naqd")
+        only = str(getattr(config, "SALE_ONLY_PAY", "") or "").lower()
+        if pay and only and only not in pay["name"].lower():
+            hit = [x for x in _cached("pays", _pay_types) if only in x["name"].lower()]
+            pay = hit[0] if hit else None
         p["pay_id"], p["pay_name"] = (pay["id"], pay["name"]) if pay else ("", "")
         if not pay:
             p["problems"].append(f"тип оплаты «{p['pay']}» не найден в BILLZ")
         box = _cashbox()
         p["cashbox_id"], p["shop_id"], p["shop_name"] = (box["id"], box["shop_id"], f"{box['shop']} · {box['name']}") if box else ("", "", "")
         if not box:
-            p["problems"].append("в BILLZ не найдено ни одной кассы")
+            p["problems"].append(f"касса магазина «{getattr(config, 'SALE_SHOP', '')}» в BILLZ не найдена"
+                                 if getattr(config, "SALE_SHOP", "") else "в BILLZ не найдено ни одной кассы")
         if not product().get("id"):
             p["problems"].append("не задан товар для продажи — руководитель: /savdo_tovar <штрихкод>")
         cl = erp.find_client(p["phone"]) if p["phone"] else None

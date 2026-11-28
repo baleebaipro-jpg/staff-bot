@@ -1206,6 +1206,12 @@ async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
         raise ApplicationHandlerStop
     pname = core.name(poster) if core.employee(poster) else (m.from_user.full_name or str(poster))
+    if not savdo.pay_allowed(savdo.parse(text)) and (savdo.parse(text).get("total") or savdo.parse(text).get("phone")):
+        try:  # пока только Uzum Nasiya
+            await m.reply_text(savdo.SKIP_REPLY)
+        except TelegramError:
+            pass
+        raise ApplicationHandlerStop
     p = await asyncio.to_thread(savdo.plan, text, poster)
     if not p.get("total") and not p.get("phone"):
         raise ApplicationHandlerStop  # обычная переписка в теме, не продажа
