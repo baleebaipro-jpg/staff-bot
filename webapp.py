@@ -155,6 +155,23 @@ def api_msgr_keylogin():
     return jsonify(r), (200 if r.get("ok") else 400)
 
 
+@app.post("/api/msgr/login")
+def api_msgr_login():
+    """RADI Chat: вход менеджера по логину/паролю (login_token — из auth.exportLoginToken телефона)."""
+    d = request.get_json(silent=True) or {}
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    r = msgr.mgr_login(str(d.get("login") or ""), str(d.get("password") or ""),
+                       str(d.get("login_token") or ""), str(d.get("device") or ""), ip)
+    return jsonify(r), (200 if r.get("ok") else 400)
+
+
+@app.post("/api/msgr/funnel")
+@need_device
+def api_msgr_funnel(dev, data):
+    """Менеджер перемещает клиента в свою воронку 1/2/3."""
+    return jsonify(msgr.set_chat_funnel(dev, int(data.get("peer") or 0), int(data.get("funnel") or 1)))
+
+
 @app.post("/api/msgr/srp")
 @need_device
 def api_msgr_srp(dev, data):
@@ -242,6 +259,18 @@ def api_msgr_admin(uid, data):
         if not rr.get("ok"):
             return jsonify(rr), 400
         msg = "✅ Название воронки сохранено"
+    if a == "login_set":
+        rr = msgr.set_login(uid, int(data.get("staff_uid") or 0), int(data.get("number_id") or 0),
+                            str(data.get("login") or ""), str(data.get("password") or ""))
+        if not rr.get("ok"):
+            return jsonify(rr), 400
+        msg = "✅ Логин менеджера сохранён"
+    if a == "login_del":
+        msgr.del_login(int(data.get("staff_uid") or 0))
+        msg = "Логин удалён"
+    if a == "funnel_names":
+        msgr.set_funnel_names(int(data.get("staff_uid") or 0), data.get("names") or [])
+        msg = "✅ Названия воронок сохранены"
     if a == "owner_code":
         msgr.set_owner_code(str(data.get("code") or ""))
         msg = "✅ Код входа по номеру сохранён" if (data.get("code") or "").strip() else "Код снят — вход по номеру открыт"
@@ -260,10 +289,11 @@ def api_msgr_admin(uid, data):
         msg = "✅ Доступы сотрудника сохранены"
     s = msgr.settings()
     fcount = msgr.funnels_count()
-    staff = [dict(x, **msgr.staff_perms(x["uid"]), funnels=fcount.get(x["uid"], 0)) for x in msgr.staff()]
+    staff = [dict(x, **msgr.staff_perms(x["uid"]), funnels=fcount.get(x["uid"], 0),
+                  funnel_names=msgr.funnel_names(x["uid"])) for x in msgr.staff()]
     return jsonify(ok=True, msg=msg, devices=msgr.devices(), staff=staff, perms=s["perms"], perm_titles=msgr.PERMS,
                    whitelist="\n".join(s["whitelist"]), keepalive=s["keepalive"], violations=msgr.violations(50),
-                   sessions=msgr.sessions_by_staff(), owner_code_set=msgr.owner_code_set(),
+                   sessions=msgr.sessions_by_staff(), owner_code_set=msgr.owner_code_set(), logins=msgr.logins(),
                    assign={k: s[k] for k in ("assign_mode", "unassigned_visible", "timeout_min", "timeout_action")},
                    assign_modes=msgr.ASSIGN_MODES, timeout_actions=msgr.TIMEOUT_ACTIONS,
                    chats=msgr.chats_admin(str(data.get("q") or "")), numbers=tgnumbers.numbers(),
@@ -2249,7 +2279,21 @@ PAGE = r"""<!doctype html>
       </div>
     </div>
     <div class="card">
-      <b>Ключ доступа сотрудника</b>
+      <b>Менеджер: вход по логину + воронки</b>
+      <div class="hint" style="margin:6px 0 10px">Создайте менеджеру логин и пароль — он войдёт в приложение (без ключа) и получит свои 3 воронки. Новые клиенты попадают в Воронку 1; менеджер переключается между воронками и перемещает в них клиентов.</div>
+      <select id="ml-staff" style="margin-bottom:8px;width:100%"><option value="">— Выберите сотрудника —</option></select>
+      <select id="ml-number" style="margin-bottom:8px;width:100%"></select>
+      <input id="ml-login" placeholder="Логин (латиница, напр. manager_aziz)" autocomplete="off" autocapitalize="none" style="margin-bottom:8px">
+      <input id="ml-pass" type="text" placeholder="Пароль (пусто — оставить прежний)" autocomplete="off" style="margin-bottom:10px">
+      <div class="hint" style="font-size:12px;margin:0 0 6px">Названия 3 воронок этого менеджера:</div>
+      <input id="ml-f1" placeholder="Воронка 1 — Новые" style="margin-bottom:6px">
+      <input id="ml-f2" placeholder="Воронка 2 — Повторные" style="margin-bottom:6px">
+      <input id="ml-f3" placeholder="Воронка 3 — Постоянные" style="margin-bottom:10px">
+      <button class="btn btn-main" id="ml-save" style="width:100%">💾 Сохранить менеджера</button>
+      <div id="ml-list" style="margin-top:12px"></div>
+    </div>
+    <div class="card">
+      <b>Ключ доступа сотрудника <span class="hint" style="font-size:11px;font-weight:500">(старый способ, разовый вход)</span></b>
       <div class="hint" style="margin:6px 0 10px">Выберите сотрудника и получите ключ (8 цифр, 10 минут, один раз). Сотрудник вводит его в RADI Chat и сразу входит в рабочий аккаунт — номер, код и облачный пароль ему не нужны. Одному сотруднику можно выдать ключи на несколько воронок.</div>
       <select id="ms-staff" style="margin-bottom:8px;width:100%"><option value="">— Чей телефон? Выберите сотрудника —</option></select>
       <select id="ms-number" class="hidden" style="margin-bottom:8px;width:100%"></select>
@@ -4886,6 +4930,30 @@ function msgrRender(r) {
   sel.innerHTML = `<option value="">— Чей телефон? Выберите сотрудника —</option>` +
     (r.staff || []).map(x => `<option value="${x.uid}">${esc(x.name)}</option>`).join("");
   sel.value = cur;
+
+  // --- Менеджер: вход по логину + названия воронок ---
+  if ($("ml-staff")) {
+    window._msStaff = r.staff || []; window._msLogins = r.logins || [];
+    const mlc = $("ml-staff").value;
+    $("ml-staff").innerHTML = `<option value="">— Выберите сотрудника —</option>` +
+      (r.staff || []).map(x => `<option value="${x.uid}">${esc(x.name)}</option>`).join("");
+    $("ml-staff").value = mlc;
+    const readyN = (r.numbers || []).filter(n => n.ready), mln = $("ml-number").value;
+    $("ml-number").innerHTML = readyN.length
+      ? readyN.map(n => `<option value="${n.id}">📞 ${esc(n.title)}</option>`).join("")
+      : `<option value="">— сначала подключите рабочий номер —</option>`;
+    if (mln) $("ml-number").value = mln;
+    $("ml-list").innerHTML = (r.logins || []).length
+      ? `<div class="hint" style="font-size:12px;margin-bottom:2px">Созданные логины:</div>` + r.logins.map(l => `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--line)">
+          <span style="flex:1;min-width:0"><b>${esc(l.name)}</b><div class="hint" style="font-size:12px">логин: ${esc(l.login)} · ${esc(l.number)}</div></span>
+          <button class="btn btn-soft" data-login-del="${l.staff_uid}" style="padding:7px 11px">Удалить</button></div>`).join("")
+      : "";
+    $("ml-staff").onchange = mlFill;
+    document.querySelectorAll("[data-login-del]").forEach(b => b.onclick = async () => {
+      if (!await new Promise(ok => tg.showConfirm("Удалить логин менеджера? Он больше не сможет войти по нему.", ok))) return;
+      msgrApi({action: "login_del", staff_uid: Number(b.dataset.loginDel)});
+    });
+  }
   $("ms-devs").innerHTML = r.devices.length ? r.devices.map(d => `<div class="row-btn" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
       <span style="font-size:20px">${d.disabled ? "🚫" : "📱"}</span>
       <span style="flex:1;min-width:0"><b>${esc(d.name)}</b><div class="hint" style="font-size:12px">был онлайн ${esc(d.seen)}${d.version ? " · " + esc(d.version) : ""}</div></span>
@@ -4956,6 +5024,28 @@ async function msgrApi(body) {
   try { const r = await api("/api/msgr/admin", body); msgrRender(r); if (r.msg) toast(r.msg); return r; } catch (e) { toast(e.message); }
 }
 function msgrLoad() { $("ms-code").classList.add("hidden"); msgrApi({}); }
+function mlFill() {
+  const uid = Number($("ml-staff").value || 0);
+  const st = (window._msStaff || []).find(x => x.uid === uid);
+  const lg = (window._msLogins || []).find(x => x.staff_uid === uid);
+  const fn = (st && st.funnel_names) || ["Новые", "Повторные", "Постоянные"];
+  $("ml-f1").value = fn[0] || ""; $("ml-f2").value = fn[1] || ""; $("ml-f3").value = fn[2] || "";
+  $("ml-login").value = lg ? lg.login : ""; $("ml-pass").value = "";
+  if (lg && lg.number_id) $("ml-number").value = String(lg.number_id);
+}
+if ($("ml-save")) $("ml-save").onclick = async () => {
+  const staff_uid = Number($("ml-staff").value || 0);
+  if (!staff_uid) return toast("Выберите сотрудника");
+  const number_id = Number($("ml-number").value || 0);
+  if (!number_id) return toast("Сначала подключите рабочий номер");
+  const login = $("ml-login").value.trim();
+  if (!login) return toast("Введите логин");
+  try {
+    await api("/api/msgr/admin", {action: "login_set", staff_uid, number_id, login, password: $("ml-pass").value});
+    const r = await api("/api/msgr/admin", {action: "funnel_names", staff_uid, names: [$("ml-f1").value, $("ml-f2").value, $("ml-f3").value]});
+    msgrRender(r); toast("✅ Менеджер сохранён: " + login);
+  } catch (e) { toast(e.message); }
+};
 $("ms-code-btn").onclick = async () => {
   try {
     if (!$("ms-staff").value) return toast("Выберите сотрудника");

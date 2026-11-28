@@ -30,6 +30,8 @@ ASSIGN_MODES = {
     "manual": "Назначает руководитель",
 }
 TIMEOUT_ACTIONS = {"keep": "остаётся у менеджера", "queue": "уходит в общие «Новые»", "notify": "уведомление руководителю"}
+FUNNEL_COUNT = 3
+FUNNELS_DEFAULT = ["Новые", "Повторные", "Постоянные"]
 DEFAULTS = {"perms": {k: False for k in PERMS}, "whitelist": [], "keepalive": True,
             "assign_mode": "first", "unassigned_visible": True, "timeout_min": 0, "timeout_action": "keep"}
 
@@ -48,10 +50,16 @@ def init() -> None:
             CREATE TABLE IF NOT EXISTS msgr_staff(staff_uid INTEGER PRIMARY KEY, perms TEXT, see_others INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS msgr_violations(
                 id INTEGER PRIMARY KEY, device TEXT, kind TEXT, peer INTEGER, detail TEXT, at TEXT);
+            CREATE TABLE IF NOT EXISTS msgr_logins(
+                staff_uid INTEGER PRIMARY KEY, login TEXT UNIQUE, pass_hash TEXT, salt TEXT,
+                number_id INTEGER, created_at TEXT, created_by INTEGER);
+            CREATE TABLE IF NOT EXISTS msgr_chat_funnel(
+                staff_uid INTEGER, peer INTEGER, idx INTEGER, at TEXT, PRIMARY KEY(staff_uid, peer));
         """)
-        for table, col in (("msgr_devices", "staff_uid"), ("msgr_codes", "staff_uid")):
+        for table, col in (("msgr_devices", "staff_uid"), ("msgr_codes", "staff_uid"),
+                           ("msgr_staff", "funnels")):
             if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
-                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER")
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {'TEXT' if col == 'funnels' else 'INTEGER'}")
 
 
 def staff() -> list:
@@ -180,15 +188,20 @@ def _code_row(code: str, ip: str):
     return dict(r), ""
 
 
-def _new_device(r: dict, device_name: str, auth_hash: str = None) -> dict:
+def _make_device(staff_uid, number_id, created_by, device_name: str = "", auth_hash: str = None, name: str = None) -> dict:
     token = secrets.token_urlsafe(32)
-    name = r["name"] or (device_name or "").strip()[:60] or "Телефон"
+    nm = (name or "").strip() or (device_name or "").strip()[:60] or "Телефон"
+    with core.db() as c:
+        c.execute("INSERT INTO msgr_devices(token_hash, name, created_at, created_by, last_seen, staff_uid, number_id, auth_hash) "
+                  "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", (_hash(token), nm, _now(), created_by, _now(),
+                                                     staff_uid, number_id, auth_hash))
+    return {"ok": True, "token": token, "name": nm}
+
+
+def _new_device(r: dict, device_name: str, auth_hash: str = None) -> dict:
     with core.db() as c:
         c.execute("DELETE FROM msgr_codes WHERE code=?", (r["code"],))
-        c.execute("INSERT INTO msgr_devices(token_hash, name, created_at, created_by, last_seen, staff_uid, number_id, auth_hash) "
-                  "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", (_hash(token), name, _now(), r["created_by"], _now(), r["staff_uid"],
-                                                     r.get("number_id"), auth_hash))
-    return {"ok": True, "token": token, "name": name}
+    return _make_device(r["staff_uid"], r.get("number_id"), r["created_by"], device_name, auth_hash, name=r["name"])
 
 
 def pair(code: str, device_name: str = "", ip: str = "") -> dict:
@@ -211,6 +224,130 @@ def keylogin(code: str, login_token: str, device_name: str = "", ip: str = "") -
     out = _new_device(r, device_name, acc["auth_hash"])
     out["number_id"] = r["number_id"]
     return out
+
+
+# ---------- вход менеджера по логину/паролю + воронки ----------
+
+def _pwhash(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", (password or "").encode(), bytes.fromhex(salt), 120_000).hex()
+
+
+def set_login(admin_uid: int, staff_uid: int, number_id: int, login: str, password: str = "") -> dict:
+    """Руководитель задаёт менеджеру логин/пароль для входа в приложение (один логин на сотрудника)."""
+    login = (login or "").strip().lower()[:40]
+    staff_uid, number_id = int(staff_uid or 0), int(number_id or 0)
+    if not login:
+        return {"ok": False, "error": "Введите логин."}
+    if not login.replace("_", "").isalnum() or not login.isascii():
+        return {"ok": False, "error": "Логин — латиница, цифры и _ (без пробелов)."}
+    if staff_uid not in {x["uid"] for x in staff()}:
+        return {"ok": False, "error": "Выберите сотрудника."}
+    if not number_id:
+        return {"ok": False, "error": "Выберите рабочий номер."}
+    with core.db() as c:
+        taken = c.execute("SELECT staff_uid FROM msgr_logins WHERE login=?", (login,)).fetchone()
+        if taken and taken["staff_uid"] != staff_uid:
+            return {"ok": False, "error": "Такой логин уже занят другим сотрудником."}
+        old = c.execute("SELECT pass_hash, salt FROM msgr_logins WHERE staff_uid=?", (staff_uid,)).fetchone()
+        if password:
+            salt = secrets.token_hex(16)
+            ph = _pwhash(password, salt)
+        elif old:  # меняем только логин/номер, пароль оставляем прежний
+            salt, ph = old["salt"], old["pass_hash"]
+        else:
+            return {"ok": False, "error": "Придумайте пароль."}
+        c.execute("INSERT INTO msgr_logins(staff_uid, login, pass_hash, salt, number_id, created_at, created_by) "
+                  "VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(staff_uid) DO UPDATE SET "
+                  "login=excluded.login, pass_hash=excluded.pass_hash, salt=excluded.salt, number_id=excluded.number_id",
+                  (staff_uid, login, ph, salt, number_id, _now(), admin_uid))
+    return {"ok": True}
+
+
+def del_login(staff_uid: int) -> dict:
+    with core.db() as c:
+        c.execute("DELETE FROM msgr_logins WHERE staff_uid=?", (int(staff_uid or 0),))
+    return {"ok": True}
+
+
+def logins() -> list:
+    import tgnumbers
+    nums = {n["id"]: n["title"] for n in tgnumbers.numbers()}
+    with core.db() as c:
+        rows = c.execute("SELECT * FROM msgr_logins ORDER BY created_at DESC").fetchall()
+    return [{"staff_uid": r["staff_uid"], "name": core.name(r["staff_uid"]), "login": r["login"],
+             "number_id": r["number_id"], "number": nums.get(r["number_id"], "—")} for r in rows]
+
+
+def mgr_login(login: str, password: str, login_token: str, device_name: str = "", ip: str = "") -> dict:
+    """Вход менеджера по логину/паролю: сервер подтверждает вход в рабочий номер и выдаёт токен устройства."""
+    login = (login or "").strip().lower()[:40]
+    now = time.time()
+    fails = [t for t in _pair_fails.get(ip, []) if now - t < 3600]
+    _all_fails[:] = [t for t in _all_fails if now - t < 3600]
+    if len(fails) >= 10 or len(_all_fails) >= 60:
+        return {"ok": False, "error": "Слишком много попыток. Попробуйте через час."}
+    with core.db() as c:
+        r = c.execute("SELECT * FROM msgr_logins WHERE login=?", (login,)).fetchone()
+    if not r or _pwhash(password or "", r["salt"]) != r["pass_hash"]:
+        _pair_fails[ip] = fails + [now]
+        _all_fails.append(now)
+        return {"ok": False, "error": "Неверный логин или пароль."}
+    if not r["number_id"]:
+        return {"ok": False, "error": "Для этого логина не задан рабочий номер. Обратитесь к руководителю."}
+    import tgnumbers
+    acc = tgnumbers.accept_login_token(r["number_id"], login_token)
+    if not acc.get("ok"):
+        return acc
+    out = _make_device(r["staff_uid"], r["number_id"], r["created_by"], device_name,
+                       acc["auth_hash"], name=core.name(r["staff_uid"]))
+    out["number_id"] = r["number_id"]
+    return out
+
+
+def funnel_names(staff_uid: int) -> list:
+    with core.db() as c:
+        r = c.execute("SELECT funnels FROM msgr_staff WHERE staff_uid=?", (int(staff_uid or 0),)).fetchone()
+    try:
+        names = json.loads(r["funnels"]) if r and r["funnels"] else None
+    except Exception:  # noqa: BLE001
+        names = None
+    if not names or len(names) != FUNNEL_COUNT:
+        return list(FUNNELS_DEFAULT)
+    return [str(names[i]).strip()[:30] or FUNNELS_DEFAULT[i] for i in range(FUNNEL_COUNT)]
+
+
+def set_funnel_names(staff_uid: int, names) -> dict:
+    out = []
+    for i in range(FUNNEL_COUNT):
+        v = str((names or [])[i]).strip()[:30] if names and i < len(names) else ""
+        out.append(v or FUNNELS_DEFAULT[i])
+    with core.db() as c:
+        c.execute("INSERT INTO msgr_staff(staff_uid, funnels) VALUES(?, ?) "
+                  "ON CONFLICT(staff_uid) DO UPDATE SET funnels=excluded.funnels",
+                  (int(staff_uid), json.dumps(out, ensure_ascii=False)))
+    return {"ok": True}
+
+
+def chat_funnels(staff_uid: int) -> dict:
+    with core.db() as c:
+        rows = c.execute("SELECT peer, idx FROM msgr_chat_funnel WHERE staff_uid=?", (int(staff_uid or 0),)).fetchall()
+    return {str(r["peer"]): int(r["idx"]) for r in rows}
+
+
+def set_chat_funnel(dev: dict, peer: int, idx: int) -> dict:
+    """Менеджер перемещает клиента в свою воронку 1/2/3."""
+    me = (dev or {}).get("staff_uid") or 0
+    if not me:
+        return {"ok": False, "error": "Нет сотрудника."}
+    idx = max(1, min(FUNNEL_COUNT, int(idx or 1)))
+    peer = int(peer or 0)
+    with core.db() as c:
+        if idx <= 1:
+            c.execute("DELETE FROM msgr_chat_funnel WHERE staff_uid=? AND peer=?", (me, peer))
+        else:
+            c.execute("INSERT OR REPLACE INTO msgr_chat_funnel(staff_uid, peer, idx, at) VALUES(?, ?, ?, ?)",
+                      (me, peer, idx, _now()))
+    return {"ok": True, "idx": idx}
 
 
 def device(token: str, version: str = ""):
@@ -473,7 +610,8 @@ def save_staff(staff_uid: int, perms=None, see_others=None, reset: bool = False)
                               else (cur["perms"] if cur["custom"] else None))
     see = int(see_others) if see_others is not None else cur["see_others"]
     with core.db() as c:
-        c.execute("INSERT OR REPLACE INTO msgr_staff(staff_uid, perms, see_others) VALUES(?, ?, ?)",
+        c.execute("INSERT INTO msgr_staff(staff_uid, perms, see_others) VALUES(?, ?, ?) "
+                  "ON CONFLICT(staff_uid) DO UPDATE SET perms=excluded.perms, see_others=excluded.see_others",
                   (staff_uid, json.dumps(own) if own is not None else None, see))
 
 
@@ -516,7 +654,9 @@ def assignments_for(dev: dict) -> dict:
     return {"enabled": bool(me), "mode": s["assign_mode"], "unassigned_visible": s["unassigned_visible"],
             "see_others": sp["see_others"],
             "mine": [r["peer"] for r in rows if r["staff_uid"] == me],
-            "others": [r["peer"] for r in rows if r["staff_uid"] != me]}
+            "others": [r["peer"] for r in rows if r["staff_uid"] != me],
+            "funnels": funnel_names(me),            # названия 3 воронок менеджера
+            "chat_funnels": chat_funnels(me)}       # peer -> номер воронки (2/3); остальные мои чаты — воронка 1
 
 
 def _on_shift(uid: int) -> bool:
