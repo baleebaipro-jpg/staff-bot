@@ -1187,6 +1187,41 @@ def _sale_buttons(sid: int, ok: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([row])
 
 
+async def _sale_from_message(m, context, text: str) -> None:
+    """Разобрать сообщение-продажу и ответить в группе предпросмотром с кнопками."""
+    import savdo
+    poster = m.from_user.id
+    if savdo.is_debt_case(text):  # «dumi bor» — пока не пробиваем
+        try:
+            await m.reply_text(savdo.SKIP_REPLY)
+        except TelegramError:
+            pass
+        return
+    pname = core.name(poster) if core.employee(poster) else (m.from_user.full_name or str(poster))
+    if not savdo.pay_allowed(savdo.parse(text)) and (savdo.parse(text).get("total") or savdo.parse(text).get("phone")):
+        try:  # пока только Uzum Nasiya
+            await m.reply_text(savdo.SKIP_REPLY)
+        except TelegramError:
+            pass
+        return
+    p = await asyncio.to_thread(savdo.plan, text, poster)
+    if not p.get("total") and not p.get("phone"):
+        return  # обычная переписка в теме, не продажа
+    if savdo.already_done(m.chat.id, m.message_id):
+        await m.reply_text("✅ Эта продажа уже пробита")
+        return
+    sid = savdo.save(m.chat.id, m.message_thread_id, m.message_id, poster, pname, text, p)
+    await _react(context.bot, m.chat.id, m.message_id, "👀")
+    ok = savdo.can_run(p)
+    mention = getattr(config, "SALE_CONFIRM_MENTION", "")
+    try:  # предпросмотр — сразу в группе, ответом на сообщение менеджера, с отметкой руководителя
+        await m.reply_text(savdo.preview(p, pname) + (f"\n\n{mention} — подтвердите" if mention else "")
+                           + ("" if ok else "\n\nИсправьте сообщение и отправьте заново."),
+                           parse_mode="HTML", reply_markup=_sale_buttons(sid, ok))
+    except TelegramError as e:
+        logging.warning("Предпросмотр продажи в группу: %s", e)
+
+
 async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Сообщение менеджера в теме продаж → разбор, 👀 на сообщении, руководителю — подтверждение."""
     import savdo
@@ -1198,33 +1233,7 @@ async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = (m.text or m.caption or "").strip()
     if not text or text.startswith("/") or m.from_user.is_bot:
         return  # команды (/savdo, /chatid) — обычным обработчикам
-    poster = m.from_user.id
-    if savdo.is_debt_case(text):  # «dumi bor» — пока не пробиваем
-        try:
-            await m.reply_text(savdo.SKIP_REPLY)
-        except TelegramError:
-            pass
-        raise ApplicationHandlerStop
-    pname = core.name(poster) if core.employee(poster) else (m.from_user.full_name or str(poster))
-    if not savdo.pay_allowed(savdo.parse(text)) and (savdo.parse(text).get("total") or savdo.parse(text).get("phone")):
-        try:  # пока только Uzum Nasiya
-            await m.reply_text(savdo.SKIP_REPLY)
-        except TelegramError:
-            pass
-        raise ApplicationHandlerStop
-    p = await asyncio.to_thread(savdo.plan, text, poster)
-    if not p.get("total") and not p.get("phone"):
-        raise ApplicationHandlerStop  # обычная переписка в теме, не продажа
-    sid = savdo.save(m.chat.id, m.message_thread_id, m.message_id, poster, pname, text, p)
-    await _react(context.bot, m.chat.id, m.message_id, "👀")
-    ok = savdo.can_run(p)
-    mention = getattr(config, "SALE_CONFIRM_MENTION", "")
-    try:  # предпросмотр — сразу в группе, ответом на сообщение менеджера, с отметкой руководителя
-        await m.reply_text(savdo.preview(p, pname) + (f"\n\n{mention} — подтвердите" if mention else "")
-                           + ("" if ok else "\n\nИсправьте сообщение и отправьте заново."),
-                           parse_mode="HTML", reply_markup=_sale_buttons(sid, ok))
-    except TelegramError as e:
-        logging.warning("Предпросмотр продажи в группу: %s", e)
+    await _sale_from_message(m, context, text)
     raise ApplicationHandlerStop
 
 
@@ -1279,8 +1288,12 @@ async def savdo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/savdo — проверка настроек продаж из чата; /savdo_tovar <штрихкод> — товар для продаж по свободной цене."""
     import savdo
     m = update.effective_message
-    if not m or not core.is_admin(update.effective_user.id):
+    uid = update.effective_user.id
+    if not m or not (core.is_admin(uid) or uid in getattr(config, "SALE_CONFIRMERS", [])):
         return
+    r = m.reply_to_message
+    if r and (r.text or r.caption) and savdo.is_sale_topic(m.chat.id, m.message_thread_id if m.is_topic_message else None):
+        return await _sale_from_message(r, context, (r.text or r.caption).strip())  # ответом /savdo — разобрать пропущенную
     if m.text.split()[0].split("@")[0].lower() == "/savdo_tovar":
         q = m.text.split(maxsplit=1)[1] if len(m.text.split(maxsplit=1)) > 1 else ""
         try:
