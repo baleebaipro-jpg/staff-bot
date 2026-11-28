@@ -1272,8 +1272,11 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not savdo.take(sid, "cancel"):
             return await q.answer("Уже обработана", show_alert=True)
         await q.answer("Отменено")
-        await q.edit_message_text((q.message.text or "") + "\n\n✖️ Отменено")
         await _react(context.bot, s["chat_id"], s["msg_id"], "👎")
+        try:  # не засорять чат: на сообщении менеджера остаётся 👎
+            await q.message.delete()
+        except TelegramError:
+            await q.edit_message_text((q.message.text or "") + "\n\n✖️ Отменено")
         return
     if not savdo.take(sid, "run"):
         return await q.answer("Уже обработана", show_alert=True)
@@ -1288,17 +1291,22 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logging.exception("Продажа из чата %s", sid)
         ok, msg = False, f"⚠️ Не дождался ответа BILLZ ({type(e).__name__}). Проверьте продажу в BILLZ, прежде чем пробивать снова."
         savdo.finish(sid, "stuck", msg)
-    try:
+    if ok:  # пробито: 👍 на сообщении менеджера, своё сообщение бот удаляет (чтобы не засорять чат)
+        await _react(context.bot, s["chat_id"], s["msg_id"], "👍")
+        try:
+            await q.message.delete()
+            return
+        except TelegramError:
+            pass
+    else:
+        await _react(context.bot, s["chat_id"], s["msg_id"], "🤔")
+    try:  # ошибка (или удалить не вышло) — итог остаётся в сообщении
         await q.edit_message_text((q.message.text or "") + "\n\n" + msg)
     except TelegramError:
         try:
             await context.bot.send_message(s["chat_id"], msg, message_thread_id=s["thread_id"], reply_to_message_id=s["msg_id"])
         except TelegramError:
             pass
-    if ok:
-        await _react(context.bot, s["chat_id"], s["msg_id"], "👍")
-    else:
-        await _react(context.bot, s["chat_id"], s["msg_id"], "🤔")
 
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
