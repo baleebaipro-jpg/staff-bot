@@ -136,6 +136,11 @@ T = {
                     "ru": "По оплате — обращайтесь в наш магазин 🙏", "en": "For payment questions, please contact our store 🙏"},
     "debt_none": {"uz": "✅ Sizda qarz yo'q", "ru": "✅ Долгов нет", "en": "✅ You have no debt"},
     "btn_channel": {"uz": "📢 Kanal", "ru": "📢 Канал", "en": "📢 Channel"},
+    "invite_only": {
+        "uz": "🔒 Bu bot faqat XUPING mijozlari uchun.\nKirish — do'konimiz bergan shaxsiy havola orqali. Havolani menejerimizdan so'rang 💜",
+        "ru": "🔒 Этот бот — только для клиентов XUPING.\nВход — по личной ссылке от нашего магазина. Попросите ссылку у нашего менеджера 💜",
+        "en": "🔒 This bot is for XUPING clients only.\nAccess is via a personal link from our store. Ask our manager for the link 💜",
+    },
     "btn_manager": {"uz": "👤 Menejerim", "ru": "👤 Мой менеджер", "en": "👤 My manager"},
     "btn_silver": {"uz": "🥈 Silver bo'lish", "ru": "🥈 Стать Silver", "en": "🥈 Become Silver"},
     "silver_offer": {

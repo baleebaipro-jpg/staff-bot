@@ -128,6 +128,50 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raise ApplicationHandlerStop
 
 
+async def client_invite_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Закрытый клиентский бот: новые люди — только по ссылке ?start=<код>. Остальным — вежливый отказ, в базу не пишем."""
+    u = update.effective_user
+    if not u or u.is_bot or update.chat_join_request or not getattr(config, "CLIENT_INVITE_ONLY", False):
+        return
+    chat = update.effective_chat
+    if chat and chat.type != "private":
+        return
+    if core.client_allowed(u.id):
+        return
+    m = update.effective_message
+    text = (m.text or "") if m else ""
+    if text.startswith("/start") and len(text.split()) > 1 and text.split()[1] == core.client_invite_code():
+        return  # верная ссылка — пускаем (remember_client запишет)
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except TelegramError:
+            pass
+    if m:
+        lang = i18n.lang_of(u.language_code if (u.language_code or "")[:2] in ("uz", "ru", "en") else "uz")
+        try:
+            await m.reply_text(i18n.t(lang, "invite_only"), reply_markup=ReplyKeyboardRemove())
+        except TelegramError:
+            pass
+    raise ApplicationHandlerStop
+
+
+async def invite_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/invite — руководителю: ссылка входа в клиентский бот; /invite new — новая ссылка (старая перестанет работать)."""
+    m = update.effective_message
+    if not m or not core.is_admin(update.effective_user.id) or update.effective_chat.type != "private":
+        return
+    new = bool(context.args) and context.args[0].lower() in ("new", "yangi", "новая")
+    code = core.client_invite_code(new=new)
+    bot_name = CLIENT_BOT.get("username") or (core.flag_json("client_bot") or {}).get("username") or "<бот_клиентов>"
+    link = f"https://t.me/{bot_name}?start={code}"
+    await m.reply_text(("🔄 Новая ссылка — старая больше не работает.\n\n" if new else "")
+                       + f"🔒 Вход в клиентский бот — только по этой ссылке:\n{link}\n\n"
+                       "Давайте её клиентам (QR в магазине, сообщение менеджера). Кто уже есть в базе клиентов — "
+                       "входит как обычно. Если ссылка попала не туда — /invite new.",
+                       link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
 async def remember_client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Бот клиентов: запоминаем ID каждого, кто хоть что-то сделал в боте (нажал, написал, подал заявку),
     чтобы посты из «Постинга» доходили до всех."""
@@ -1447,6 +1491,7 @@ def build_client_app() -> Application:
     capp = Application.builder().token(config.CLIENT_BOT_TOKEN).concurrent_updates(True).build()
     capp.bot_data["role"] = "client"
     capp.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)  # бизнес-чаты — бот молчит
+    capp.add_handler(TypeHandler(Update, client_invite_gate), group=-3)  # закрытый вход: только по ссылке с кодом
     capp.add_handler(TypeHandler(Update, remember_client), group=-2)
     capp.add_handler(TypeHandler(Update, gate), group=-1)
     capp.add_handler(CommandHandler("start", client_start))
@@ -1526,6 +1571,7 @@ def main() -> None:
     app.add_handler(CommandHandler("shtraf", shtraf_topic_cmd))
     app.add_handler(CommandHandler(["savdo", "savdo_tovar"], savdo_cmd))
     app.add_handler(CommandHandler("backup", backup_cmd))
+    app.add_handler(CommandHandler("invite", invite_cmd))
     app.add_handler(CallbackQueryHandler(savdo_button, pattern=r"^sv:(ok|no|re):\d+$"))
     app.add_handler(CommandHandler("billz", billz_cmd))
     app.add_handler(CommandHandler("investchat", invest_chat_cmd))
