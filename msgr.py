@@ -223,6 +223,8 @@ def keylogin(code: str, login_token: str, device_name: str = "", ip: str = "") -
         return acc
     out = _new_device(r, device_name, acc["auth_hash"])
     out["number_id"] = r["number_id"]
+    out["funnel"] = dev_funnel({"number_id": r["number_id"]})
+    out["name"] = core.name(r["staff_uid"]) if r["staff_uid"] else (r["name"] or "")
     return out
 
 
@@ -301,6 +303,8 @@ def mgr_login(login: str, password: str, login_token: str, device_name: str = ""
     out = _make_device(r["staff_uid"], r["number_id"], r["created_by"], device_name,
                        acc["auth_hash"], name=core.name(r["staff_uid"]))
     out["number_id"] = r["number_id"]
+    out["funnel"] = dev_funnel({"number_id": r["number_id"]})
+    out["name"] = core.name(r["staff_uid"])
     return out
 
 
