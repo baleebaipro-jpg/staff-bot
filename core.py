@@ -1895,6 +1895,24 @@ def auto_tier(uid: int, purchases: float):
         set_client_tier(uid, best)
 
 
+def client_invite_code(new: bool = False) -> str:
+    """Секретный код входа в клиентский бот (ссылка t.me/<бот>?start=<код>). new=True — выдать новый (старый перестанет работать)."""
+    import secrets
+    cur = (flag_json("client_invite") or {}).get("code")
+    if cur and not new:
+        return cur
+    code = "x" + secrets.token_urlsafe(9).replace("-", "").replace("_", "")[:11]
+    flag_json("client_invite", {"code": code, "at": now().strftime(FMT)})
+    return code
+
+
+def client_allowed(uid: int) -> bool:
+    """Можно ли этому человеку пользоваться клиентским ботом (закрытый вход)."""
+    if not getattr(config, "CLIENT_INVITE_ONLY", False):
+        return True
+    return bool(get_client(uid)) or bool(employee(uid)) or is_admin(uid)
+
+
 def reset_client(uid: int):
     """Клиент нажал «Выйти»: забываем язык, номер, имя, дату рождения и привязку к BILLZ —
     при следующем /start регистрация начнётся заново. Статус (Bronza/Silver/Gold) сохраняется."""

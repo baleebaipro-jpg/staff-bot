@@ -88,6 +88,8 @@ def need_user(admin=False, staff=False):
                 return jsonify(error="Только для руководителя."), 403
             if staff and not (core.employee(uid) or core.is_admin(uid)):
                 return jsonify(error="Только для сотрудников."), 403
+            if g.via == "client" and not core.client_allowed(uid):  # закрытый клиентский бот
+                return jsonify(error="🔒 Faqat XUPING mijozlari uchun · Только для клиентов XUPING"), 403
             return fn(uid, request.get_json(silent=True) or {})
         return wrapper
     return deco
