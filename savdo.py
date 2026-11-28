@@ -83,10 +83,19 @@ def is_sale_topic(chat: int, thread) -> bool:
 
 
 def product() -> dict:
-    return core.flag_json("savdo_product") or {}
+    """Товар для продаж по свободной цене. По умолчанию — штрихкод SALE_PRODUCT_BARCODE из config (находится в BILLZ сам)."""
+    pr = core.flag_json("savdo_product") or {}
+    code = str(getattr(config, "SALE_PRODUCT_BARCODE", "") or "")
+    if code and pr.get("barcode") != code and pr.get("sku") != code and not pr.get("manual"):
+        try:
+            set_product(code, manual=False)
+            pr = core.flag_json("savdo_product") or {}
+        except Exception as e:  # noqa: BLE001
+            logging.warning("Товар %s для продаж из чата не найден: %s", code, e)
+    return pr
 
 
-def set_product(query: str):
+def set_product(query: str, manual: bool = True):
     """Товар, которым пробивается продажа по свободной цене (штрихкод, артикул или название в BILLZ)."""
     import erp
     q = (query or "").strip()
@@ -96,10 +105,13 @@ def set_product(query: str):
     items = res.get("products") or []
     if not items:
         return False, f"Товар «{q}» в BILLZ не найден"
-    exact = [p for p in items if q in (str(p.get("barcode") or ""), str(p.get("sku") or ""))] or items
+    exact = [p for p in items if q in (str(p.get("barcode") or ""), str(p.get("sku") or ""))]
+    if q.isdigit() and not exact:
+        return False, f"Товар со штрихкодом {q} в BILLZ не найден"
+    exact = exact or items
     p = exact[0]
     core.flag_json("savdo_product", {"id": p.get("id"), "name": p.get("name") or "", "sku": p.get("sku") or "",
-                                     "barcode": p.get("barcode") or ""})
+                                     "barcode": str(p.get("barcode") or q), "manual": manual})
     more = f"\n(найдено {len(items)}, выбран первый — уточните штрихкодом, если не тот)" if len(exact) > 1 else ""
     return True, f"✅ Товар для продаж из чата: {p.get('name')} · {p.get('sku') or p.get('barcode') or ''}{more}"
 
