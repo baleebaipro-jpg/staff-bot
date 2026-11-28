@@ -179,6 +179,19 @@ async def deny(update: Update) -> None:
 
 # ---------- панель клиента (3 языка) ----------
 
+def _silver_offer_for(cl: dict) -> bool:
+    """Кнопка «🥈 Стать Silver» — клиентам Bronza, если задана ссылка на бот подписки."""
+    return bool(getattr(config, "SILVER_UPGRADE_URL", "")) and core.tier_of(cl) == "bronza"
+
+
+async def silver_offer(update: Update, lang: str, cl: dict) -> None:
+    tier = core.tier_title(core.tier_of(cl))
+    if not _silver_offer_for(cl):
+        return await reply(update, i18n.t(lang, "silver_already", tier=tier), reply_markup=client_keyboard(update.effective_user.id))
+    await reply(update, i18n.t(lang, "silver_offer", tier=tier), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(
+        [[InlineKeyboardButton(i18n.t(lang, "silver_btn"), url=config.SILVER_UPGRADE_URL)]]))
+
+
 def client_keyboard(uid: int):
     cl = core.get_client(uid) or {}
     lang = cl.get("lang")
@@ -192,7 +205,7 @@ def client_keyboard(uid: int):
     return ReplyKeyboardMarkup([
         [i18n.t(lang, "btn_cabinet")],
         [i18n.t(lang, "btn_bonus")] + ([i18n.t(lang, "btn_channel")] if getattr(config, "CLIENT_CHANNEL_ID", None) else []),
-        [i18n.t(lang, "btn_manager")],
+        [i18n.t(lang, "btn_manager")] + ([i18n.t(lang, "btn_silver")] if _silver_offer_for(cl) else []),
     ] + ([[i18n.t(lang, "btn_debt")]] if float(cl.get("billz_debt") or 0) > 0 else []) + [
         [i18n.t(lang, "btn_lang"), i18n.t(lang, "btn_logout")],
     ], resize_keyboard=True)
@@ -363,10 +376,14 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await debt_info(update, lang)
     if text in i18n.all_variants("btn_channel") and getattr(config, "CLIENT_CHANNEL_ID", None):
         return await channel_link(update, context, lang)
+    if text in i18n.all_variants("btn_silver"):
+        return await silver_offer(update, lang, cl)
     if text in i18n.all_variants("btn_manager"):  # личный менеджер — тарифы Silver и Gold
         import managers
         msg, url = managers.client_text(u.id, lang)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(i18n.t(lang, "manager_btn"), url=url)]]) if url else client_keyboard(u.id)
+        if not url and _silver_offer_for(cl):  # Bronza: сразу предложить Silver
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(i18n.t(lang, "silver_btn"), url=config.SILVER_UPGRADE_URL)]])
         return await reply(update, msg, parse_mode="HTML", reply_markup=kb)
     if text in i18n.all_variants("btn_invest"):  # раздел скрыт от клиентов — старая кнопка просто открывает меню
         return await client_menu(update)

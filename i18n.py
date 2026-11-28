@@ -137,6 +137,15 @@ T = {
     "debt_none": {"uz": "✅ Sizda qarz yo'q", "ru": "✅ Долгов нет", "en": "✅ You have no debt"},
     "btn_channel": {"uz": "📢 Kanal", "ru": "📢 Канал", "en": "📢 Channel"},
     "btn_manager": {"uz": "👤 Menejerim", "ru": "👤 Мой менеджер", "en": "👤 My manager"},
+    "btn_silver": {"uz": "🥈 Silver bo'lish", "ru": "🥈 Стать Silver", "en": "🥈 Become Silver"},
+    "silver_offer": {
+        "uz": "🥈 <b>Silver darajasiga ko'tariling!</b>\n\n✨ Silver mijozlari uchun:\n🏷 maxsus Silver narxlar\n👤 shaxsiy menejer — tanlash va buyurtmada yordam\n🔒 yopiq takliflar va yangi kolleksiyalar birinchi bo'lib\n\nHozir siz: {tier}. Bir qadam — va siz Silver'dasiz 👇",
+        "ru": "🥈 <b>Повысьте уровень до Silver!</b>\n\n✨ Для клиентов Silver:\n🏷 специальные цены Silver\n👤 личный менеджер — поможет с выбором и заказом\n🔒 закрытые предложения и новые коллекции первыми\n\nСейчас у вас: {tier}. Один шаг — и вы Silver 👇",
+        "en": "🥈 <b>Upgrade to Silver!</b>\n\n✨ Silver clients get:\n🏷 special Silver prices\n👤 a personal manager to help you choose and order\n🔒 private offers and new collections first\n\nYou're now: {tier}. One step and you're Silver 👇",
+    },
+    "silver_btn": {"uz": "🥈 Silver bo'lish →", "ru": "🥈 Стать Silver →", "en": "🥈 Become Silver →"},
+    "silver_already": {"uz": "🥈 Siz allaqachon {tier} darajasidasiz ✨", "ru": "🥈 У вас уже уровень {tier} ✨",
+                       "en": "🥈 You already have {tier} ✨"},
     "manager_locked": {
         "uz": "👤 Shaxsiy menejer — Silver va Gold mijozlari uchun.\nSizning statusingiz: {tier}. Silver statusiga o'tganingizda shaxsiy menejeringiz paydo bo'ladi ✨",
         "ru": "👤 Личный менеджер — для клиентов Silver и Gold.\nВаш статус: {tier}. Как только вы перейдёте на Silver, у вас появится личный менеджер ✨",
