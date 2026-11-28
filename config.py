@@ -133,6 +133,7 @@ ADMINS = [
 CLIENT_CHANNEL_ID = -1001214388881  # Xuping (Bronza) OPTOM
 # «🥈 Стать Silver» — клиентам Bronza в мини-приложении и в боте: ссылка на бот подписки (пусто — блока нет)
 SILVER_UPGRADE_URL = "https://t.me/xupinguzbekistan_bot"
+SILVER_UPGRADE_SOON = True  # True — кнопка видна, но не работает: «Tez orada ⏳» (False — ведёт в бот подписки)
 CLIENT_CHANNEL_MIN_PURCHASES = 1  # с какой суммы покупок (сум) открывается канал
 CLIENT_CHANNEL_LINK_HOURS = 24
 

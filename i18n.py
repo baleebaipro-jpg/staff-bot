@@ -144,6 +144,11 @@ T = {
         "en": "🥈 <b>Upgrade to Silver!</b>\n\n✨ Silver clients get:\n🏷 special Silver prices\n👤 a personal manager to help you choose and order\n🔒 private offers and new collections first\n\nYou're now: {tier}. One step and you're Silver 👇",
     },
     "silver_btn": {"uz": "🥈 Silver bo'lish →", "ru": "🥈 Стать Silver →", "en": "🥈 Become Silver →"},
+    "silver_soon": {
+        "uz": "🥈 <b>Silver darajasi — tez orada!</b> ⏳\n\n✨ Silver mijozlari uchun:\n🏷 maxsus Silver narxlar\n👤 shaxsiy menejer\n🔒 yopiq takliflar va yangi kolleksiyalar birinchi bo'lib\n\nO'tish ochilishi bilan sizga xabar beramiz 💜",
+        "ru": "🥈 <b>Уровень Silver — скоро!</b> ⏳\n\n✨ Для клиентов Silver:\n🏷 специальные цены Silver\n👤 личный менеджер\n🔒 закрытые предложения и новые коллекции первыми\n\nМы сообщим, как только переход откроется 💜",
+        "en": "🥈 <b>Silver level — coming soon!</b> ⏳\n\n✨ Silver clients get:\n🏷 special Silver prices\n👤 a personal manager\n🔒 private offers and new collections first\n\nWe'll let you know as soon as it opens 💜",
+    },
     "silver_already": {"uz": "🥈 Siz allaqachon {tier} darajasidasiz ✨", "ru": "🥈 У вас уже уровень {tier} ✨",
                        "en": "🥈 You already have {tier} ✨"},
     "manager_locked": {
