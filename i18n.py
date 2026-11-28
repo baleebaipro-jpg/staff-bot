@@ -136,6 +136,28 @@ T = {
                     "ru": "По оплате — обращайтесь в наш магазин 🙏", "en": "For payment questions, please contact our store 🙏"},
     "debt_none": {"uz": "✅ Sizda qarz yo'q", "ru": "✅ Долгов нет", "en": "✅ You have no debt"},
     "btn_channel": {"uz": "📢 Kanal", "ru": "📢 Канал", "en": "📢 Channel"},
+    "btn_manager": {"uz": "👤 Menejerim", "ru": "👤 Мой менеджер", "en": "👤 My manager"},
+    "manager_locked": {
+        "uz": "👤 Shaxsiy menejer — Silver va Gold mijozlari uchun.\nSizning statusingiz: {tier}. Silver statusiga o'tganingizda shaxsiy menejeringiz paydo bo'ladi ✨",
+        "ru": "👤 Личный менеджер — для клиентов Silver и Gold.\nВаш статус: {tier}. Как только вы перейдёте на Silver, у вас появится личный менеджер ✨",
+        "en": "👤 A personal manager is available for Silver and Gold clients.\nYour status: {tier}. Once you reach Silver, you'll get your own personal manager ✨",
+    },
+    "manager_none": {
+        "uz": "👤 Shaxsiy menejeringiz tez orada tayinlanadi. Biz sizga xabar beramiz 💜",
+        "ru": "👤 Ваш личный менеджер скоро будет назначен — мы сообщим 💜",
+        "en": "👤 Your personal manager will be assigned soon — we'll let you know 💜",
+    },
+    "manager_info": {
+        "uz": "👤 Shaxsiy menejeringiz: {name}\n\nTanlov, buyurtma, o'lcham va boshqa savollar bo'yicha bemalol yozing 💜",
+        "ru": "👤 Ваш личный менеджер: {name}\n\nПишите по подбору, заказам, размерам и любым вопросам 💜",
+        "en": "👤 Your personal manager: {name}\n\nFeel free to write about styling, orders, sizes or any questions 💜",
+    },
+    "manager_btn": {"uz": "✍️ Menejerga yozish", "ru": "✍️ Написать менеджеру", "en": "✍️ Message manager"},
+    "manager_assigned": {
+        "uz": "👤 Sizga shaxsiy menejer tayinlandi: {name}\nMenyudagi «👤 Menejerim» tugmasi orqali yozishingiz mumkin 💜",
+        "ru": "👤 Вам назначен личный менеджер: {name}\nНаписать можно через кнопку «👤 Мой менеджер» в меню 💜",
+        "en": "👤 You've been assigned a personal manager: {name}\nYou can message them via «👤 My manager» in the menu 💜",
+    },
     "channel_link": {
         "uz": "📢 Bu havola faqat siz uchun — 24 soat amal qiladi.\nTugmani bosing va «Qo'shilish so'rovi»ni yuboring — bot uni darhol tasdiqlaydi ✅",
         "ru": "📢 Эта ссылка — только для вас, действует 24 часа.\nНажмите кнопку и отправьте заявку на вступление — бот сразу её одобрит ✅",
