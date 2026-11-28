@@ -197,7 +197,13 @@ def parse(text: str) -> dict:
             last = fam[0] if fam else words[0]
             first = " ".join(w for w in words if w != last)
             out["last_name"], out["first_name"] = last.title(), first.title()
+            out["words"] = [w.title() for w in words]
             break
+    # имя клиента в BILLZ — как написал менеджер + номер договора: «Pardayeva Marjona 67257165»
+    w = out.get("words") or []
+    out["client_name"] = " ".join(w + ([out["contract"]] if out["contract"] else []))
+    out["bz_first"] = w[0] if w else ""
+    out["bz_last"] = " ".join(w[1:] + ([out["contract"]] if out["contract"] else []))
     for k, why in (("seller", "продавец (1-я строка)"), ("total", "сумма"), ("phone", "телефон")):
         if not out[k]:
             out["problems"].append(f"не нашёл: {why}")
@@ -349,7 +355,7 @@ def money(n) -> str:
 
 
 def preview(p: dict, poster_name: str = "") -> str:
-    client = f"{p['last_name']} {p['first_name']}".strip() or "—"
+    client = p.get("client_name") or "—"
     lines = [f"🧾 <b>Продажа из чата</b>{' · от ' + poster_name if poster_name else ''}",
              f"👤 Продавец: {p.get('seller_name') or '❓ ' + (p['seller'] or '—')}"
              + (f" ↔ {p['seller_emp']} ✅" if p.get("seller_emp") else (" (без связки с сотрудником)" if p.get("seller_name") else "")),
@@ -430,7 +436,7 @@ def run(sid: int):
     try:
         cid = p["client_id"]
         if not cid:
-            body = {"phone_number": p["phone"], "first_name": p["first_name"] or "Mijoz", "last_name": p["last_name"]}
+            body = {"phone_number": p["phone"], "first_name": p.get("bz_first") or "Mijoz", "last_name": p.get("bz_last") or ""}
             if p["birth"]:
                 body["date_of_birth"] = p["birth"]
             cid = (erp._api("POST", "/v1/client", body=body) or {}).get("id")
@@ -475,13 +481,13 @@ def run(sid: int):
     try:  # заметка клиента в кабинете
         import shop
         with core.db() as c:
-            ccid = shop._client_id(c, p["phone"], f"{p['first_name']} {p['last_name']}".strip())
+            ccid = shop._client_id(c, p["phone"], p.get("client_name") or "")
             old = (c.execute("SELECT note FROM shop_clients WHERE id=?", (ccid,)).fetchone() or {"note": ""})["note"] or ""
             add = f"[{core.now().strftime('%d.%m.%Y')}] {s['text']}"
             c.execute("UPDATE shop_clients SET note=? WHERE id=?", ((old + "\n\n" + add).strip()[-3000:], ccid))
     except Exception as e:  # noqa: BLE001
         logging.warning("Заметка продажи из чата: %s", e)
-    msg = (f"✅ Пробито в BILLZ{' · чек №' + number if number else ''}\n{p['last_name']} {p['first_name']} · "
+    msg = (f"✅ Пробито в BILLZ{' · чек №' + number if number else ''}\n{p.get('client_name')} · "
            f"{money(p['total'])} · {p['pay_name']} · продавец {p['seller_name']}\n" + "\n".join(notes))
     finish(sid, "ok", msg, order_id, number)
     return True, msg
