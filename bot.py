@@ -1197,7 +1197,7 @@ async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     text = (m.text or m.caption or "").strip()
     if not text or text.startswith("/") or m.from_user.is_bot:
-        raise ApplicationHandlerStop
+        return  # команды (/savdo, /chatid) — обычным обработчикам
     poster = m.from_user.id
     pname = core.name(poster) if core.employee(poster) else (m.from_user.full_name or str(poster))
     p = await asyncio.to_thread(savdo.plan, text, poster)
