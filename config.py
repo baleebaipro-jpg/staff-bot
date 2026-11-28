@@ -25,10 +25,10 @@ SALE_PRODUCT_BARCODE = "2000000031842"  # единственный товар, �
 SALE_SHOP = "87"  # пока пробиваем только в магазине 87
 SALE_ONLY_PAY = "uzum nasiya"  # пока только оплата Uzum Nasiya (остальные — «Hojayin sizsiz Eplomayman!!»)
 SALE_BONUS_PCT = 29
-SALE_CONFIRMERS = [6658459389]  # ТОЛЬКО этот аккаунт (@xupingleader) нажимает «✅ Пробить / Отмена / Проверить»
+SALE_CONFIRMERS = [2034048111]  # ТОЛЬКО руководитель (@xupingleader) нажимает «✅ Пробить / Отмена / Проверить»
 SALE_CONFIRM_MENTION = "@xupingleader"  # бонус клиенту от суммы продажи (кешбэк BILLZ)
 BIZ_NOTIFY_ROUTES = {
-    6658459389: (-1005897595052, 2),  # @xupingleader → «Bot control», тема 2
+    6658459389: (-1005897595052, 2),  # аккаунт 6658459389 → «Bot control», тема 2
     2034048111: (-1005897595052, 7),  # аккаунт руководителя → «Bot control», тема 7
     8742801401: (-1005897595052, 308),  # Diyora Sayitjanova → «Bot control», тема 308
 }
