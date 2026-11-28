@@ -1275,11 +1275,19 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await q.edit_message_text((q.message.text or "") + "\n\n⏳ Пробиваю в BILLZ…")
     except BadRequest:
         pass
-    ok, msg = await asyncio.to_thread(savdo.run, sid)
+    try:
+        ok, msg = await asyncio.wait_for(asyncio.to_thread(savdo.run, sid), timeout=400)
+    except Exception as e:  # noqa: BLE001 — таймаут или сбой: не оставлять «Пробиваю…» навсегда
+        logging.exception("Продажа из чата %s", sid)
+        ok, msg = False, f"⚠️ Не дождался ответа BILLZ ({type(e).__name__}). Проверьте продажу в BILLZ, прежде чем пробивать снова."
+        savdo.finish(sid, "stuck", msg)
     try:
         await q.edit_message_text((q.message.text or "") + "\n\n" + msg)
-    except BadRequest:
-        await context.bot.send_message(q.from_user.id, msg)
+    except TelegramError:
+        try:
+            await context.bot.send_message(s["chat_id"], msg, message_thread_id=s["thread_id"], reply_to_message_id=s["msg_id"])
+        except TelegramError:
+            pass
     if ok:
         await _react(context.bot, s["chat_id"], s["msg_id"], "👍")
     else:

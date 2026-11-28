@@ -487,8 +487,9 @@ def run(sid: int):
             "payments": [{"company_payment_type_id": p["pay_id"], "paid_amount": paid, "returned_amount": 0}],
             "with_cashback": p["bonus_used"] or 0, "without_cashback": True, "comment": s["text"][:1000],
             "cashbox_id": p["cashbox_id"]})
-    except erp.BillzError as e:
-        msg = f"❌ Не пробито (шаг: {step}): {e}" + (f"\nЧерновик продажи в BILLZ: {order_id}" if order_id else "")
+    except Exception as e:  # noqa: BLE001 — любая ошибка: сообщение не должно зависнуть на «Пробиваю…»
+        logging.exception("Продажа из чата %s, шаг %s", sid, step)
+        msg = f"❌ Не пробито (шаг: {step}): {str(e)[:300]}" + (f"\nЧерновик продажи в BILLZ: {order_id}" if order_id else "")
         finish(sid, "fail", msg, order_id)
         return False, msg
     notes = []
