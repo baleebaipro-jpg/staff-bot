@@ -736,8 +736,15 @@ BONUS_MAX = 1_000_000  # не больше этой суммы одному кл
 
 def set_balance(billz_id: str, balance: float) -> None:
     """Установить кешбэк-баланс клиента в магазине (PATCH /v1/customer/set_balance/{id}, ждём результат)."""
-    res = _api("PATCH", f"/v1/customer/set_balance/{billz_id}", params={"Billz-Response-Channel": "HTTP"},
-               body={"balance": round(float(balance), 2)}, timeout=60) or {}
+    body = {"balance": round(float(balance), 2)}
+    try:  # путь по документации — через дефис
+        res = _api("PATCH", f"/v1/customer/set-balance/{billz_id}", params={"Billz-Response-Channel": "HTTP"},
+                   body=body, timeout=60) or {}
+    except BillzError as e:
+        if e.code != 404:
+            raise
+        res = _api("PATCH", f"/v1/customer/set_balance/{billz_id}", params={"Billz-Response-Channel": "HTTP"},
+                   body=body, timeout=60) or {}
     code = res.get("status_code")
     err = (res.get("error") or {}).get("message") if isinstance(res.get("error"), dict) else None
     if code not in (None, 200) or err:

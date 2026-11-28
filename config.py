@@ -18,6 +18,10 @@ BIZ_BOT_TOKEN = os.getenv("BIZ_BOT_TOKEN", "").strip()
 BIZ_NOTIFY_CHAT = -1005897595052  # группа «Bot control»
 BIZ_NOTIFY_THREAD = None
 # Отдельная группа/тема для конкретного рабочего аккаунта: {Telegram ID владельца аккаунта: (ID группы, ID темы)}
+# Продажи из чата в BILLZ (savdo.py): тема, куда менеджеры пишут продажи; руководитель подтверждает «✅ Пробить»
+SALE_CHAT_ID = -1001867137670
+SALE_THREAD_ID = 727
+SALE_BONUS_PCT = 29  # бонус клиенту от суммы продажи (кешбэк BILLZ)
 BIZ_NOTIFY_ROUTES = {
     6658459389: (-1005897595052, 2),  # @xupingleader → «Bot control», тема 2
     2034048111: (-1005897595052, 7),  # аккаунт руководителя → «Bot control», тема 7
