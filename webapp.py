@@ -5437,7 +5437,7 @@ async function followupSheet(body) {
     <div class="kpi-res" style="margin:0 0 10px">${live ? "✅ <b style='font-size:15px'>Включено</b> — задачи ставятся менеджерам"
       : "🧪 <b style='font-size:15px;color:#fbbf24'>Тест</b> — менеджерам ничего не отправляется, предпросмотр утром только вам"}</div>
     <div class="pen-stats three" style="margin-bottom:10px"><div><b>${r.pending}</b><span>ждут</span></div>
-      <div><b>${live ? r.tasks : r.test}</b><span>${live ? "задач поставлено" : "в тесте"}</span></div><div><b>${r.unlinked + r.noclient}</b><span>пропущено</span></div></div>
+      <div><b>${live ? r.tasks : r.test}</b><span>${live ? "задач поставлено" : "в тесте"}</span></div><div><b>${r.unlinked + r.noclient + (r.noname || 0) + (r.skiptest || 0)}</b><span>пропущено</span></div></div>
     ${r.text ? `<div class="hint" style="font-size:13px;white-space:pre-wrap;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;max-height:40vh;overflow:auto">${esc(r.text)}</div>` : ""}
     <button class="btn btn-soft" style="width:100%" id="fu-prev">👁 Проверить сейчас</button>
     <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-now">📌 Поставить задачи сейчас (не ждать утра)</button>
