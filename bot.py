@@ -1218,25 +1218,22 @@ async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     sid = savdo.save(m.chat.id, m.message_thread_id, m.message_id, poster, pname, text, p)
     await _react(context.bot, m.chat.id, m.message_id, "👀")
     ok = savdo.can_run(p)
-    for admin in config.ADMINS:
-        try:
-            await context.bot.send_message(admin, savdo.preview(p, pname) + f"\n\n<i>{html.escape(text[:1500])}</i>",
-                                           parse_mode="HTML", reply_markup=_sale_buttons(sid, ok))
-        except TelegramError as e:
-            logging.warning("Подтверждение продажи руководителю %s: %s", admin, e)
-    if p.get("problems"):
-        try:
-            await m.reply_text("⚠️ " + "\n⚠️ ".join(p["problems"]) + "\n\nИсправьте и отправьте сообщение заново.")
-        except TelegramError:
-            pass
+    mention = getattr(config, "SALE_CONFIRM_MENTION", "")
+    try:  # предпросмотр — сразу в группе, ответом на сообщение менеджера, с отметкой руководителя
+        await m.reply_text(savdo.preview(p, pname) + (f"\n\n{mention} — подтвердите" if mention else "")
+                           + ("" if ok else "\n\nИсправьте сообщение и отправьте заново."),
+                           parse_mode="HTML", reply_markup=_sale_buttons(sid, ok))
+    except TelegramError as e:
+        logging.warning("Предпросмотр продажи в группу: %s", e)
     raise ApplicationHandlerStop
 
 
 async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     import savdo
     q = update.callback_query
-    if not core.is_admin(q.from_user.id):
-        return await q.answer("Только руководитель", show_alert=True)
+    if not (core.is_admin(q.from_user.id) or q.from_user.id in getattr(config, "SALE_CONFIRMERS", [])):
+        return await q.answer("Нажимать может только руководитель " + getattr(config, "SALE_CONFIRM_MENTION", ""),
+                              show_alert=True)
     _, act, sid = q.data.split(":")
     sid = int(sid)
     s = savdo.get(sid)
@@ -1248,8 +1245,8 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         p = await asyncio.to_thread(savdo.plan, s["text"], s["poster"])
         await q.answer("Обновлено")
         try:
-            await q.edit_message_text(savdo.preview(p, s["poster_name"]) + f"\n\n<i>{html.escape(s['text'][:1500])}</i>",
-                                      parse_mode="HTML", reply_markup=_sale_buttons(sid, savdo.can_run(p)))
+            await q.edit_message_text(savdo.preview(p, s["poster_name"]), parse_mode="HTML",
+                                      reply_markup=_sale_buttons(sid, savdo.can_run(p)))
         except BadRequest:
             pass
         return
@@ -1276,10 +1273,6 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _react(context.bot, s["chat_id"], s["msg_id"], "👍")
     else:
         await _react(context.bot, s["chat_id"], s["msg_id"], "🤔")
-        try:
-            await context.bot.send_message(s["chat_id"], msg, message_thread_id=s["thread_id"], reply_to_message_id=s["msg_id"])
-        except TelegramError:
-            pass
 
 
 async def savdo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
