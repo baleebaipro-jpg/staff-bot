@@ -1231,8 +1231,8 @@ async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     import savdo
     q = update.callback_query
-    if not (core.is_admin(q.from_user.id) or q.from_user.id in getattr(config, "SALE_CONFIRMERS", [])):
-        return await q.answer("Нажимать может только руководитель " + getattr(config, "SALE_CONFIRM_MENTION", ""),
+    if q.from_user.id not in (getattr(config, "SALE_CONFIRMERS", None) or config.ADMINS):  # только @xupingleader
+        return await q.answer("Подтверждать может только " + getattr(config, "SALE_CONFIRM_MENTION", "руководитель"),
                               show_alert=True)
     _, act, sid = q.data.split(":")
     sid = int(sid)
