@@ -117,6 +117,11 @@ def set_product(query: str, manual: bool = True):
 
 
 # ---------- разбор сообщения ----------
+def _is_pay(word: str) -> bool:
+    w = (word or "").lower().strip()
+    return bool(w) and any(w.startswith(k) or k in w.split() for k in PAY_ALIASES)
+
+
 def _num(s: str) -> float:
     m = re.search(r"\d[\d\s.,']*", s or "")
     if not m:
@@ -141,6 +146,8 @@ def parse(text: str) -> dict:
             else:
                 parts = ln.split()
                 out["seller"], out["pay"] = parts[0], " ".join(parts[1:])
+            if _is_pay(out["seller"]) and not _is_pay(out["pay"]):  # «Uzum ( diyora )» — оплата и продавец наоборот
+                out["seller"], out["pay"] = out["pay"], out["seller"]
             continue
         if re.search(r"shartnoma|shartnama|договор|dogovor|contract", low):
             out["contract"] = digits or ln.split(":", 1)[-1].strip()
