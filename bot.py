@@ -1215,7 +1215,9 @@ async def _sale_from_message(m, context, text: str) -> None:
     ok = savdo.can_run(p)
     mention = getattr(config, "SALE_CONFIRM_MENTION", "")
     try:  # предпросмотр — сразу в группе, ответом на сообщение менеджера, с отметкой руководителя
-        await m.reply_text(savdo.preview(p, pname) + (f"\n\n{mention} — подтвердите" if mention else "")
+        stuck = ("\n\n⚠️ Прошлая попытка прервалась (бот перезапускался). Сначала проверьте в BILLZ, нет ли уже этой продажи "
+             "и клиента, — только потом «Пробить»." if savdo.was_stuck(m.chat.id, m.message_id) else "")
+        await m.reply_text(savdo.preview(p, pname) + stuck + (f"\n\n{mention} — подтвердите" if mention else "")
                            + ("" if ok else "\n\nИсправьте сообщение и отправьте заново."),
                            parse_mode="HTML", reply_markup=_sale_buttons(sid, ok))
     except TelegramError as e:

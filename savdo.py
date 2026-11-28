@@ -38,6 +38,8 @@ def init() -> None:
         c.execute("CREATE TABLE IF NOT EXISTS chat_sales(id INTEGER PRIMARY KEY, chat_id INTEGER, thread_id INTEGER, msg_id INTEGER, "
                   "poster INTEGER, poster_name TEXT, text TEXT, plan TEXT, status TEXT, order_id TEXT, order_number TEXT, "
                   "result TEXT, created_at TEXT, done_at TEXT)")
+        # бот перезапустился посреди «Пробиваю…» — чем кончилось, неизвестно: пометить, чтобы проверить в BILLZ
+        c.execute("UPDATE chat_sales SET status='stuck', result='прервано перезапуском бота' WHERE status='run'")
 
 
 # ---------- настройки: тема и товар ----------
@@ -402,6 +404,12 @@ def save(chat, thread, msg_id, poster, poster_name, text, p) -> int:
 def already_done(chat: int, msg_id: int) -> bool:
     with core.db() as c:
         return bool(c.execute("SELECT 1 FROM chat_sales WHERE chat_id=? AND msg_id=? AND status IN ('ok', 'run')",
+                              (chat, msg_id)).fetchone())
+
+
+def was_stuck(chat: int, msg_id: int) -> bool:
+    with core.db() as c:
+        return bool(c.execute("SELECT 1 FROM chat_sales WHERE chat_id=? AND msg_id=? AND status='stuck'",
                               (chat, msg_id)).fetchone())
 
 
