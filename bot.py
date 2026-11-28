@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import os
 import time
@@ -1171,6 +1172,120 @@ async def shtraf_topic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await m.reply_text(res)
 
 
+# ---------- продажи из чата в BILLZ (savdo.py) ----------
+async def _react(bot, chat, msg_id, emoji: str) -> None:
+    try:
+        await bot.set_message_reaction(chat, msg_id, reaction=emoji)
+    except TelegramError as e:
+        logging.warning("Реакция %s не поставлена: %s", emoji, e)
+
+
+def _sale_buttons(sid: int, ok: bool) -> InlineKeyboardMarkup:
+    row = ([InlineKeyboardButton("✅ Пробить", callback_data=f"sv:ok:{sid}")] if ok else []) + [
+        InlineKeyboardButton("🔄 Проверить снова", callback_data=f"sv:re:{sid}"),
+        InlineKeyboardButton("✖️ Отмена", callback_data=f"sv:no:{sid}")]
+    return InlineKeyboardMarkup([row])
+
+
+async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сообщение менеджера в теме продаж → разбор, 👀 на сообщении, руководителю — подтверждение."""
+    import savdo
+    m = update.message
+    if not m or not m.from_user or m.chat.type not in ("group", "supergroup"):
+        return
+    if not savdo.is_sale_topic(m.chat.id, m.message_thread_id if m.is_topic_message else None):
+        return
+    text = (m.text or m.caption or "").strip()
+    if not text or text.startswith("/") or m.from_user.is_bot:
+        raise ApplicationHandlerStop
+    poster = m.from_user.id
+    pname = core.name(poster) if core.employee(poster) else (m.from_user.full_name or str(poster))
+    p = await asyncio.to_thread(savdo.plan, text, poster)
+    if not p.get("total") and not p.get("phone"):
+        raise ApplicationHandlerStop  # обычная переписка в теме, не продажа
+    sid = savdo.save(m.chat.id, m.message_thread_id, m.message_id, poster, pname, text, p)
+    await _react(context.bot, m.chat.id, m.message_id, "👀")
+    ok = savdo.can_run(p)
+    for admin in config.ADMINS:
+        try:
+            await context.bot.send_message(admin, savdo.preview(p, pname) + f"\n\n<i>{html.escape(text[:1500])}</i>",
+                                           parse_mode="HTML", reply_markup=_sale_buttons(sid, ok))
+        except TelegramError as e:
+            logging.warning("Подтверждение продажи руководителю %s: %s", admin, e)
+    if p.get("problems"):
+        try:
+            await m.reply_text("⚠️ " + "\n⚠️ ".join(p["problems"]) + "\n\nИсправьте и отправьте сообщение заново.")
+        except TelegramError:
+            pass
+    raise ApplicationHandlerStop
+
+
+async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import savdo
+    q = update.callback_query
+    if not core.is_admin(q.from_user.id):
+        return await q.answer("Только руководитель", show_alert=True)
+    _, act, sid = q.data.split(":")
+    sid = int(sid)
+    s = savdo.get(sid)
+    if not s:
+        return await q.answer("Продажа не найдена", show_alert=True)
+    if act == "re":
+        if s["status"] != "wait":
+            return await q.answer("Уже обработана", show_alert=True)
+        p = await asyncio.to_thread(savdo.plan, s["text"], s["poster"])
+        await q.answer("Обновлено")
+        try:
+            await q.edit_message_text(savdo.preview(p, s["poster_name"]) + f"\n\n<i>{html.escape(s['text'][:1500])}</i>",
+                                      parse_mode="HTML", reply_markup=_sale_buttons(sid, savdo.can_run(p)))
+        except BadRequest:
+            pass
+        return
+    if act == "no":
+        if not savdo.take(sid, "cancel"):
+            return await q.answer("Уже обработана", show_alert=True)
+        await q.answer("Отменено")
+        await q.edit_message_text((q.message.text or "") + "\n\n✖️ Отменено")
+        await _react(context.bot, s["chat_id"], s["msg_id"], "👎")
+        return
+    if not savdo.take(sid, "run"):
+        return await q.answer("Уже обработана", show_alert=True)
+    await q.answer("Пробиваю…")
+    try:
+        await q.edit_message_text((q.message.text or "") + "\n\n⏳ Пробиваю в BILLZ…")
+    except BadRequest:
+        pass
+    ok, msg = await asyncio.to_thread(savdo.run, sid)
+    try:
+        await q.edit_message_text((q.message.text or "") + "\n\n" + msg)
+    except BadRequest:
+        await context.bot.send_message(q.from_user.id, msg)
+    if ok:
+        await _react(context.bot, s["chat_id"], s["msg_id"], "👍")
+    else:
+        await _react(context.bot, s["chat_id"], s["msg_id"], "🤔")
+        try:
+            await context.bot.send_message(s["chat_id"], msg, message_thread_id=s["thread_id"], reply_to_message_id=s["msg_id"])
+        except TelegramError:
+            pass
+
+
+async def savdo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/savdo — проверка настроек продаж из чата; /savdo_tovar <штрихкод> — товар для продаж по свободной цене."""
+    import savdo
+    m = update.effective_message
+    if not m or not core.is_admin(update.effective_user.id):
+        return
+    if m.text.split()[0].split("@")[0].lower() == "/savdo_tovar":
+        q = m.text.split(maxsplit=1)[1] if len(m.text.split(maxsplit=1)) > 1 else ""
+        try:
+            ok, msg = await asyncio.to_thread(savdo.set_product, q)
+        except Exception as e:  # noqa: BLE001
+            msg = f"⚠️ BILLZ: {str(e)[:200]}"
+        return await m.reply_text(msg)
+    await m.reply_text(await asyncio.to_thread(savdo.check))
+
+
 async def learn_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Запоминаем темы групп по названию (бот — админ, видит сообщения в темах). Тему «Штраф» в группе
     сотрудника из PENALTY_CHATS — переименовываем в PENALTY_CHAT_TITLE, штрафы идут в неё."""
@@ -1316,12 +1431,15 @@ def main() -> None:
     app.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)  # бизнес-чаты — только запись, бот молчит
     app.add_handler(TypeHandler(Update, gate), group=-1)
     app.add_handler(TypeHandler(Update, learn_topics), group=-50)  # темы групп (штрафы — в тему «Штраф»)
+    app.add_handler(TypeHandler(Update, savdo_message), group=-40)  # продажи из чата → подтверждение → BILLZ
     app.add_handler(ChatMemberHandler(bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("biz", biz_cmd))
     app.add_handler(CommandHandler("chatid", chat_id))
     app.add_handler(CommandHandler("shtraf", shtraf_topic_cmd))
+    app.add_handler(CommandHandler(["savdo", "savdo_tovar"], savdo_cmd))
+    app.add_handler(CallbackQueryHandler(savdo_button, pattern=r"^sv:(ok|no|re):\d+$"))
     app.add_handler(CommandHandler("billz", billz_cmd))
     app.add_handler(CommandHandler("investchat", invest_chat_cmd))
     app.add_handler(CommandHandler("task", task_cmd))

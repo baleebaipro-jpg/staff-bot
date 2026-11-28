@@ -411,6 +411,8 @@ def init_db():
     followup.init()
     import managers
     managers.init()
+    import savdo  # продажи из чата в BILLZ
+    savdo.init()
     with db() as c:  # темы групп (штрафы сотрудника — в тему «Штраф» его группы)
         c.execute("CREATE TABLE IF NOT EXISTS forum_topics(chat_id INTEGER, thread_id INTEGER, name TEXT, at TEXT, "
                   "PRIMARY KEY(chat_id, thread_id))")
