@@ -181,7 +181,13 @@ def parse(text: str) -> dict:
             continue
         b = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", ln)
         if b and not out["birth"]:
-            out["birth"] = f"{b.group(3)}-{int(b.group(2)):02d}-{int(b.group(1)):02d}"
+            d, mth = int(b.group(1)), int(b.group(2))
+            if mth > 12 and d <= 12:  # «03.23.1999» — месяц и день наоборот
+                d, mth = mth, d
+            out["birth"] = f"{b.group(3)}-{mth:02d}-{d:02d}"
+            left = (ln[:b.start()] + " " + ln[b.end():]).strip(" .,-")
+            if re.search(r"[A-Za-zА-Яа-я]", left):  # «Lutfullayeva Sabina 03.08.2006» — имя в той же строке
+                rest.insert(0, left)
             continue
         if re.fullmatch(r"[+\d\s()-]+", ln) and len(digits) in (9, 12) and (len(digits) == 9 or digits.startswith("998")):
             out["phone"] = "+998" + digits[-9:]
@@ -196,8 +202,9 @@ def parse(text: str) -> dict:
             fam = [w for w in words if re.search(r"(ova|eva|yeva|ov|ev|yev|iy|aya|ая|ова|ева|ов|ев)$", w.lower())]
             last = fam[0] if fam else words[0]
             first = " ".join(w for w in words if w != last)
-            out["last_name"], out["first_name"] = last.title(), first.title()
-            out["words"] = [w.title() for w in words]
+            cap = lambda x: x[:1].upper() + x[1:].lower()  # noqa: E731 — «Sug'diyona», а не «Sug'Diyona»
+            out["last_name"], out["first_name"] = cap(last), " ".join(cap(x) for x in first.split())
+            out["words"] = [cap(w) for w in words]
             break
     # имя клиента в BILLZ — как написал менеджер + номер договора: «Pardayeva Marjona 67257165»
     w = out.get("words") or []
@@ -344,6 +351,8 @@ def plan(text: str, poster: int = 0) -> dict:
         p["client_id"] = (cl or {}).get("billz_id") or ""
         p["client_now"] = " ".join(x for x in ((cl or {}).get("first_name"), (cl or {}).get("last_name")) if x)
         p["client_balance"] = (cl or {}).get("balance") or 0
+        if not p["client_id"] and not p.get("words"):
+            p["problems"].append("не нашёл имя клиента (строка «Фамилия Имя»)")
     except Exception as e:  # noqa: BLE001
         p["problems"].append(f"BILLZ: {str(e)[:150]}")
     p["bonus_add"] = round(p["total"] * BONUS_PCT / 100) if p.get("bonus") else 0
