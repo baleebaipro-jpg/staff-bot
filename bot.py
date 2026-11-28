@@ -974,6 +974,11 @@ def _periodic_sync() -> list:
     except Exception:
         logging.exception("Ошибка проверки ответов RADI Chat")
     try:
+        import savdo
+        savdo.warm()  # справочники BILLZ для продаж из чата — заранее, в фоне
+    except Exception:
+        logging.exception("Справочники продаж")
+    try:
         if invest_mod.ENABLED:
             invest_mod.check_rating_day()
             invest_mod.check_matured()
@@ -1253,7 +1258,9 @@ async def savdo_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if act == "re":
         if s["status"] != "wait":
             return await q.answer("Уже обработана", show_alert=True)
+        savdo._cache.clear()  # «Проверить снова» — свежие справочники BILLZ
         p = await asyncio.to_thread(savdo.plan, s["text"], s["poster"])
+        savdo.update_plan(sid, p)
         await q.answer("Обновлено")
         try:
             await q.edit_message_text(savdo.preview(p, s["poster_name"]), parse_mode="HTML",

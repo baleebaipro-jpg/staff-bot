@@ -136,6 +136,20 @@ def pay_allowed(p: dict) -> bool:
     return bool(word) and (word.startswith(only.split()[0]) or only.split()[0] in word)
 
 
+def _is_phone(ln: str) -> bool:
+    """935372000 · +998935372000 · 998935372000 · 93-537-20-00 · 93 537 20 00 · 93,537,20,00 · 93.537.20.00
+    (можно с «tel:» впереди). Сумма вида 100.000.000 (группы по 3 цифры) — не телефон."""
+    s = re.sub(r"^\s*(tel(efon)?|тел(ефон)?|nomer|номер|raqam|ph(one)?)\s*[:.\-]?\s*", "", ln.strip(), flags=re.I)
+    if not re.fullmatch(r"\+?[\d\s().,\-]+", s):
+        return False
+    digits = re.sub(r"\D", "", s)
+    if not (len(digits) == 9 or (len(digits) == 12 and digits.startswith("998"))):
+        return False
+    if not s.startswith("+") and re.fullmatch(r"\d{1,3}([.,\s]\d{3})+", s.strip()):
+        return False  # «100.000.000» — сумма
+    return True
+
+
 def _is_pay(word: str) -> bool:
     w = (word or "").lower().strip()
     return bool(w) and any(w.startswith(k) or k in w.split() for k in PAY_ALIASES)
@@ -193,7 +207,7 @@ def parse(text: str) -> dict:
             if re.search(r"[A-Za-zА-Яа-я]", left):  # «Lutfullayeva Sabina 03.08.2006» — имя в той же строке
                 rest.insert(0, left)
             continue
-        if re.fullmatch(r"[+\d\s()-]+", ln) and len(digits) in (9, 12) and (len(digits) == 9 or digits.startswith("998")):
+        if _is_phone(ln) and not out["phone"]:
             out["phone"] = "+998" + digits[-9:]
             continue
         if digits and re.match(r"\s*\d", ln) and _num(ln) >= 1000 and not out["total"]:
@@ -222,6 +236,32 @@ def parse(text: str) -> dict:
 
 
 # ---------- справочники BILLZ ----------
+def _client_by_phone(phone: str):
+    """Только точный поиск по номеру (быстро). Медленный общий поиск BILLZ (до 30 с) не нужен: новые клиенты рассрочки
+    в BILLZ ещё не записаны."""
+    import erp
+    c = erp._best(list(erp._exact(phone).values()))
+    if not c:
+        return None
+    return {"billz_id": c.get("id"), "first_name": (c.get("first_name") or "").strip(),
+            "last_name": (c.get("last_name") or "").strip(), "balance": float(c.get("balance") or 0)}
+
+
+def warm() -> None:
+    """Справочники BILLZ заранее (из фонового цикла бота): продажа не ждёт их загрузки."""
+    import erp
+    if not erp.enabled() or not topic():
+        return
+    try:
+        _cached("users", _users, 3000)
+        _cached("pays", _pay_types, 3000)
+        _cached("boxes", _cashboxes, 3000)
+        _cached("shops", _shops, 3000)
+        product()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("Справочники BILLZ для продаж: %s", e)
+
+
 def _cached(key: str, fn, ttl: int = 3600):
     v = _cache.get(key)
     if v and time.time() - v[0] < ttl:
@@ -351,7 +391,7 @@ def plan(text: str, poster: int = 0) -> dict:
                                  if getattr(config, "SALE_SHOP", "") else "в BILLZ не найдено ни одной кассы")
         if not product().get("id"):
             p["problems"].append("не задан товар для продажи — руководитель: /savdo_tovar <штрихкод>")
-        cl = erp.find_client(p["phone"]) if p["phone"] else None
+        cl = _client_by_phone(p["phone"]) if p["phone"] else None
         p["client_id"] = (cl or {}).get("billz_id") or ""
         p["client_now"] = " ".join(x for x in ((cl or {}).get("first_name"), (cl or {}).get("last_name")) if x)
         p["client_balance"] = (cl or {}).get("balance") or 0
@@ -413,6 +453,11 @@ def was_stuck(chat: int, msg_id: int) -> bool:
                               (chat, msg_id)).fetchone())
 
 
+def update_plan(sid: int, p: dict) -> None:
+    with core.db() as c:
+        c.execute("UPDATE chat_sales SET plan=? WHERE id=?", (json.dumps(p, ensure_ascii=False), sid))
+
+
 def get(sid: int) -> dict:
     with core.db() as c:
         r = c.execute("SELECT * FROM chat_sales WHERE id=?", (sid,)).fetchone()
@@ -450,7 +495,15 @@ def run(sid: int):
     """Пробить продажу в BILLZ (после подтверждения). Возвращает (ok, текст)."""
     import erp
     s = get(sid)
-    p = plan(s["text"], s["poster"])  # свежие данные на момент подтверждения
+    p = s["plan"] or {}  # то, что руководитель видел в предпросмотре (без повторного поиска)
+    if not p.get("total"):
+        p = plan(s["text"], s["poster"])
+    if not p.get("client_id") and p.get("phone"):  # клиент мог появиться в BILLZ после предпросмотра
+        try:
+            cl = _client_by_phone(p["phone"])
+            p["client_id"] = (cl or {}).get("billz_id") or ""
+        except Exception:  # noqa: BLE001
+            pass
     if not can_run(p):
         msg = "Не пробито:\n⚠️ " + "\n⚠️ ".join(p["problems"] or ["не хватает данных"])
         finish(sid, "fail", msg)
