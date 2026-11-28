@@ -117,6 +117,14 @@ def set_product(query: str, manual: bool = True):
 
 
 # ---------- разбор сообщения ----------
+def is_debt_case(text: str) -> bool:
+    """«5.000.000 dumi bor» — остаток долга у клиента: такие продажи бот пока не пробивает."""
+    return bool(re.search(r"dumi?\s*bor|dum\s*bor|думи?\s*бор", (text or "").lower()))
+
+
+SKIP_REPLY = getattr(config, "SALE_SKIP_REPLY", "Hojayin sizsiz Eplomayman!!")
+
+
 def _is_pay(word: str) -> bool:
     w = (word or "").lower().strip()
     return bool(w) and any(w.startswith(k) or k in w.split() for k in PAY_ALIASES)
