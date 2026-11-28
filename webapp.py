@@ -642,7 +642,9 @@ def api_followup(uid, data):
         text = followup.preview_now()
     elif a == "now":
         ok, msg = followup.run_now()
-    return jsonify(ok=ok, msg=msg, text=text, **followup.status())
+    elif a == "test":  # отметить / снять тестового клиента
+        ok, msg = followup.mark_test(str(data.get("key") or ""), str(data.get("name") or ""), bool(data.get("on")))
+    return jsonify(ok=ok, msg=msg, text=text, clients=followup.recent_clients(), **followup.status())
 
 
 @app.post("/api/direct_message")
@@ -5439,11 +5441,23 @@ async function followupSheet(body) {
     <div class="pen-stats three" style="margin-bottom:10px"><div><b>${r.pending}</b><span>ждут</span></div>
       <div><b>${live ? r.tasks : r.test}</b><span>${live ? "задач поставлено" : "в тесте"}</span></div><div><b>${r.unlinked + r.noclient + (r.noname || 0) + (r.skiptest || 0)}</b><span>пропущено</span></div></div>
     ${r.text ? `<div class="hint" style="font-size:13px;white-space:pre-wrap;border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;max-height:40vh;overflow:auto">${esc(r.text)}</div>` : ""}
+    <details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:14px;padding:6px 0">🧪 Тестовые клиенты — без обратной связи
+      (${(r.clients || []).filter(c => c.test).length})</summary>
+      <div class="hint" style="font-size:12px;margin:4px 0 6px">Отметьте свои тестовые / розничные карточки — по ним задачи не ставятся. Остальные клиенты не трогаются.</div>
+      ${(r.clients || []).map((c, i) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
+        <div style="flex:1;min-width:0;font-size:13px">${c.test ? "🧪 " : ""}${esc(c.name)}<div class="hint" style="font-size:11.5px">${esc(c.phone)} · покупок ${c.n}</div></div>
+        <button class="btn ${c.test ? "btn-main" : "btn-soft"}" style="padding:6px 10px;font-size:12.5px" data-fu-test="${i}">${c.test ? "Снять" : "🧪 Тест"}</button></div>`).join("")
+        || '<div class="hint" style="font-size:12.5px">Пока нет продаж с клиентами</div>'}</details>
     <button class="btn btn-soft" style="width:100%" id="fu-prev">👁 Проверить сейчас</button>
     <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-now">📌 Поставить задачи сейчас (не ждать утра)</button>
     <button class="btn ${live ? "btn-soft" : "btn-main"}" style="width:100%;margin-top:8px" id="fu-mode">${live ? "🧪 Вернуть тестовый режим" : "✅ Включить для менеджеров"}</button>
     <button class="btn btn-soft" style="width:100%;margin-top:8px" id="fu-close">Закрыть</button>`);
   $("fu-close").onclick = invSheetClose;
+  document.querySelectorAll("[data-fu-test]").forEach(b => b.onclick = () => {
+    const c = r.clients[+b.dataset.fuTest];
+    followupSheet({action: "test", key: c.key, name: c.name, on: !c.test}).then(() => {
+      const d = document.querySelector("#inv-sheet details, .sheet details"); if (d) d.open = true; });
+  });
   $("fu-prev").onclick = () => followupSheet({action: "preview"});
   $("fu-now").onclick = () => tg.showConfirm("Поставить задачи «обратная связь» прямо сейчас по всем ожидающим продажам?",
     ok => ok && followupSheet({action: "now"}));
