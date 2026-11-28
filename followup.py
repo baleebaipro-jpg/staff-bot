@@ -12,8 +12,6 @@ import core
 
 HOUR = getattr(config, "FOLLOWUP_HOUR", 10)  # во сколько утром ставить / слать предпросмотр
 _tick = {"at": 0}
-# Тестовые / розничные карточки клиентов в BILLZ (например «Diyora DONA SOTUV 7118») — обратную связь не ставим
-SKIP_WORDS = [w.lower() for w in getattr(config, "FOLLOWUP_SKIP_WORDS", ["sotuv", "сотув", "продажа", "test", "тест"])]
 NO_NAME = {"", "клиент", "client", "mijoz", "покупатель"}
 
 
@@ -23,6 +21,9 @@ def init() -> None:
                   "customer_id TEXT, customer TEXT, phone TEXT, total REAL, due TEXT, status TEXT, task_id INTEGER, at TEXT)")
         if "soft" not in {r[1] for r in c.execute("PRAGMA table_info(tasks)")}:
             c.execute("ALTER TABLE tasks ADD COLUMN soft INTEGER DEFAULT 0")  # напоминание: не блокирует уход
+    if core.flag_once("fu_unskip_words"):  # тестовых клиентов теперь выбирает руководитель вручную
+        with core.db() as c:
+            c.execute("UPDATE fu_sales SET status='test' WHERE status='skip_test'")
     if not core.flag_json("followup"):
         core.flag_json("followup", {"mode": "test", "since": core.now().strftime(core.FMT)})
 
@@ -73,10 +74,53 @@ def _skip_reason(r) -> str:
     name = " ".join((r.get("customer") or "").split()).lower()
     if name in NO_NAME:
         return "noname"
-    words = name.replace("-", " ").split()
-    if any(w in words or (len(w) > 4 and w in name) for w in SKIP_WORDS):
+    if _client_key(r) in {t["key"] for t in test_clients()}:
         return "test"
     return ""
+
+
+def _client_key(r) -> str:
+    return str(r.get("customer_id") or "").strip() or " ".join((r.get("customer") or "").split()).lower()
+
+
+def test_clients() -> list:
+    """Тестовые клиенты, отмеченные руководителем вручную: [{key, name}] — по ним обратная связь не ставится."""
+    return core.flag_json("followup_test_clients") or []
+
+
+def mark_test(key: str, name: str, on: bool):
+    key = str(key or "").strip()
+    if not key:
+        return False, "Не выбран клиент"
+    items = [t for t in test_clients() if t["key"] != key]
+    if on:
+        items.append({"key": key, "name": (name or "Клиент")[:80]})
+    core.flag_json("followup_test_clients", items)
+    with core.db() as c:
+        if on:
+            c.execute("UPDATE fu_sales SET status='skip_test' WHERE (customer_id=? OR lower(customer)=?) "
+                      "AND status IN ('pending', 'test')", (key, key))
+        else:
+            c.execute("UPDATE fu_sales SET status=? WHERE (customer_id=? OR lower(customer)=?) AND status='skip_test'",
+                      ("pending" if settings()["mode"] == "live" else "test", key, key))
+    return True, (f"🧪 «{name}» — тестовый, обратной связи не будет" if on else f"↩️ «{name}» — снова обычный клиент")
+
+
+def recent_clients(limit: int = 40) -> list:
+    """Клиенты последних продаж (для выбора тестовых): ключ, имя, телефон, покупок, тестовый ли."""
+    tests = {t["key"] for t in test_clients()}
+    with core.db() as c:
+        rows = c.execute("SELECT customer_id, customer, phone, COUNT(*) AS n, MAX(sale_at) AS last FROM fu_sales "
+                         "WHERE status NOT IN ('skip_noclient', 'skip_noname') GROUP BY COALESCE(NULLIF(customer_id, ''), customer) "
+                         "ORDER BY last DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        if _skip_reason(dict(r, customer_id="", customer=r["customer"])) == "noname":
+            continue
+        k = _client_key(r)
+        out.append({"key": k, "name": r["customer"], "phone": r["phone"] or "", "n": r["n"], "test": k in tests})
+    return out
 
 
 def _prepare(rows: list) -> list:
