@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -930,53 +931,70 @@ def _bot_for(m, app, client_app):
     return app.bot
 
 
+def _periodic_sync() -> list:
+    """Фоновые проверки (штрафы, посты, BILLZ, задачи, напоминания). Идут в отдельном потоке —
+    пока они работают, боты продолжают мгновенно отвечать. Возвращает, кому напомнить про кружок."""
+    expired = []
+    try:
+        core.check_penalties()
+    except Exception:
+        logging.exception("Ошибка при проверке штрафов")
+    try:
+        expired = list(core.expired_proofs())
+    except Exception:
+        logging.exception("Ошибка при проверке кружков")
+    try:
+        posts.dispatch_due()
+        erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
+        import followup
+        followup.tick()  # обратная связь с клиентом на следующий день после покупки
+        shop.daily()  # ERP: напоминания о разморозке бонусов, сгорание баллов
+        erp.start_purchase_watch()  # «спасибо за покупку» — проверка продаж каждые 30 с (запускается один раз)
+    except Exception:
+        logging.exception("Ошибка запланированных постов")
+    try:
+        core.spawn_recurring()  # утром — повторяющиеся задачи сотрудникам
+        core.shift_reminders()  # за 15 мин до начала и конца смены — напомнить отметиться
+    except Exception:
+        logging.exception("Ошибка повторяющихся задач")
+    try:
+        projects.morning_digest()
+    except Exception:
+        logging.exception("Ошибка утреннего списка задач")
+    try:
+        import msgr
+        msgr.check_timeouts()  # RADI Chat: клиент долго ждёт ответа
+    except Exception:
+        logging.exception("Ошибка проверки ответов RADI Chat")
+    try:
+        if invest_mod.ENABLED:
+            invest_mod.check_rating_day()
+            invest_mod.check_matured()
+    except Exception:
+        logging.exception("Ошибка при проверке сроков инвестиций")
+    return expired
+
+
+PERIODIC_EVERY = 15  # секунд между фоновыми проверками (рассылка из очереди идёт чаще — каждую секунду)
+
+
 async def outbox_loop(app: Application, client_app: Application = None) -> None:
+    last = 0.0
     while True:
-        try:
-            core.check_penalties()
-        except Exception:
-            logging.exception("Ошибка при проверке штрафов")
-        try:
-            for uid in core.expired_proofs():
-                L = core.staff_lang(uid)
-                await app.bot.send_message(uid, st.s(L, "proof_expired_bot", btn=st.s(L, "btn_in")))
-        except Exception:
-            logging.exception("Ошибка при проверке кружков")
-        try:
-            posts.dispatch_due()
-            erp.import_due()  # раз в сутки — копия клиентской базы BILLZ
-            import followup
-            followup.tick()  # обратная связь с клиентом на следующий день после покупки
-            shop.daily()  # ERP: напоминания о разморозке бонусов, сгорание баллов
-            erp.start_purchase_watch()  # «спасибо за покупку» — проверка продаж каждые 30 с (запускается один раз)
-        except Exception:
-            logging.exception("Ошибка запланированных постов")
-        try:
-            core.spawn_recurring()  # утром — повторяющиеся задачи сотрудникам
-            core.shift_reminders()  # за 15 мин до начала и конца смены — напомнить отметиться
-        except Exception:
-            logging.exception("Ошибка повторяющихся задач")
-        try:
-            projects.morning_digest()
-        except Exception:
-            logging.exception("Ошибка утреннего списка задач")
-        try:
-            import msgr
-            msgr.check_timeouts()  # RADI Chat: клиент долго ждёт ответа
-        except Exception:
-            logging.exception("Ошибка проверки ответов RADI Chat")
-        try:
-            if invest_mod.ENABLED:
-                invest_mod.check_rating_day()
-                invest_mod.check_matured()
-        except Exception:
-            logging.exception("Ошибка при проверке сроков инвестиций")
+        if time.monotonic() - last >= PERIODIC_EVERY:
+            last = time.monotonic()
+            try:
+                for uid in await asyncio.to_thread(_periodic_sync):
+                    L = core.staff_lang(uid)
+                    await app.bot.send_message(uid, st.s(L, "proof_expired_bot", btn=st.s(L, "btn_in")))
+            except Exception:
+                logging.exception("Ошибка фоновых проверок")
         try:
             await relay.daily_check(app.bot)
         except Exception:
             logging.exception("Ошибка при проверке альбомов фотографа")
         try:
-            for m in core.pending_outbox():
+            for m in await asyncio.to_thread(core.pending_outbox):
                 try:
                     thread = m.get("thread_id") or (PENALTY_THREAD_ID if m["chat_id"] == core.PENALTY_CHAT_ID else None)
                     text, mode = m["text"], None
@@ -1031,7 +1049,7 @@ async def outbox_loop(app: Application, client_app: Application = None) -> None:
         except Exception:
             logging.exception("Ошибка в очереди уведомлений")
         # пока идёт рассылка — разбираем очередь быстрее
-        await asyncio.sleep(1 if len(core.pending_outbox(1)) else 10)
+        await asyncio.sleep(1 if await asyncio.to_thread(core.pending_outbox, 1) else 3)
 
 
 def cabinet_button(title: str) -> InlineKeyboardMarkup:
@@ -1183,7 +1201,7 @@ async def start_biz_bot() -> None:
     if not config.BIZ_BOT_TOKEN or BIZ_APP:
         return
     try:
-        bapp = Application.builder().token(config.BIZ_BOT_TOKEN).build()
+        bapp = Application.builder().token(config.BIZ_BOT_TOKEN).concurrent_updates(True).build()
         bapp.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)
         bapp.add_handler(CommandHandler("start", biz_start))
         bapp.add_handler(CommandHandler("biz", biz_cmd))
@@ -1219,7 +1237,7 @@ async def client_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def build_client_app() -> Application:
     """Бот клиентов: только клиентская часть (язык, номер, BILLZ, новости, кабинет, «Выйти»)."""
-    capp = Application.builder().token(config.CLIENT_BOT_TOKEN).build()
+    capp = Application.builder().token(config.CLIENT_BOT_TOKEN).concurrent_updates(True).build()
     capp.bot_data["role"] = "client"
     capp.add_handler(TypeHandler(Update, bizwatch.on_update), group=-100)  # бизнес-чаты — бот молчит
     capp.add_handler(TypeHandler(Update, remember_client), group=-2)
@@ -1281,7 +1299,7 @@ def main() -> None:
                 c.execute("INSERT INTO outbox(chat_id, text, markup, via) VALUES(?, ?, 'staff_kb', 'staff')",
                           (uid, st.s(core.staff_lang(uid), "kb_cabinet_only")))
     two_bots = client_bot_on()
-    builder = Application.builder().token(config.BOT_TOKEN)
+    builder = Application.builder().token(config.BOT_TOKEN).concurrent_updates(True)
     app = (builder if two_bots else builder.post_init(post_init)).build()
     app.bot_data["role"] = "staff"
     app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & _WaitingReport(), invest_report_photo))

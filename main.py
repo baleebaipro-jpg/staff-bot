@@ -18,7 +18,7 @@ RETRY_SECONDS = 30
 
 
 def run_web():
-    serve(webapp.app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), threads=4)
+    serve(webapp.app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), threads=12)
 
 
 def run_bot_forever():
