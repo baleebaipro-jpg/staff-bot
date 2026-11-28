@@ -481,7 +481,9 @@ def api_me(uid, data):
                          "billz": dict(billz, enabled=bool(billz) or erp.enabled()),
                          "erp": shop.client_wallet_for_bot(uid),
                          # «📢 Канал» — личная ссылка-заявка (как кнопка в боте клиентов)
-                         "channel": i18n.t(i18n.lang_of(cl.get("lang")), "btn_channel") if _channel_on() else ""}
+                         "channel": i18n.t(i18n.lang_of(cl.get("lang")), "btn_channel") if _channel_on() else "",
+                         # «🥈 Стать Silver» — клиентам Bronza: ссылка на бот подписки
+                         "upgrade": (getattr(config, "SILVER_UPGRADE_URL", "") or "") if tier == "bronza" else ""}
         res["news"] = core.news_list(10, i18n.lang_of(cl.get("lang")))  # каждый клиент — на своём языке
     if invest.ENABLED and (res["is_employee"] or res["is_admin"]):
         res["invest_cfg"] = {"levels": invest.levels_info(), "term": invest.TERM, "min": invest.MIN_AMOUNT,
@@ -1456,6 +1458,27 @@ PAGE = r"""<!doctype html>
                font-weight: 800; font-size: 14px; letter-spacing: .02em; color: #1a1306; }
   .tier-pill.bronza { background: linear-gradient(90deg, #f0b27a, #b26a32); }
   .tier-pill.silver { background: linear-gradient(90deg, #ffffff, #a9b3c2); }
+  /* «🥈 Стать Silver» — блок для клиентов Bronza */
+  .silver-up { position: relative; overflow: hidden; width: 100%; text-align: left; display: block; margin: 0 0 14px; padding: 16px;
+    border-radius: 22px; border: 1px solid rgba(226,232,240,.55); color: #fff; cursor: pointer;
+    background: radial-gradient(120% 90% at 100% 0%, rgba(226,232,240,.28), transparent 55%),
+                linear-gradient(140deg, #2a2d3a 0%, #4b5163 45%, #1c1e28 100%);
+    box-shadow: 0 10px 34px rgba(203,213,225,.18), inset 0 1px 0 rgba(255,255,255,.25); animation: suGlow 3s ease-in-out infinite; }
+  .silver-up:active { transform: scale(.985); }
+  .su-shine { position: absolute; top: 0; left: 0; width: 40%; height: 100%; pointer-events: none;
+    background: linear-gradient(100deg, transparent, rgba(255,255,255,.28), transparent); animation: suShine 3.2s ease-in-out infinite; }
+  .su-top { display: flex; align-items: center; gap: 12px; }
+  .su-medal { width: 52px; height: 52px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px;
+    background: linear-gradient(135deg, #f8fafc, #94a3b8); box-shadow: 0 0 20px rgba(226,232,240,.55); }
+  .su-kicker { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #cbd5e1; }
+  .su-title { font-size: 19px; line-height: 1.2; background: linear-gradient(90deg, #fff, #cbd5e1); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .su-perks { display: grid; gap: 6px; margin: 12px 0; font-size: 13.5px; color: #e2e8f0; }
+  .su-cta { text-align: center; padding: 11px; border-radius: 14px; font-weight: 800; font-size: 15.5px; color: #1e293b;
+    background: linear-gradient(90deg, #ffffff, #cbd5e1, #ffffff); background-size: 200% 100%; animation: suCta 2.4s linear infinite; }
+  @keyframes suShine { 0% { transform: translateX(-120%) skewX(-12deg); } 60%, 100% { transform: translateX(320%) skewX(-12deg); } }
+  @keyframes suGlow { 0%, 100% { box-shadow: 0 10px 34px rgba(203,213,225,.14), inset 0 1px 0 rgba(255,255,255,.25); }
+    50% { box-shadow: 0 10px 40px rgba(226,232,240,.32), inset 0 1px 0 rgba(255,255,255,.35); } }
+  @keyframes suCta { from { background-position: 0 0; } to { background-position: 200% 0; } }
   .tier-pill.gold   { background: linear-gradient(90deg, #fff0a8, #e0a21c); }
   .cl-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
   .cl-row:first-child { border-top: none; }
@@ -2466,6 +2489,12 @@ PAGE = r"""<!doctype html>
       </div>
     </div>
     <div class="card hidden" id="cl-nophone" style="border-color:rgba(251,191,36,.4)" data-t="finish_reg"></div>
+    <button class="silver-up hidden" id="cl-silver">
+      <span class="su-shine"></span>
+      <div class="su-top"><div class="su-medal">🥈</div>
+        <div style="flex:1;min-width:0"><div class="su-kicker" data-t="su_kicker"></div><b class="su-title" data-t="su_title"></b></div></div>
+      <div class="su-perks"><span data-t="su_p1"></span><span data-t="su_p2"></span><span data-t="su_p3"></span></div>
+      <div class="su-cta" data-t="su_cta"></div></button>
     <div class="stats" style="grid-template-columns:1fr 1fr">
       <div class="stat s1 soon-stat" id="cl-st-buy"><div class="ic">🛍</div><b id="cl-buy">—</b><span data-t="purchases"></span><em data-t="soon"></em></div>
       <div class="stat s3 soon-stat" id="cl-st-bonus"><div class="ic">🎁</div><b id="cl-bonus">—</b><div class="hint hidden" style="font-size:11.5px" id="cl-frozen"></div><span data-t="bonuses"></span><em data-t="soon"></em></div>
@@ -4067,6 +4096,9 @@ const CL_T = {
        birth: "🎂 Tug'ilgan kun", photo: "Rasm yuklanmoqda…",
        billz_not_found: "Raqamingiz hali do'kon bazasida yo'q — birinchi xariddan keyin bu yerda xaridlar va bonuslar paydo bo'ladi",
        billz_error: "Ma'lumotni hozir olib bo'lmadi, keyinroq yangilanadi", refresh: "🔄 Yangilash", refreshing: "⏳ Yangilanmoqda…",
+       su_kicker: "Bronza → Silver", su_title: "Silver darajasiga ko'tariling ✨", su_p1: "🏷 Maxsus Silver narxlar",
+       su_p2: "👤 Shaxsiy menejer — tanlash va buyurtmada yordam", su_p3: "🔒 Yopiq takliflar va yangi kolleksiyalar birinchi bo'lib",
+       su_cta: "🥈 Silver bo'lish →",
        channel_open: "Kanal ochiladi — «Qo'shilish so'rovi»ni bosing, bot darhol tasdiqlaydi ✅",
        channel_sub: "Xaridorlar uchun yopiq kanal — shaxsiy havola"},
   ru: {hello: "Здравствуйте, {n}! 👋", debt: "Ваш долг · подробнее", debt_order: "Заказ", debt_one: "Долг", debt_sum: "сумма", debt_paid_lbl: "оплачено",
@@ -4077,6 +4109,9 @@ const CL_T = {
        birth: "🎂 День рождения", photo: "Загружаю фото…",
        billz_not_found: "Вашего номера пока нет в базе магазина — после первой покупки здесь появятся покупки и бонусы",
        billz_error: "Сейчас не удалось получить данные, обновится позже", refresh: "🔄 Обновить", refreshing: "⏳ Обновляю…",
+       su_kicker: "Bronza → Silver", su_title: "Повысьте уровень до Silver ✨", su_p1: "🏷 Специальные цены Silver",
+       su_p2: "👤 Личный менеджер — поможет с выбором и заказом", su_p3: "🔒 Закрытые предложения и новые коллекции первыми",
+       su_cta: "🥈 Стать Silver →",
        channel_open: "Откроется канал — нажмите «Подать заявку», бот сразу одобрит ✅",
        channel_sub: "Закрытый канал для покупателей — личная ссылка"},
   en: {hello: "Hello, {n}! 👋", debt: "Your debt · details", debt_order: "Order", debt_one: "Debt", debt_sum: "amount", debt_paid_lbl: "paid",
@@ -4087,6 +4122,9 @@ const CL_T = {
        birth: "🎂 Birthday", photo: "Uploading photo…",
        billz_not_found: "Your number isn't in the store database yet — purchases and bonuses will appear after your first purchase",
        billz_error: "Couldn't get the data right now, it will update later", refresh: "🔄 Refresh", refreshing: "⏳ Refreshing…",
+       su_kicker: "Bronza → Silver", su_title: "Upgrade to Silver ✨", su_p1: "🏷 Special Silver prices",
+       su_p2: "👤 A personal manager to help you choose and order", su_p3: "🔒 Private offers and new collections first",
+       su_cta: "🥈 Become Silver →",
        channel_open: "The channel will open — tap «Request to join», the bot approves it right away ✅",
        channel_sub: "Private channel for our customers — personal link"},
 };
@@ -4132,10 +4170,18 @@ function renderClient() {
   $("cl-refresh-row").classList.toggle("hidden", !bz.enabled);
   $("cl-refresh").textContent = ct("refresh") + (bz.synced ? " · " + bz.synced.slice(11, 16) : "");
   $("cl-news").innerHTML = data.news.length ? newsHtml(data.news, false) : `<div class="empty">${ct("no_news")}</div>`;
+  $("cl-silver").classList.toggle("hidden", !c.upgrade);
+  $("cl-silver").dataset.url = c.upgrade || "";
   $("cl-channel").classList.toggle("hidden", !c.channel);
   $("cl-channel-t").textContent = (c.channel || "").replace(/^[^\p{L}]+/u, "");
   $("cl-channel-s").textContent = ct("channel_sub");
 }
+$("cl-silver").onclick = () => {
+  const url = $("cl-silver").dataset.url; if (!url) return;
+  if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred && tg.HapticFeedback.impactOccurred("medium");
+  if (/^https:\/\/t\.me\//.test(url) && tg.openTelegramLink) tg.openTelegramLink(url);
+  else if (tg.openLink) tg.openLink(url); else location.href = url;
+};
 $("cl-channel").onclick = async () => {
   const b = $("cl-channel"); if (b.disabled) return; b.disabled = true;
   try {
