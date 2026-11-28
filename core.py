@@ -248,10 +248,21 @@ def in_window(emp, kind: str, t: datetime) -> bool:
     return a <= t < at(t, shift_end(emp, t))
 
 
+_wal = {"on": False}
+
+
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    if not _wal["on"]:  # WAL: кабинет, боты и фоновые задачи читают и пишут одновременно, не дожидаясь друг друга
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _wal["on"] = True
+        except sqlite3.Error:
+            pass
+    conn.execute("PRAGMA synchronous=NORMAL")  # безопасно с WAL и намного быстрее записи
+    conn.execute("PRAGMA busy_timeout=15000")
     try:
         yield conn
         conn.commit()
