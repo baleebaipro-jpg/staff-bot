@@ -12,6 +12,9 @@ import core
 
 HOUR = getattr(config, "FOLLOWUP_HOUR", 10)  # во сколько утром ставить / слать предпросмотр
 _tick = {"at": 0}
+# Тестовые / розничные карточки клиентов в BILLZ (например «Diyora DONA SOTUV 7118») — обратную связь не ставим
+SKIP_WORDS = [w.lower() for w in getattr(config, "FOLLOWUP_SKIP_WORDS", ["sotuv", "сотув", "продажа", "test", "тест"])]
+NO_NAME = {"", "клиент", "client", "mijoz", "покупатель"}
 
 
 def init() -> None:
@@ -65,9 +68,46 @@ def scan() -> int:
     return n
 
 
+def _skip_reason(r) -> str:
+    """'noname' — клиент без имени, 'test' — тестовая / розничная карточка, '' — ставить обратную связь."""
+    name = " ".join((r.get("customer") or "").split()).lower()
+    if name in NO_NAME:
+        return "noname"
+    words = name.replace("-", " ").split()
+    if any(w in words or (len(w) > 4 and w in name) for w in SKIP_WORDS):
+        return "test"
+    return ""
+
+
+def _prepare(rows: list) -> list:
+    """Убрать клиентов без имени и тестовых (отметить в базе), несколько покупок одного клиента — одной задачей."""
+    out, skip = {}, []
+    for r in rows:
+        why = _skip_reason(r)
+        if why:
+            skip.append(("skip_" + why, r["order_id"]))
+            continue
+        key = (r["seller"] or "", r["customer_id"] or r["customer"].lower())
+        m = out.get(key)
+        if not m:
+            out[key] = dict(r, ids=[r["order_id"]], n=1)
+        else:
+            m["ids"].append(r["order_id"])
+            m["n"] += 1
+            m["total"] = (m["total"] or 0) + (r["total"] or 0)
+            m["sale_at"] = max(m["sale_at"], r["sale_at"])
+            m["uid"] = m["uid"] or r["uid"]
+            m["phone"] = m["phone"] or r["phone"]
+    if skip:
+        with core.db() as c:
+            c.executemany("UPDATE fu_sales SET status=? WHERE order_id=?", skip)
+    return list(out.values())
+
+
 def _title(r) -> str:
+    n = r.get("n", 1)
     return (f"📞 Обратная связь: {r['customer']}" + (f" · {r['phone']}" if r["phone"] else "")
-            + f" · покупка {r['sale_at'][8:10]}.{r['sale_at'][5:7]} на {_money(r['total'])}")
+            + f" · {'покупка' if n == 1 else f'{n} покупки'} {r['sale_at'][8:10]}.{r['sale_at'][5:7]} на {_money(r['total'])}")
 
 
 def due_rows(day: str = "") -> list:
@@ -82,15 +122,15 @@ def preview_text(rows: list, title: str) -> str:
     by = {}
     for r in rows:
         uid = r["uid"] or sellers.employee_of(r["seller"])  # связь могли добавить позже
-        by.setdefault(uid, []).append(r)
+        by.setdefault(uid or ("?" + (r["seller"] or "")), []).append(r)
     if not rows:
         return title + "\n\nПродаж для обратной связи нет."
     lines = [title]
-    for uid, items in sorted(by.items(), key=lambda x: (x[0] is None, core.name(x[0]) if x[0] else "")):
-        head = f"👤 {core.name(uid)}" if uid else f"❓ Продавец «{items[0]['seller'] or '—'}» не связан с сотрудником"
+    for uid, items in sorted(by.items(), key=lambda x: (isinstance(x[0], str), core.name(x[0]) if isinstance(x[0], int) else x[0])):
+        head = f"👤 {core.name(uid)}" if isinstance(uid, int) else f"❓ Продавец «{items[0]['seller'] or '—'}» не связан с сотрудником"
         lines.append(f"\n{head} — {len(items)}:")
         lines += [f"• {r['customer']}{' · ' + r['phone'] if r['phone'] else ''} · {r['sale_at'][8:10]}.{r['sale_at'][5:7]} · "
-                  f"{_money(r['total'])}" for r in items[:30]]
+                  f"{_money(r['total'])}{' (' + str(r['n']) + ' покупки)' if r.get('n', 1) > 1 else ''}" for r in items[:30]]
         if len(items) > 30:
             lines.append(f"…и ещё {len(items) - 30}")
     return "\n".join(lines)[:4000]
@@ -101,7 +141,7 @@ def run_now():
     scan()
     with core.db() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM fu_sales WHERE status IN ('pending', 'test') ORDER BY sale_at")]
-    n = _create_tasks(rows)
+    n = _create_tasks(_prepare(rows))
     return True, f"📌 Поставлено задач: {n}" + ("" if n else " — нет продаж с продавцом, связанным с сотрудником")
 
 
@@ -111,12 +151,14 @@ def _create_tasks(rows: list) -> int:
     with core.db() as c:
         for r in rows:
             uid = r["uid"] or sellers.employee_of(r["seller"])
+            ids = r.get("ids") or [r["order_id"]]
             if not uid or not core.employee(uid):
-                c.execute("UPDATE fu_sales SET status='skip_unlinked' WHERE order_id=?", (r["order_id"],))
+                c.executemany("UPDATE fu_sales SET status='skip_unlinked' WHERE order_id=?", [(i,) for i in ids])
                 continue
             cur = c.execute("INSERT INTO tasks(user_id, title, created_at, due_date, soft) VALUES(?, ?, ?, ?, 1)",
                             (uid, _title(r), core.now().strftime(core.FMT), core.now().strftime("%Y-%m-%d")))
-            c.execute("UPDATE fu_sales SET status='task', task_id=?, uid=? WHERE order_id=?", (cur.lastrowid, uid, r["order_id"]))
+            c.executemany("UPDATE fu_sales SET status='task', task_id=?, uid=? WHERE order_id=?",
+                          [(cur.lastrowid, uid, i) for i in ids])
             core.notify(c, uid, core.st.s(core.staff_lang(uid), "task_new", t=_title(r)))
             n += 1
     return n
@@ -125,7 +167,7 @@ def _create_tasks(rows: list) -> int:
 def run_due(force_preview: bool = False):
     """Утром: продажи вчерашнего дня (и раньше, если пропущены) → задачи (live) или предпросмотр руководителю (test)."""
     import sellers
-    rows = due_rows()
+    rows = _prepare(due_rows())
     mode = settings()["mode"]
     if mode == "test" or force_preview:
         if rows or force_preview:
@@ -134,7 +176,7 @@ def run_due(force_preview: bool = False):
             with core.db() as c:
                 core.notify_admins(c, text)
                 if mode == "test":
-                    c.executemany("UPDATE fu_sales SET status='test' WHERE order_id=?", [(r["order_id"],) for r in rows])
+                    c.executemany("UPDATE fu_sales SET status='test' WHERE order_id=?", [(i,) for r in rows for i in r["ids"]])
         return len(rows)
     return _create_tasks(rows)
 
@@ -158,7 +200,8 @@ def status() -> dict:
     st = settings()
     return {"mode": st["mode"], "since": st["since"][:16], "pending": cnt.get("pending", 0), "tomorrow": tomorrow,
             "tasks": cnt.get("task", 0), "test": cnt.get("test", 0), "noclient": cnt.get("skip_noclient", 0),
-            "unlinked": cnt.get("skip_unlinked", 0), "hour": HOUR}
+            "unlinked": cnt.get("skip_unlinked", 0), "noname": cnt.get("skip_noname", 0),
+            "skiptest": cnt.get("skip_test", 0), "hour": HOUR}
 
 
 def fetch_today() -> str:
@@ -194,4 +237,4 @@ def preview_now() -> str:
     scan()
     with core.db() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM fu_sales WHERE status IN ('pending', 'test') ORDER BY sale_at")]
-    return diag + "\n\n" + preview_text(rows, "👁 Предпросмотр · обратная связь после покупки (никому не отправлено)")
+    return diag + "\n\n" + preview_text(_prepare(rows), "👁 Предпросмотр · обратная связь после покупки (никому не отправлено)")
