@@ -1199,6 +1199,12 @@ async def savdo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not text or text.startswith("/") or m.from_user.is_bot:
         return  # команды (/savdo, /chatid) — обычным обработчикам
     poster = m.from_user.id
+    if savdo.is_debt_case(text):  # «dumi bor» — пока не пробиваем
+        try:
+            await m.reply_text(savdo.SKIP_REPLY)
+        except TelegramError:
+            pass
+        raise ApplicationHandlerStop
     pname = core.name(poster) if core.employee(poster) else (m.from_user.full_name or str(poster))
     p = await asyncio.to_thread(savdo.plan, text, poster)
     if not p.get("total") and not p.get("phone"):
